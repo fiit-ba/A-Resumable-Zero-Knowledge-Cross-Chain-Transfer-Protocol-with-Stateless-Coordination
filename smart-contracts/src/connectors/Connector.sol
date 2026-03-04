@@ -58,7 +58,6 @@ contract Connector is ConnectorStorage, IConnector {
         if (_currencyFrom == address(0)) revert Errors.ZeroAddress();
         if (_currencyTo == address(0)) revert Errors.ZeroAddress();
         if (_dstChainConnector == address(0)) revert Errors.ZeroAddress();
-
         uint256 nonce = txNonce++;
 
         txId = keccak256(
@@ -78,9 +77,18 @@ contract Connector is ConnectorStorage, IConnector {
             revert Errors.TxAlreadyExists(txId);
         }
 
+        uint256 balanceBefore = IERC20(_currencyFrom).balanceOf(address(this));
+        IERC20(_currencyFrom).safeTransferFrom(
+            msg.sender,
+            address(this),
+            _amount
+        );
+        uint256 received = IERC20(_currencyFrom).balanceOf(address(this)) - balanceBefore;
+        if (received == 0) revert Errors.ZeroAmount();
+
         _txs[txId] = CrossChainTx({
             txId: txId,
-            amount: _amount,
+            amount: received,
             currencyFrom: _currencyFrom,
             currencyTo: _currencyTo,
             from: msg.sender,
@@ -95,17 +103,11 @@ contract Connector is ConnectorStorage, IConnector {
         });
         txStatus[txId] = Enums.TxStatus.DEPOSIT_LOCKED;
 
-        IERC20(_currencyFrom).safeTransferFrom(
-            msg.sender,
-            address(this),
-            _amount
-        );
-
         emit DepositLocked(
             txId,
             msg.sender,
             _to,
-            _amount,
+            received,
             _currencyFrom,
             _currencyTo,
             address(this),
