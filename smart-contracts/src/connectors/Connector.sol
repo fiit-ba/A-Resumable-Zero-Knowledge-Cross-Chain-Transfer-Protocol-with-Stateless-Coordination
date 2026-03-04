@@ -213,6 +213,11 @@ contract Connector is ConnectorStorage, IConnector {
         bytes32 _txId
     ) external requireStatus(_txId, Enums.TxStatus.MINT_PROOF_ACCEPTED) {
         CrossChainTx memory tx_ = _txs[_txId];
+
+        if (msg.sender != tx_.from) {
+            revert Errors.NotTxOriginator(_txId, msg.sender, tx_.from);
+        }
+
         uint64 closeAfter = tx_.ackDeadline;
         if (block.timestamp < closeAfter) {
             revert Errors.DeadlineNotReached(
