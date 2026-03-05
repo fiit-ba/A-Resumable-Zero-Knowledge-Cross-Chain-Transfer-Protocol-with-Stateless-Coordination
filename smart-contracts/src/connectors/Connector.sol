@@ -13,16 +13,12 @@ import {IConnector} from "./IConnector.sol";
 contract Connector is ConnectorStorage, IConnector {
     using SafeERC20 for IERC20;
 
-    constructor(
-        address _risc0,
-        address _snark,
-        bytes32 _allowedImageId,
-        uint64 _ackWindowSeconds
-    ) {
+    constructor(address _risc0, address _snark, bytes32 _allowedImageId, uint64 _ackWindowSeconds) {
         if (_risc0 == address(0)) revert Errors.RiscZeroVerifierIsZeroAddress();
         if (_snark == address(0)) revert Errors.SnarkJsVerifierIsZeroAddress();
-        if (_allowedImageId == bytes32(0))
+        if (_allowedImageId == bytes32(0)) {
             revert Errors.AllowedImageIdsRiscZeroIsZeroAddress();
+        }
 
         risc0 = IRiscZeroVerifier(_risc0);
         snark = ISnarkVerifier(_snark);
@@ -33,10 +29,7 @@ contract Connector is ConnectorStorage, IConnector {
 
     modifier requireStatus(bytes32 _txId, Enums.TxStatus _expected) {
         if (txStatus[_txId] != _expected) {
-            revert Errors.InvalidStateTransition(
-                uint8(txStatus[_txId]),
-                uint8(_expected)
-            );
+            revert Errors.InvalidStateTransition(uint8(txStatus[_txId]), uint8(_expected));
         }
         _;
     }
@@ -61,16 +54,7 @@ contract Connector is ConnectorStorage, IConnector {
         uint256 nonce = txNonce++;
 
         txId = keccak256(
-            abi.encode(
-                msg.sender,
-                _to,
-                _amount,
-                _currencyFrom,
-                _currencyTo,
-                address(this),
-                _dstChainConnector,
-                nonce
-            )
+            abi.encode(msg.sender, _to, _amount, _currencyFrom, _currencyTo, address(this), _dstChainConnector, nonce)
         );
 
         if (txStatus[txId] != Enums.TxStatus.NONE) {
@@ -78,11 +62,7 @@ contract Connector is ConnectorStorage, IConnector {
         }
 
         uint256 balanceBefore = IERC20(_currencyFrom).balanceOf(address(this));
-        IERC20(_currencyFrom).safeTransferFrom(
-            msg.sender,
-            address(this),
-            _amount
-        );
+        IERC20(_currencyFrom).safeTransferFrom(msg.sender, address(this), _amount);
         uint256 received = IERC20(_currencyFrom).balanceOf(address(this)) - balanceBefore;
         if (received == 0) revert Errors.ZeroAmount();
 
@@ -117,19 +97,15 @@ contract Connector is ConnectorStorage, IConnector {
     }
 
     /// @inheritdoc IConnector
-    function submitMintProof(
-        Enums.ProofType _proofType,
-        bytes calldata _proofPayload,
-        bytes32 _txId
-    ) external requireStatus(_txId, Enums.TxStatus.DEPOSIT_LOCKED) {
+    function submitMintProof(Enums.ProofType _proofType, bytes calldata _proofPayload, bytes32 _txId)
+        external
+        requireStatus(_txId, Enums.TxStatus.DEPOSIT_LOCKED)
+    {
         CrossChainTx storage tx_ = _txs[_txId];
 
         (bytes32 commitment, bytes32 proofHash) = _verifyProof(_proofType, _proofPayload, _txId);
-        bytes32 expected = _expectedCommitment(
-            _proofType,
-            abi.encode(_txId, tx_.dstChainConnector, tx_.amount, tx_.to)
-        );
-        
+        bytes32 expected = _expectedCommitment(_proofType, abi.encode(_txId, tx_.dstChainConnector, tx_.amount, tx_.to));
+
         if (commitment != expected) {
             revert Errors.CommitmentMismatch(commitment, expected);
         }
@@ -159,14 +135,8 @@ contract Connector is ConnectorStorage, IConnector {
         Enums.TxStatus current = txStatus[_txId];
         CrossChainTx storage tx_ = _txs[_txId];
 
-        if (
-            current != Enums.TxStatus.DEPOSIT_LOCKED &&
-            current != Enums.TxStatus.MINT_PROOF_ACCEPTED
-        ) {
-            revert Errors.InvalidStateTransition(
-                uint8(current),
-                uint8(Enums.TxStatus.REFUND_INITIATED)
-            );
+        if (current != Enums.TxStatus.DEPOSIT_LOCKED && current != Enums.TxStatus.MINT_PROOF_ACCEPTED) {
+            revert Errors.InvalidStateTransition(uint8(current), uint8(Enums.TxStatus.REFUND_INITIATED));
         }
         if (block.timestamp < tx_.ackDeadline) {
             revert Errors.AckWindowNotExpired(tx_.ackDeadline, uint64(block.timestamp));
@@ -178,18 +148,14 @@ contract Connector is ConnectorStorage, IConnector {
     }
 
     /// @inheritdoc IConnector
-    function submitBurnProof(
-        Enums.ProofType _proofType,
-        bytes calldata _proofPayload,
-        bytes32 _txId
-    ) external requireStatus(_txId, Enums.TxStatus.REFUND_INITIATED) {
+    function submitBurnProof(Enums.ProofType _proofType, bytes calldata _proofPayload, bytes32 _txId)
+        external
+        requireStatus(_txId, Enums.TxStatus.REFUND_INITIATED)
+    {
         CrossChainTx memory tx_ = _txs[_txId];
 
         (bytes32 commitment,) = _verifyProof(_proofType, _proofPayload, _txId);
-        bytes32 expected = _expectedCommitment(
-            _proofType,
-            abi.encode(_txId, tx_.dstChainConnector, tx_.amount)
-        );
+        bytes32 expected = _expectedCommitment(_proofType, abi.encode(_txId, tx_.dstChainConnector, tx_.amount));
         if (commitment != expected) {
             revert Errors.CommitmentMismatch(commitment, expected);
         }
@@ -204,16 +170,20 @@ contract Connector is ConnectorStorage, IConnector {
 
         emit RefundExecuted(_txId, refundTo, refundAmt);
         emit OriginTxClosed(
-            _txId, tx_.amount, tx_.currencyFrom, tx_.currencyTo,
-            tx_.from, tx_.to, tx_.srcChainConnector, tx_.dstChainConnector,
+            _txId,
+            tx_.amount,
+            tx_.currencyFrom,
+            tx_.currencyTo,
+            tx_.from,
+            tx_.to,
+            tx_.srcChainConnector,
+            tx_.dstChainConnector,
             tx_.timestamp
         );
     }
 
     /// @inheritdoc IConnector
-    function closeTx(
-        bytes32 _txId
-    ) external requireStatus(_txId, Enums.TxStatus.MINT_PROOF_ACCEPTED) {
+    function closeTx(bytes32 _txId) external requireStatus(_txId, Enums.TxStatus.MINT_PROOF_ACCEPTED) {
         CrossChainTx memory tx_ = _txs[_txId];
 
         if (msg.sender != tx_.from) {
@@ -222,16 +192,19 @@ contract Connector is ConnectorStorage, IConnector {
 
         uint64 closeAfter = tx_.ackDeadline;
         if (block.timestamp < closeAfter) {
-            revert Errors.DeadlineNotReached(
-                closeAfter,
-                uint64(block.timestamp)
-            );
+            revert Errors.DeadlineNotReached(closeAfter, uint64(block.timestamp));
         }
 
         _cleanupTx(_txId);
         emit OriginTxClosed(
-            _txId, tx_.amount, tx_.currencyFrom, tx_.currencyTo,
-            tx_.from, tx_.to, tx_.srcChainConnector, tx_.dstChainConnector,
+            _txId,
+            tx_.amount,
+            tx_.currencyFrom,
+            tx_.currencyTo,
+            tx_.from,
+            tx_.to,
+            tx_.srcChainConnector,
+            tx_.dstChainConnector,
             tx_.timestamp
         );
     }
@@ -313,18 +286,15 @@ contract Connector is ConnectorStorage, IConnector {
     }
 
     /// @inheritdoc IConnector
-    function submitAckProof(
-        Enums.ProofType _proofType,
-        bytes calldata _proofPayload,
-        bytes32 _txId
-    ) external requireStatus(_txId, Enums.TxStatus.MINTED_IN_HOLDING) {
+    function submitAckProof(Enums.ProofType _proofType, bytes calldata _proofPayload, bytes32 _txId)
+        external
+        requireStatus(_txId, Enums.TxStatus.MINTED_IN_HOLDING)
+    {
         CrossChainTx memory tx_ = _txs[_txId];
 
         (bytes32 commitment, bytes32 proofHash) = _verifyProof(_proofType, _proofPayload, _txId);
-        bytes32 expected = _expectedCommitment(
-            _proofType,
-            abi.encode(_txId, tx_.srcChainConnector, tx_.dstChainConnector)
-        );
+        bytes32 expected =
+            _expectedCommitment(_proofType, abi.encode(_txId, tx_.srcChainConnector, tx_.dstChainConnector));
         if (commitment != expected) {
             revert Errors.CommitmentMismatch(commitment, expected);
         }
@@ -332,18 +302,24 @@ contract Connector is ConnectorStorage, IConnector {
         _cleanupTx(_txId);
 
         emit AckAccepted(
-            _txId, tx_.amount, tx_.currencyFrom, tx_.currencyTo,
-            tx_.from, tx_.to, tx_.srcChainConnector, tx_.dstChainConnector,
-            tx_.timestamp, _proofType, proofHash, commitment, _proofPayload
+            _txId,
+            tx_.amount,
+            tx_.currencyFrom,
+            tx_.currencyTo,
+            tx_.from,
+            tx_.to,
+            tx_.srcChainConnector,
+            tx_.dstChainConnector,
+            tx_.timestamp,
+            _proofType,
+            proofHash,
+            commitment,
+            _proofPayload
         );
     }
 
     /// @inheritdoc IConnector
-    function submitRefundClaimProof(
-        Enums.ProofType _proofType,
-        bytes calldata  _proofPayload,
-        bytes32         _txId
-    )
+    function submitRefundClaimProof(Enums.ProofType _proofType, bytes calldata _proofPayload, bytes32 _txId)
         external
         requireStatus(_txId, Enums.TxStatus.MINTED_IN_HOLDING)
     {
@@ -354,10 +330,7 @@ contract Connector is ConnectorStorage, IConnector {
         }
 
         (bytes32 commitment, bytes32 proofHash) = _verifyProof(_proofType, _proofPayload, _txId);
-        bytes32 expected = _expectedCommitment(
-            _proofType,
-            abi.encode(_txId, tx_.srcChainConnector, tx_.amount)
-        );
+        bytes32 expected = _expectedCommitment(_proofType, abi.encode(_txId, tx_.srcChainConnector, tx_.amount));
         if (commitment != expected) {
             revert Errors.CommitmentMismatch(commitment, expected);
         }
@@ -365,24 +338,37 @@ contract Connector is ConnectorStorage, IConnector {
         _setStatus(_txId, Enums.TxStatus.REFUND_CLAIM_ACCEPTED);
 
         emit RefundClaimAccepted(
-            _txId, tx_.amount, tx_.currencyFrom, tx_.currencyTo,
-            tx_.from, tx_.to, tx_.srcChainConnector, tx_.dstChainConnector,
-            tx_.timestamp, _proofType, proofHash, commitment, _proofPayload
+            _txId,
+            tx_.amount,
+            tx_.currencyFrom,
+            tx_.currencyTo,
+            tx_.from,
+            tx_.to,
+            tx_.srcChainConnector,
+            tx_.dstChainConnector,
+            tx_.timestamp,
+            _proofType,
+            proofHash,
+            commitment,
+            _proofPayload
         );
     }
 
     /// @inheritdoc IConnector
-    function executeBurn(bytes32 _txId)
-        external
-        requireStatus(_txId, Enums.TxStatus.REFUND_CLAIM_ACCEPTED)
-    {
+    function executeBurn(bytes32 _txId) external requireStatus(_txId, Enums.TxStatus.REFUND_CLAIM_ACCEPTED) {
         CrossChainTx memory tx_ = _txs[_txId];
 
         _cleanupTx(_txId);
 
         emit DestTxClosed(
-            _txId, tx_.amount, tx_.currencyFrom, tx_.currencyTo,
-            tx_.from, tx_.to, tx_.srcChainConnector, tx_.dstChainConnector,
+            _txId,
+            tx_.amount,
+            tx_.currencyFrom,
+            tx_.currencyTo,
+            tx_.from,
+            tx_.to,
+            tx_.srcChainConnector,
+            tx_.dstChainConnector,
             tx_.timestamp
         );
     }
@@ -391,11 +377,10 @@ contract Connector is ConnectorStorage, IConnector {
                             INTERNAL FUNCTIONS
     //////////////////////////////////////////////////////////////*/
 
-    function _verifyProof(
-        Enums.ProofType _proofType,
-        bytes calldata _proofPayload,
-        bytes32 _txId
-    ) internal returns (bytes32 commitment, bytes32 proofHash) {
+    function _verifyProof(Enums.ProofType _proofType, bytes calldata _proofPayload, bytes32 _txId)
+        internal
+        returns (bytes32 commitment, bytes32 proofHash)
+    {
         proofHash = keccak256(_proofPayload);
         if (txProofUsed[_txId][proofHash]) {
             revert Errors.ProofAlreadyProcessed(proofHash);
@@ -404,8 +389,8 @@ contract Connector is ConnectorStorage, IConnector {
         txProofHashes[_txId].push(proofHash);
 
         if (_proofType == Enums.ProofType.RISC0) {
-            (bytes memory seal, bytes32 imageId, bytes32 journalDigest) = abi
-                .decode(_proofPayload, (bytes, bytes32, bytes32));
+            (bytes memory seal, bytes32 imageId, bytes32 journalDigest) =
+                abi.decode(_proofPayload, (bytes, bytes32, bytes32));
 
             if (imageIdRiscZero != imageId) {
                 revert Errors.ImageIdNotAllowed(imageId);
@@ -413,15 +398,8 @@ contract Connector is ConnectorStorage, IConnector {
             risc0.verify(seal, imageId, journalDigest);
             commitment = journalDigest;
         } else if (_proofType == Enums.ProofType.SNARKJS) {
-            (
-                uint256[2] memory a,
-                uint256[2][2] memory b,
-                uint256[2] memory c,
-                uint256[] memory input
-            ) = abi.decode(
-                _proofPayload,
-                (uint256[2], uint256[2][2], uint256[2], uint256[])
-            );
+            (uint256[2] memory a, uint256[2][2] memory b, uint256[2] memory c, uint256[] memory input) =
+                abi.decode(_proofPayload, (uint256[2], uint256[2][2], uint256[2], uint256[]));
 
             if (!snark.verify(a, b, c, input)) {
                 revert Errors.InvalidSnarkProof();
@@ -434,10 +412,11 @@ contract Connector is ConnectorStorage, IConnector {
         emit ProofVerified(_txId, _proofType, proofHash, commitment, _proofPayload);
     }
 
-    function _expectedCommitment(
-        Enums.ProofType _proofType,
-        bytes memory _publicInputs
-    ) internal pure returns (bytes32) {
+    function _expectedCommitment(Enums.ProofType _proofType, bytes memory _publicInputs)
+        internal
+        pure
+        returns (bytes32)
+    {
         if (_proofType == Enums.ProofType.RISC0) {
             return sha256(_publicInputs);
         }

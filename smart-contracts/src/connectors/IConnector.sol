@@ -4,7 +4,6 @@ pragma solidity ^0.8.28;
 import {Enums} from "../libs/Enums.sol";
 
 interface IConnector {
-
     /*//////////////////////////////////////////////////////////////
                             ORIGIN FUNCTIONS
     //////////////////////////////////////////////////////////////*/
@@ -17,19 +16,11 @@ interface IConnector {
         address dstChainConnector
     ) external returns (bytes32 txId);
 
-    function submitMintProof(
-        Enums.ProofType proofType,
-        bytes calldata  proofPayload,
-        bytes32         txId
-    ) external;
+    function submitMintProof(Enums.ProofType proofType, bytes calldata proofPayload, bytes32 txId) external;
 
     function initiateRefund(bytes32 txId) external;
 
-    function submitBurnProof(
-        Enums.ProofType proofType,
-        bytes calldata  proofPayload,
-        bytes32         txId
-    ) external;
+    function submitBurnProof(Enums.ProofType proofType, bytes calldata proofPayload, bytes32 txId) external;
 
     function closeTx(bytes32 txId) external;
 
@@ -39,7 +30,7 @@ interface IConnector {
 
     function submitDepositProof(
         Enums.ProofType proofType,
-        bytes calldata  proofPayload,
+        bytes calldata proofPayload,
         bytes32 txId,
         uint256 amount,
         address currencyFrom,
@@ -47,20 +38,12 @@ interface IConnector {
         address from,
         address to,
         address srcChainConnector,
-        uint64  originAckDeadline
+        uint64 originAckDeadline
     ) external;
 
-    function submitAckProof(
-        Enums.ProofType proofType,
-        bytes calldata  proofPayload,
-        bytes32         txId
-    ) external;
+    function submitAckProof(Enums.ProofType proofType, bytes calldata proofPayload, bytes32 txId) external;
 
-    function submitRefundClaimProof(
-        Enums.ProofType proofType,
-        bytes calldata  proofPayload,
-        bytes32         txId
-    ) external;
+    function submitRefundClaimProof(Enums.ProofType proofType, bytes calldata proofPayload, bytes32 txId) external;
 
     function executeBurn(bytes32 txId) external;
 }
