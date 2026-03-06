@@ -28,9 +28,7 @@ contract Connector is ConnectorStorage, IConnector {
     }
 
     modifier requireStatus(bytes32 _txId, Enums.TxStatus _expected) {
-        if (txStatus[_txId] != _expected) {
-            revert Errors.InvalidStateTransition(uint8(txStatus[_txId]), uint8(_expected));
-        }
+        _requireStatus(_txId, _expected);
         _;
     }
 
@@ -420,7 +418,19 @@ contract Connector is ConnectorStorage, IConnector {
         if (_proofType == Enums.ProofType.RISC0) {
             return sha256(_publicInputs);
         }
-        return keccak256(_publicInputs);
+        return _keccak(_publicInputs);
+    }
+
+    function _requireStatus(bytes32 _txId, Enums.TxStatus _expected) internal view {
+        if (txStatus[_txId] != _expected) {
+            revert Errors.InvalidStateTransition(uint8(txStatus[_txId]), uint8(_expected));
+        }
+    }
+
+    function _keccak(bytes memory _input) internal pure returns (bytes32 result) {
+        assembly ("memory-safe") {
+            result := keccak256(add(_input, 0x20), mload(_input))
+        }
     }
 
     function _setStatus(bytes32 _txId, Enums.TxStatus _s) internal {
