@@ -4,6 +4,8 @@ pragma solidity ^0.8.28;
 import {Enums} from "../libs/Enums.sol";
 
 interface IConnector {
+    function setVerifier(Enums.ProofType proofType, address verifier) external;
+
     /*//////////////////////////////////////////////////////////////
                             ORIGIN FUNCTIONS
     //////////////////////////////////////////////////////////////*/
@@ -27,8 +29,8 @@ interface IConnector {
     /*//////////////////////////////////////////////////////////////
                             DESTINATION FUNCTIONS
     //////////////////////////////////////////////////////////////*/
-
-    function submitDepositProof(
+    
+    function submitLockProof(
         Enums.ProofType proofType,
         bytes calldata proofPayload,
         bytes32 txId,
@@ -38,7 +40,9 @@ interface IConnector {
         address from,
         address to,
         address srcChainConnector,
-        uint64 originAckDeadline
+        uint64 originAckDeadline,
+        uint256 nonce,
+        uint256 sourceChainId
     ) external;
 
     function submitAckProof(Enums.ProofType proofType, bytes calldata proofPayload, bytes32 txId) external;

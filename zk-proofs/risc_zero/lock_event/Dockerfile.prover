@@ -1,0 +1,22 @@
+FROM rust:bookworm
+
+ARG GITHUB_TOKEN
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    ca-certificates \
+    clang \
+    cmake \
+    curl \
+    git \
+    pkg-config \
+    libssl-dev \
+    xz-utils \
+    && rm -rf /var/lib/apt/lists/*
+
+ENV PATH="/root/.risc0/bin:${PATH}"
+ENV GITHUB_TOKEN="${GITHUB_TOKEN}"
+
+RUN curl -L https://risczero.com/install | bash
+RUN rzup install rust && (rzup install r0vm || echo "Skipping r0vm install (optional)")
+
+WORKDIR /workspace/zk-proofs/risc_zero
