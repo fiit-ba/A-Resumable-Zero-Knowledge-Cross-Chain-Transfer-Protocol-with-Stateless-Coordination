@@ -1,8 +1,6 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.28;
 
-import {IRiscZeroVerifier} from "risc0-ethereum/IRiscZeroVerifier.sol";
-import {ISnarkVerifier} from "../zk-proof/ISnarkJsVerifier.sol";
 import {Enums} from "../libs/Enums.sol";
 
 /// @title ConnectorStorage
@@ -25,6 +23,7 @@ abstract contract ConnectorStorage {
         uint64 mintedAt;
         uint64 ackDeadline;
         Enums.TxStatus status;
+        uint256 nonce;
     }
 
     /*//////////////////////////////////////////////////////////////
@@ -40,7 +39,9 @@ abstract contract ConnectorStorage {
         address currencyTo,
         address srcChainConnector,
         address dstChainConnector,
-        uint64 timestamp
+        uint64 timestamp,
+        uint256 nonce,
+        uint256 sourceChainId
     );
 
     event AckReady(
@@ -77,7 +78,7 @@ abstract contract ConnectorStorage {
 
     // DESTINATION
 
-    event AckAccepted(
+    event FundsReleased(
         bytes32 indexed txId,
         uint256 amount,
         address currencyFrom,
@@ -93,7 +94,7 @@ abstract contract ConnectorStorage {
         bytes proofPayload
     );
 
-    event FundsReleased(
+    event AckAccepted(
         bytes32 indexed txId,
         uint256 amount,
         address currencyFrom,
@@ -145,15 +146,13 @@ abstract contract ConnectorStorage {
         bytes proofPayload
     );
 
+    event VerifierUpdated(Enums.ProofType indexed proofType, address verifier);
+
     /*//////////////////////////////////////////////////////////////
                             ZK
     //////////////////////////////////////////////////////////////*/
 
-    IRiscZeroVerifier public risc0;
-
-    ISnarkVerifier public snark;
-
-    bytes32 public imageIdRiscZero;
+    mapping(uint8 => address) internal _verifiers;
 
     mapping(bytes32 => mapping(bytes32 => bool)) public txProofUsed;
 

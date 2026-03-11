@@ -21,6 +21,7 @@ library Errors {
     error InvalidProofType();
     error ProofAlreadyProcessed(bytes32 proofHash);
     error CommitmentMismatch(bytes32 got, bytes32 expected);
+    error VerifierNotRegistered(uint8 proofType);
 
     /*//////////////////////////////////////////////////////////////
                            STATE MACHINE
@@ -30,6 +31,7 @@ library Errors {
     error TxAlreadyExists(bytes32 txId);
     error TxNotFound(bytes32 txId);
     error NotTxOriginator(bytes32 txId, address caller, address originator);
+    error NotAdmin();
 
     /*//////////////////////////////////////////////////////////////
                         DEADLINES
