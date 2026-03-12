@@ -20,7 +20,16 @@ else
     exit 1
 fi
 
-RZ_DIR="$ROOT_DIR/zk-proofs/risc_zero/lock_event"
+LOCK_RZ_DIR="$ROOT_DIR/zk-proofs/risc_zero/lock_event"
+MINT_RZ_DIR="$ROOT_DIR/zk-proofs/risc_zero/mint_event"
+if [[ ! -d "$LOCK_RZ_DIR" ]]; then
+    echo "Missing lock proof workspace: $LOCK_RZ_DIR" >&2
+    exit 1
+fi
+if [[ ! -d "$MINT_RZ_DIR" ]]; then
+    echo "Missing mint proof workspace: $MINT_RZ_DIR" >&2
+    exit 1
+fi
 
 SOURCE_RPC="${SOURCE_RPC:-http://127.0.0.1:8545}"
 DEST_RPC="${DEST_RPC:-http://127.0.0.1:8546}"
@@ -34,15 +43,16 @@ EXECUTION_BLOCK="${EXECUTION_BLOCK:-latest}"
 TOKEN_NAME="${TOKEN_NAME:-Test USD}"
 TOKEN_SYMBOL="${TOKEN_SYMBOL:-TUSD}"
 LOCK_PROOF_GAS_LIMIT="${LOCK_PROOF_GAS_LIMIT:-12000000}"
+MINT_PROOF_GAS_LIMIT="${MINT_PROOF_GAS_LIMIT:-12000000}"
 RISC0_PROVER_MODE="${RISC0_PROVER_MODE:-local}"
 USE_DOCKER_PROVER="${USE_DOCKER_PROVER:-0}"
-DOCKER_PROVER_SCRIPT="${DOCKER_PROVER_SCRIPT:-$RZ_DIR/scripts/prove-lock-docker.sh}"
+DOCKER_LOCK_PROVER_SCRIPT="${DOCKER_LOCK_PROVER_SCRIPT:-${DOCKER_PROVER_SCRIPT:-$LOCK_RZ_DIR/scripts/prove-lock-docker.sh}}"
+DOCKER_MINT_PROVER_SCRIPT="${DOCKER_MINT_PROVER_SCRIPT:-$MINT_RZ_DIR/scripts/prove-mint-docker.sh}"
 RISC0_GUEST_USE_DOCKER="${RISC0_GUEST_USE_DOCKER:-1}"
 
 # RISC Zero Groth16 verifier params from risc0-ethereum ControlID.sol.
 CONTROL_ROOT="0xa54dc85ac99f851c92d7c96d7318af41dbe7c0194edfcc37eb4d422a998c1f56"
 BN254_CONTROL_ID="0x04446e66d300eb7fb45c9726bb53c793dda407a62e9601618bb43c5c14657ac0"
-SOURCE_DUMMY_IMAGE_ID="0x0000000000000000000000000000000000000000000000000000000000000001"
 
 require_cmd() {
     if ! command -v "$1" >/dev/null 2>&1; then
@@ -155,29 +165,49 @@ echo "Building contracts and zk host binaries..."
     forge build --skip test >/dev/null
 )
 if [[ "$USE_DOCKER_PROVER" == "1" ]]; then
-    if [[ ! -f "$DOCKER_PROVER_SCRIPT" ]]; then
-        echo "Docker prover script not found: $DOCKER_PROVER_SCRIPT" >&2
+    if [[ ! -f "$DOCKER_LOCK_PROVER_SCRIPT" ]]; then
+        echo "Lock docker prover script not found: $DOCKER_LOCK_PROVER_SCRIPT" >&2
         exit 1
     fi
-    IMAGE_ID="$(
+    if [[ ! -f "$DOCKER_MINT_PROVER_SCRIPT" ]]; then
+        echo "Mint docker prover script not found: $DOCKER_MINT_PROVER_SCRIPT" >&2
+        exit 1
+    fi
+    LOCK_IMAGE_ID="$(
         cd "$ROOT_DIR"
         PROVER_ACTION=print-image-id \
-        bash "$DOCKER_PROVER_SCRIPT"
+        bash "$DOCKER_LOCK_PROVER_SCRIPT"
+    )"
+    MINT_IMAGE_ID="$(
+        cd "$ROOT_DIR"
+        PROVER_ACTION=print-image-id \
+        bash "$DOCKER_MINT_PROVER_SCRIPT"
     )"
 else
     (
-        cd "$RZ_DIR"
+        cd "$LOCK_RZ_DIR"
         RISC0_GUEST_USE_DOCKER="$RISC0_GUEST_USE_DOCKER" \
         cargo build -p lock-proof-host --bin print_image_id >/dev/null
     )
+    (
+        cd "$MINT_RZ_DIR"
+        RISC0_GUEST_USE_DOCKER="$RISC0_GUEST_USE_DOCKER" \
+        cargo build -p mint-proof-host --bin print_image_id >/dev/null
+    )
 
-    IMAGE_ID="$(
-        cd "$RZ_DIR"
+    LOCK_IMAGE_ID="$(
+        cd "$LOCK_RZ_DIR"
         RISC0_GUEST_USE_DOCKER="$RISC0_GUEST_USE_DOCKER" \
         cargo run -q -p lock-proof-host --bin print_image_id
     )"
+    MINT_IMAGE_ID="$(
+        cd "$MINT_RZ_DIR"
+        RISC0_GUEST_USE_DOCKER="$RISC0_GUEST_USE_DOCKER" \
+        cargo run -q -p mint-proof-host --bin print_image_id
+    )"
 fi
-echo "Guest image ID: $IMAGE_ID"
+echo "Lock guest image ID: $LOCK_IMAGE_ID"
+echo "Mint guest image ID: $MINT_IMAGE_ID"
 
 echo "Deploying destination chain contracts..."
 DEST_RISC0_VERIFIER="$(
@@ -190,7 +220,7 @@ DEST_RISC0_ADAPTER="$(
     deploy_contract \
         "$DEST_RPC" \
         "src/zk-proof/adapters/RiscZeroAdapter.sol:RiscZeroAdapter" \
-        --constructor-args "$DEST_RISC0_VERIFIER" "$IMAGE_ID"
+        --constructor-args "$DEST_RISC0_VERIFIER" "$LOCK_IMAGE_ID"
 )"
 DEST_MOCK_SNARK_VERIFIER="$(
     deploy_contract \
@@ -211,10 +241,11 @@ DEST_CONNECTOR="$(
 )"
 
 echo "Deploying source chain contracts..."
-SOURCE_MOCK_RISC0_VERIFIER="$(
+SOURCE_RISC0_VERIFIER="$(
     deploy_contract \
         "$SOURCE_RPC" \
-        "script/Connector.s.sol:MockRiscZeroVerifier"
+        "lib/risc0-ethereum/contracts/src/groth16/RiscZeroGroth16Verifier.sol:RiscZeroGroth16Verifier" \
+        --constructor-args "$CONTROL_ROOT" "$BN254_CONTROL_ID"
 )"
 SOURCE_MOCK_SNARK_VERIFIER="$(
     deploy_contract \
@@ -225,7 +256,7 @@ SOURCE_RISC0_ADAPTER="$(
     deploy_contract \
         "$SOURCE_RPC" \
         "src/zk-proof/adapters/RiscZeroAdapter.sol:RiscZeroAdapter" \
-        --constructor-args "$SOURCE_MOCK_RISC0_VERIFIER" "$SOURCE_DUMMY_IMAGE_ID"
+        --constructor-args "$SOURCE_RISC0_VERIFIER" "$MINT_IMAGE_ID"
 )"
 SOURCE_SNARK_ADAPTER="$(
     deploy_contract \
@@ -287,9 +318,9 @@ TX_ID="$(
 )"
 echo "Computed txId: $TX_ID"
 
-echo "Generating RISC Zero proof..."
+echo "Generating RISC Zero lock proof..."
 echo "Proof generation can take several minutes on first run."
-PROOF_LOG="$(mktemp)"
+LOCK_PROOF_LOG="$(mktemp)"
 set +e
 if [[ "$USE_DOCKER_PROVER" == "1" ]]; then
     (
@@ -302,12 +333,12 @@ if [[ "$USE_DOCKER_PROVER" == "1" ]]; then
         TX_ID="$TX_ID" \
         SOURCE_CHAIN_ID="$SOURCE_CHAIN_ID" \
         DEST_CHAIN_ID="$DEST_CHAIN_ID" \
-        bash "$DOCKER_PROVER_SCRIPT"
-    ) 2>&1 | tee "$PROOF_LOG"
-    PROOF_STATUS=${PIPESTATUS[0]}
+        bash "$DOCKER_LOCK_PROVER_SCRIPT"
+    ) 2>&1 | tee "$LOCK_PROOF_LOG"
+    LOCK_PROOF_STATUS=${PIPESTATUS[0]}
 else
     (
-        cd "$RZ_DIR"
+        cd "$LOCK_RZ_DIR"
         RISC0_GUEST_USE_DOCKER="$RISC0_GUEST_USE_DOCKER" \
         RISC0_PROVER="$RISC0_PROVER_MODE" \
         RPC_URL="$SOURCE_RPC" \
@@ -317,37 +348,37 @@ else
             --tx-id "$TX_ID" \
             --source-chain-id "$SOURCE_CHAIN_ID" \
             --destination-chain-id "$DEST_CHAIN_ID"
-    ) 2>&1 | tee "$PROOF_LOG"
-    PROOF_STATUS=${PIPESTATUS[0]}
+    ) 2>&1 | tee "$LOCK_PROOF_LOG"
+    LOCK_PROOF_STATUS=${PIPESTATUS[0]}
 fi
 set -e
-if [[ "$PROOF_STATUS" -ne 0 ]]; then
-    echo "Proof generation failed." >&2
-    rm -f "$PROOF_LOG"
-    exit "$PROOF_STATUS"
+if [[ "$LOCK_PROOF_STATUS" -ne 0 ]]; then
+    echo "Lock proof generation failed." >&2
+    rm -f "$LOCK_PROOF_LOG"
+    exit "$LOCK_PROOF_STATUS"
 fi
-PROOF_OUTPUT="$(cat "$PROOF_LOG")"
-rm -f "$PROOF_LOG"
+LOCK_PROOF_OUTPUT="$(cat "$LOCK_PROOF_LOG")"
+rm -f "$LOCK_PROOF_LOG"
 
-PROOF_PAYLOAD="$(extract_proof_value "$PROOF_OUTPUT" "proofPayload")"
-PROOF_TX_ID="$(extract_proof_value "$PROOF_OUTPUT" "txId")"
-PROOF_AMOUNT="$(extract_proof_value "$PROOF_OUTPUT" "amount")"
-PROOF_SENDER="$(extract_proof_value "$PROOF_OUTPUT" "sender")"
-PROOF_RECEIVER="$(extract_proof_value "$PROOF_OUTPUT" "receiver")"
-PROOF_CURRENCY_FROM="$(extract_proof_value "$PROOF_OUTPUT" "currencyFrom")"
-PROOF_CURRENCY_TO="$(extract_proof_value "$PROOF_OUTPUT" "currencyTo")"
-PROOF_SRC_CONNECTOR="$(extract_proof_value "$PROOF_OUTPUT" "srcChainConnector")"
-PROOF_ORIGIN_ACK_DEADLINE="$(extract_proof_value "$PROOF_OUTPUT" "originAckDeadline")"
-PROOF_NONCE="$(extract_proof_value "$PROOF_OUTPUT" "nonce")"
-PROOF_SOURCE_CHAIN_ID="$(extract_proof_value "$PROOF_OUTPUT" "sourceChainId")"
-PROOF_DEST_CHAIN_ID="$(extract_proof_value "$PROOF_OUTPUT" "destChainId")"
+LOCK_PROOF_PAYLOAD="$(extract_proof_value "$LOCK_PROOF_OUTPUT" "proofPayload")"
+LOCK_PROOF_TX_ID="$(extract_proof_value "$LOCK_PROOF_OUTPUT" "txId")"
+LOCK_PROOF_AMOUNT="$(extract_proof_value "$LOCK_PROOF_OUTPUT" "amount")"
+LOCK_PROOF_SENDER="$(extract_proof_value "$LOCK_PROOF_OUTPUT" "sender")"
+LOCK_PROOF_RECEIVER="$(extract_proof_value "$LOCK_PROOF_OUTPUT" "receiver")"
+LOCK_PROOF_CURRENCY_FROM="$(extract_proof_value "$LOCK_PROOF_OUTPUT" "currencyFrom")"
+LOCK_PROOF_CURRENCY_TO="$(extract_proof_value "$LOCK_PROOF_OUTPUT" "currencyTo")"
+LOCK_PROOF_SRC_CONNECTOR="$(extract_proof_value "$LOCK_PROOF_OUTPUT" "srcChainConnector")"
+LOCK_PROOF_ORIGIN_ACK_DEADLINE="$(extract_proof_value "$LOCK_PROOF_OUTPUT" "originAckDeadline")"
+LOCK_PROOF_NONCE="$(extract_proof_value "$LOCK_PROOF_OUTPUT" "nonce")"
+LOCK_PROOF_SOURCE_CHAIN_ID="$(extract_proof_value "$LOCK_PROOF_OUTPUT" "sourceChainId")"
+LOCK_PROOF_DEST_CHAIN_ID="$(extract_proof_value "$LOCK_PROOF_OUTPUT" "destChainId")"
 
-if [[ "$(to_lower "$PROOF_TX_ID")" != "$(to_lower "$TX_ID")" ]]; then
-    echo "Proof txId mismatch: expected $TX_ID, got $PROOF_TX_ID" >&2
+if [[ "$(to_lower "$LOCK_PROOF_TX_ID")" != "$(to_lower "$TX_ID")" ]]; then
+    echo "Lock proof txId mismatch: expected $TX_ID, got $LOCK_PROOF_TX_ID" >&2
     exit 1
 fi
-if [[ "$PROOF_DEST_CHAIN_ID" != "$DEST_CHAIN_ID" ]]; then
-    echo "Proof destination chain id mismatch: expected $DEST_CHAIN_ID, got $PROOF_DEST_CHAIN_ID" >&2
+if [[ "$LOCK_PROOF_DEST_CHAIN_ID" != "$DEST_CHAIN_ID" ]]; then
+    echo "Lock proof destination chain id mismatch: expected $DEST_CHAIN_ID, got $LOCK_PROOF_DEST_CHAIN_ID" >&2
     exit 1
 fi
 
@@ -356,17 +387,17 @@ cast send \
     "$DEST_CONNECTOR" \
     "submitLockProof(uint8,bytes,bytes32,uint256,address,address,address,address,address,uint64,uint256,uint256)" \
     0 \
-    "$PROOF_PAYLOAD" \
+    "$LOCK_PROOF_PAYLOAD" \
     "$TX_ID" \
-    "$PROOF_AMOUNT" \
-    "$PROOF_CURRENCY_FROM" \
-    "$PROOF_CURRENCY_TO" \
-    "$PROOF_SENDER" \
-    "$PROOF_RECEIVER" \
-    "$PROOF_SRC_CONNECTOR" \
-    "$PROOF_ORIGIN_ACK_DEADLINE" \
-    "$PROOF_NONCE" \
-    "$PROOF_SOURCE_CHAIN_ID" \
+    "$LOCK_PROOF_AMOUNT" \
+    "$LOCK_PROOF_CURRENCY_FROM" \
+    "$LOCK_PROOF_CURRENCY_TO" \
+    "$LOCK_PROOF_SENDER" \
+    "$LOCK_PROOF_RECEIVER" \
+    "$LOCK_PROOF_SRC_CONNECTOR" \
+    "$LOCK_PROOF_ORIGIN_ACK_DEADLINE" \
+    "$LOCK_PROOF_NONCE" \
+    "$LOCK_PROOF_SOURCE_CHAIN_ID" \
     --gas-limit "$LOCK_PROOF_GAS_LIMIT" \
     --rpc-url "$DEST_RPC" \
     --private-key "$PRIVATE_KEY" >/dev/null
@@ -394,11 +425,99 @@ if [[ "$TXSTATUS_RC" -ne 0 ]]; then
 fi
 rm -f /tmp/cast_txstatus_err.log
 
+echo "Generating RISC Zero mint proof from destination FundsReleased..."
+MINT_PROOF_LOG="$(mktemp)"
+set +e
+if [[ "$USE_DOCKER_PROVER" == "1" ]]; then
+    (
+        cd "$ROOT_DIR"
+        PROVER_ACTION=prove \
+        RISC0_PROVER_MODE="$RISC0_PROVER_MODE" \
+        RPC_URL="$DEST_RPC" \
+        EXECUTION_BLOCK="$EXECUTION_BLOCK" \
+        CONNECTOR="$DEST_CONNECTOR" \
+        TX_ID="$TX_ID" \
+        DESTINATION_CHAIN_ID="$DEST_CHAIN_ID" \
+        bash "$DOCKER_MINT_PROVER_SCRIPT"
+    ) 2>&1 | tee "$MINT_PROOF_LOG"
+    MINT_PROOF_STATUS=${PIPESTATUS[0]}
+else
+    (
+        cd "$MINT_RZ_DIR"
+        RISC0_GUEST_USE_DOCKER="$RISC0_GUEST_USE_DOCKER" \
+        RISC0_PROVER="$RISC0_PROVER_MODE" \
+        RPC_URL="$DEST_RPC" \
+        EXECUTION_BLOCK="$EXECUTION_BLOCK" \
+        cargo run -p mint-proof-host --bin mint-proof-host -- \
+            --connector "$DEST_CONNECTOR" \
+            --tx-id "$TX_ID" \
+            --destination-chain-id "$DEST_CHAIN_ID"
+    ) 2>&1 | tee "$MINT_PROOF_LOG"
+    MINT_PROOF_STATUS=${PIPESTATUS[0]}
+fi
+set -e
+if [[ "$MINT_PROOF_STATUS" -ne 0 ]]; then
+    echo "Mint proof generation failed." >&2
+    rm -f "$MINT_PROOF_LOG"
+    exit "$MINT_PROOF_STATUS"
+fi
+MINT_PROOF_OUTPUT="$(cat "$MINT_PROOF_LOG")"
+rm -f "$MINT_PROOF_LOG"
+
+MINT_PROOF_PAYLOAD="$(extract_proof_value "$MINT_PROOF_OUTPUT" "proofPayload")"
+MINT_PROOF_TX_ID="$(extract_proof_value "$MINT_PROOF_OUTPUT" "txId")"
+MINT_PROOF_DST_CONNECTOR="$(extract_proof_value "$MINT_PROOF_OUTPUT" "dstChainConnector")"
+MINT_PROOF_AMOUNT="$(extract_proof_value "$MINT_PROOF_OUTPUT" "amount")"
+MINT_PROOF_RECEIVER="$(extract_proof_value "$MINT_PROOF_OUTPUT" "receiver")"
+
+if [[ "$(to_lower "$MINT_PROOF_TX_ID")" != "$(to_lower "$TX_ID")" ]]; then
+    echo "Mint proof txId mismatch: expected $TX_ID, got $MINT_PROOF_TX_ID" >&2
+    exit 1
+fi
+if [[ "$(to_lower "$MINT_PROOF_DST_CONNECTOR")" != "$(to_lower "$DEST_CONNECTOR")" ]]; then
+    echo "Mint proof dst connector mismatch: expected $DEST_CONNECTOR, got $MINT_PROOF_DST_CONNECTOR" >&2
+    exit 1
+fi
+if [[ "$MINT_PROOF_AMOUNT" != "$AMOUNT_WEI" ]]; then
+    echo "Mint proof amount mismatch: expected $AMOUNT_WEI, got $MINT_PROOF_AMOUNT" >&2
+    exit 1
+fi
+if [[ "$(to_lower "$MINT_PROOF_RECEIVER")" != "$(to_lower "$DEPLOYER_ADDRESS")" ]]; then
+    echo "Mint proof receiver mismatch: expected $DEPLOYER_ADDRESS, got $MINT_PROOF_RECEIVER" >&2
+    exit 1
+fi
+
+echo "Submitting mint proof on source chain..."
+cast send \
+    "$SOURCE_CONNECTOR" \
+    "submitMintProof(uint8,bytes,bytes32)" \
+    0 \
+    "$MINT_PROOF_PAYLOAD" \
+    "$TX_ID" \
+    --gas-limit "$MINT_PROOF_GAS_LIMIT" \
+    --rpc-url "$SOURCE_RPC" \
+    --private-key "$PRIVATE_KEY" >/dev/null
+
+SOURCE_STATUS="$(cast call "$SOURCE_CONNECTOR" "txStatus(bytes32)(uint8)" "$TX_ID" --rpc-url "$SOURCE_RPC")"
+if [[ "$DEST_STATUS" != "4" && "$DEST_STATUS" != unknown* ]]; then
+    echo "Destination tx status mismatch: expected 4 (MINTED_IN_HOLDING), got $DEST_STATUS" >&2
+    exit 1
+fi
+if [[ "$SOURCE_STATUS" != "2" ]]; then
+    echo "Source tx status mismatch: expected 2 (MINT_PROOF_ACCEPTED), got $SOURCE_STATUS" >&2
+    exit 1
+fi
+
 echo
 echo "Done."
-echo "sourceConnector: $SOURCE_CONNECTOR"
-echo "destConnector:   $DEST_CONNECTOR"
-echo "sourceToken:     $SOURCE_TOKEN"
-echo "imageId:         $IMAGE_ID"
-echo "proofPayload:    $PROOF_PAYLOAD"
-echo "destination txStatus(txId): $DEST_STATUS (expected 4 for MINTED_IN_HOLDING)"
+echo "sourceConnector:        $SOURCE_CONNECTOR"
+echo "destConnector:          $DEST_CONNECTOR"
+echo "sourceToken:            $SOURCE_TOKEN"
+echo "lockImageId:            $LOCK_IMAGE_ID"
+echo "mintImageId:            $MINT_IMAGE_ID"
+echo "lockProofPayload:       $LOCK_PROOF_PAYLOAD"
+echo "mintProofPayload:       $MINT_PROOF_PAYLOAD"
+echo "mintProofAmount:        $MINT_PROOF_AMOUNT"
+echo "mintProofReceiver:      $MINT_PROOF_RECEIVER"
+echo "destination txStatus:   $DEST_STATUS (expected 4 for MINTED_IN_HOLDING)"
+echo "source txStatus:        $SOURCE_STATUS (expected 2 for MINT_PROOF_ACCEPTED)"

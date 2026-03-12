@@ -6,10 +6,10 @@ RZ_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 ROOT_DIR="$(cd "$RZ_DIR/../.." && pwd)"
 
 PROVER_ACTION="${PROVER_ACTION:-prove}"
-DOCKER_IMAGE="${DOCKER_IMAGE:-risc0-lock-proof-prover:latest}"
+DOCKER_IMAGE="${DOCKER_IMAGE:-risc0-mint-proof-prover:latest}"
 DOCKER_PLATFORM="${DOCKER_PLATFORM:-linux/amd64}"
 DOCKER_REBUILD="${DOCKER_REBUILD:-0}"
-DOCKER_CACHE_VOLUME="${DOCKER_CACHE_VOLUME:-risc0-lock-proof-cache}"
+DOCKER_CACHE_VOLUME="${DOCKER_CACHE_VOLUME:-risc0-mint-proof-cache}"
 DOCKERFILE_PATH="${DOCKERFILE_PATH:-$RZ_DIR/Dockerfile.prover}"
 
 require_cmd() {
@@ -72,12 +72,10 @@ case "$PROVER_ACTION" in
         : "${RPC_URL:?RPC_URL is required for PROVER_ACTION=prove}"
         : "${CONNECTOR:?CONNECTOR is required for PROVER_ACTION=prove}"
         : "${TX_ID:?TX_ID is required for PROVER_ACTION=prove}"
-        : "${SOURCE_CHAIN_ID:?SOURCE_CHAIN_ID is required for PROVER_ACTION=prove}"
-
         if [[ -n "${DEST_CHAIN_ID:-}" ]]; then
-            DEST_ID="$DEST_CHAIN_ID"
+            DESTINATION_ID="$DEST_CHAIN_ID"
         elif [[ -n "${DESTINATION_CHAIN_ID:-}" ]]; then
-            DEST_ID="$DESTINATION_CHAIN_ID"
+            DESTINATION_ID="$DESTINATION_CHAIN_ID"
         else
             echo "DEST_CHAIN_ID or DESTINATION_CHAIN_ID is required for PROVER_ACTION=prove" >&2
             exit 1
@@ -120,7 +118,7 @@ if [[ "$PROVER_ACTION" == "print-image-id" ]]; then
     echo "Running image-id helper in Docker..." >&2
     docker "${DOCKER_RUN_ARGS[@]}" \
         "$DOCKER_IMAGE" \
-        cargo run -q --manifest-path /workspace/risc_zero/lock_event/Cargo.toml -p lock-proof-host --bin print_image_id
+        cargo run -q --manifest-path /workspace/risc_zero/mint_event/Cargo.toml -p mint-proof-host --bin print_image_id
 else
     echo "Running proof generation in Docker..." >&2
     docker "${DOCKER_RUN_ARGS[@]}" \
@@ -128,9 +126,8 @@ else
         -e "RPC_URL=$DOCKER_RPC_URL" \
         -e "EXECUTION_BLOCK=$EXECUTION_BLOCK" \
         "$DOCKER_IMAGE" \
-        cargo run --manifest-path /workspace/risc_zero/lock_event/Cargo.toml -p lock-proof-host --bin lock-proof-host -- \
+        cargo run --manifest-path /workspace/risc_zero/mint_event/Cargo.toml -p mint-proof-host --bin mint-proof-host -- \
             --connector "$CONNECTOR" \
             --tx-id "$TX_ID" \
-            --source-chain-id "$SOURCE_CHAIN_ID" \
-            --destination-chain-id "$DEST_ID"
+            --destination-chain-id "$DESTINATION_ID"
 fi
