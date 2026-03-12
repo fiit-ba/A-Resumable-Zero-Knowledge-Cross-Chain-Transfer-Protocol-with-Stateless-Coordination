@@ -60,9 +60,11 @@ USE_DOCKER_PROVER=1 bash scripts/e2e-anvil-hardhat.sh
 
 This script performs:
 - destination deploy (real `RiscZeroGroth16Verifier` + `RiscZeroAdapter` + `Connector`)
-- source deploy (`Connector` + mock token), mint, approve, `depositAndLock`
-- proof generation via `zk-proofs/risc_zero/host`
+- source deploy (real `RiscZeroGroth16Verifier` + `RiscZeroAdapter` + `Connector` + mock token), mint, approve, `depositAndLock`
+- lock proof generation via `zk-proofs/risc_zero/lock_event`
 - `submitLockProof` on destination
+- mint proof generation via `zk-proofs/risc_zero/mint_event`
+- `submitMintProof` on source
 
 ## Deployment Scripts
 

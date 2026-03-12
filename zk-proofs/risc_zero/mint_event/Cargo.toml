@@ -3,8 +3,8 @@ members = ["core", "methods", "host"]
 resolver = "2"
 
 [workspace.dependencies]
-lock-proof-core = { path = "core" }
-lock-proof-methods = { path = "methods" }
+mint-proof-core = { path = "core" }
+mint-proof-methods = { path = "methods" }
 
 risc0-build = { version = "3.0" }
 risc0-zkvm = { version = "3.0" }
