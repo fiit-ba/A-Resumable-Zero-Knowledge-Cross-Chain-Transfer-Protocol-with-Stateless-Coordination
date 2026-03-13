@@ -327,6 +327,7 @@ contract Connector is ConnectorStorage, IConnector, ReentrancyGuard {
             revert Errors.CommitmentMismatch(commitment, expected);
         }
 
+        IERC20(tx_.currencyTo).safeTransfer(tx_.to, tx_.amount);
         _cleanupTx(_txId);
 
         emit AckAccepted(

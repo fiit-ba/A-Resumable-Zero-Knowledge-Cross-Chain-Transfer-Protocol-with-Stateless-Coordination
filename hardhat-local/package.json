@@ -4,6 +4,7 @@
   "description": "",
   "main": "index.js",
   "scripts": {
+    "start": "hardhat node --network localDest --port 8546",
     "test": "echo \"Error: no test specified\" && exit 1"
   },
   "keywords": [],
