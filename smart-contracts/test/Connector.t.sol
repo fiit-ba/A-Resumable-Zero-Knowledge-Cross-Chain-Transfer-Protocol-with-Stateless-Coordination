@@ -888,6 +888,7 @@ contract ConnectorTest is Test {
         bytes32 txId = bytes32(uint256(0xABC));
         uint64 deadline = uint64(block.timestamp) + ACK_WINDOW;
         _doLockProof(txId, deadline);
+        dstTokenMock.mint(address(connector), AMOUNT);
 
         bytes memory pub = _ackProofInputs(txId);
         bytes memory proof = _buildSnarkProof(pub);
@@ -916,12 +917,15 @@ contract ConnectorTest is Test {
         connector.submitAckProof(Enums.ProofType.SNARKJS, proof, txId);
 
         assertEq(uint8(connector.txStatus(txId)), uint8(Enums.TxStatus.NONE));
+        assertEq(dstTokenMock.balanceOf(BOB), AMOUNT);
+        assertEq(dstTokenMock.balanceOf(address(connector)), 0);
     }
 
     function test_submitAckProof_Risc0_HappyPath() public {
         bytes32 txId = bytes32(uint256(0xABC));
         uint64 deadline = uint64(block.timestamp) + ACK_WINDOW;
         _doLockProof(txId, deadline);
+        dstTokenMock.mint(address(connector), AMOUNT);
 
         bytes memory proof = _buildRisc0Proof(_ackProofInputs(txId));
         connector.submitAckProof(Enums.ProofType.RISC0, proof, txId);
@@ -951,9 +955,18 @@ contract ConnectorTest is Test {
         connector.submitAckProof(Enums.ProofType.SNARKJS, _buildSnarkProofBadCommitment(), txId);
     }
 
+    function test_submitAckProof_RevertsWhen_InsufficientDestinationLiquidity() public {
+        bytes32 txId = bytes32(uint256(0xABC));
+        _doLockProof(txId, uint64(block.timestamp) + ACK_WINDOW);
+
+        vm.expectRevert();
+        connector.submitAckProof(Enums.ProofType.SNARKJS, _buildSnarkProof(_ackProofInputs(txId)), txId);
+    }
+
     function test_submitAckProof_CleansTxData() public {
         bytes32 txId = bytes32(uint256(0xABC));
         _doLockProof(txId, uint64(block.timestamp) + ACK_WINDOW);
+        dstTokenMock.mint(address(connector), AMOUNT);
 
         connector.submitAckProof(Enums.ProofType.SNARKJS, _buildSnarkProof(_ackProofInputs(txId)), txId);
 
@@ -965,6 +978,7 @@ contract ConnectorTest is Test {
     function test_submitAckProof_CleansProofTracking() public {
         bytes32 txId = bytes32(uint256(0xABC));
         _doLockProof(txId, uint64(block.timestamp) + ACK_WINDOW);
+        dstTokenMock.mint(address(connector), AMOUNT);
 
         bytes memory proof = _buildSnarkProof(_ackProofInputs(txId));
         bytes32 lockProofHash = keccak256(
@@ -1160,6 +1174,7 @@ contract ConnectorTest is Test {
         bytes32 txId = bytes32(uint256(0xF100));
         uint64 deadline = uint64(block.timestamp) + ACK_WINDOW;
         _doLockProof(txId, deadline);
+        dstTokenMock.mint(address(connector), AMOUNT);
         assertEq(uint8(connector.txStatus(txId)), uint8(Enums.TxStatus.MINTED_IN_HOLDING));
 
         connector.submitAckProof(Enums.ProofType.SNARKJS, _buildSnarkProof(_ackProofInputs(txId)), txId);
@@ -1248,6 +1263,7 @@ contract ConnectorTest is Test {
 
         // Initially works with SnarkJS adapter
         _doLockProof(txId, deadline);
+        dstTokenMock.mint(address(connector), AMOUNT);
         assertEq(uint8(connector.txStatus(txId)), uint8(Enums.TxStatus.MINTED_IN_HOLDING));
 
         // Admin swaps SNARKJS verifier to a new adapter (same underlying for test)

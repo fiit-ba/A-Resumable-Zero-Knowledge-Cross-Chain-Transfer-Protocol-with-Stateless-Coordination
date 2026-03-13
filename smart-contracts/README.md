@@ -65,6 +65,8 @@ This script performs:
 - `submitLockProof` on destination
 - mint proof generation via `zk-proofs/risc_zero/mint_event`
 - `submitMintProof` on source
+- ack proof generation via `zk-proofs/risc_zero/ack_event`
+- `submitAckProof` on destination
 
 ## Deployment Scripts
 

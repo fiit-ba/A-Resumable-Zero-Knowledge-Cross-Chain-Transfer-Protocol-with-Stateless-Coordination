@@ -22,12 +22,17 @@ fi
 
 LOCK_RZ_DIR="$ROOT_DIR/zk-proofs/risc_zero/lock_event"
 MINT_RZ_DIR="$ROOT_DIR/zk-proofs/risc_zero/mint_event"
+ACK_RZ_DIR="$ROOT_DIR/zk-proofs/risc_zero/ack_event"
 if [[ ! -d "$LOCK_RZ_DIR" ]]; then
     echo "Missing lock proof workspace: $LOCK_RZ_DIR" >&2
     exit 1
 fi
 if [[ ! -d "$MINT_RZ_DIR" ]]; then
     echo "Missing mint proof workspace: $MINT_RZ_DIR" >&2
+    exit 1
+fi
+if [[ ! -d "$ACK_RZ_DIR" ]]; then
+    echo "Missing ack proof workspace: $ACK_RZ_DIR" >&2
     exit 1
 fi
 
@@ -42,12 +47,18 @@ AMOUNT_WEI="${AMOUNT_WEI:-1000000000000000000}" # 1 token with 18 decimals
 EXECUTION_BLOCK="${EXECUTION_BLOCK:-latest}"
 TOKEN_NAME="${TOKEN_NAME:-Test USD}"
 TOKEN_SYMBOL="${TOKEN_SYMBOL:-TUSD}"
+DEST_TOKEN_NAME="${DEST_TOKEN_NAME:-Wrapped Test USD}"
+DEST_TOKEN_SYMBOL="${DEST_TOKEN_SYMBOL:-wTUSD}"
 LOCK_PROOF_GAS_LIMIT="${LOCK_PROOF_GAS_LIMIT:-12000000}"
 MINT_PROOF_GAS_LIMIT="${MINT_PROOF_GAS_LIMIT:-12000000}"
+ACK_PROOF_GAS_LIMIT="${ACK_PROOF_GAS_LIMIT:-12000000}"
+SET_VERIFIER_GAS_LIMIT="${SET_VERIFIER_GAS_LIMIT:-500000}"
+DEST_TOKEN_MINT_GAS_LIMIT="${DEST_TOKEN_MINT_GAS_LIMIT:-500000}"
 RISC0_PROVER_MODE="${RISC0_PROVER_MODE:-local}"
 USE_DOCKER_PROVER="${USE_DOCKER_PROVER:-0}"
 DOCKER_LOCK_PROVER_SCRIPT="${DOCKER_LOCK_PROVER_SCRIPT:-${DOCKER_PROVER_SCRIPT:-$LOCK_RZ_DIR/scripts/prove-lock-docker.sh}}"
 DOCKER_MINT_PROVER_SCRIPT="${DOCKER_MINT_PROVER_SCRIPT:-$MINT_RZ_DIR/scripts/prove-mint-docker.sh}"
+DOCKER_ACK_PROVER_SCRIPT="${DOCKER_ACK_PROVER_SCRIPT:-$ACK_RZ_DIR/scripts/prove-ack-docker.sh}"
 RISC0_GUEST_USE_DOCKER="${RISC0_GUEST_USE_DOCKER:-1}"
 
 # RISC Zero Groth16 verifier params from risc0-ethereum ControlID.sol.
@@ -120,6 +131,78 @@ extract_proof_value() {
     printf '%s' "$value"
 }
 
+query_tx_status() {
+    local rpc_url="$1"
+    local connector="$2"
+    local tx_id="$3"
+    local errfile status rc calldata rpc_payload rpc_result raw_status
+
+    errfile="$(mktemp)"
+    set +e
+    status="$(cast call "$connector" "txStatus(bytes32)(uint8)" "$tx_id" --rpc-url "$rpc_url" 2>"$errfile")"
+    rc=$?
+    set -e
+    if [[ "$rc" -eq 0 ]]; then
+        rm -f "$errfile"
+        printf '%s' "$status"
+        return 0
+    fi
+
+    echo "Warning: failed to query tx status via cast call on $rpc_url; using raw eth_call fallback." >&2
+    if [[ -f "$errfile" ]]; then
+        tail -n1 "$errfile" >&2 || true
+    fi
+    rm -f "$errfile"
+
+    calldata="$(cast calldata "txStatus(bytes32)" "$tx_id")"
+    rpc_payload="$(printf '{"jsonrpc":"2.0","id":1,"method":"eth_call","params":[{"to":"%s","data":"%s"},"latest"]}' "$connector" "$calldata")"
+    rpc_result="$(curl -sS -H "content-type: application/json" --data "$rpc_payload" "$rpc_url" || true)"
+    raw_status="$(printf '%s' "$rpc_result" | sed -n 's/.*"result":"\([^"]*\)".*/\1/p')"
+
+    if [[ -z "$raw_status" ]]; then
+        printf '%s' "unknown"
+        return 0
+    fi
+
+    cast --to-dec "$raw_status"
+}
+
+query_erc20_balance() {
+    local rpc_url="$1"
+    local token="$2"
+    local account="$3"
+    local errfile balance rc calldata rpc_payload rpc_result raw_balance
+
+    errfile="$(mktemp)"
+    set +e
+    balance="$(cast call "$token" "balanceOf(address)(uint256)" "$account" --rpc-url "$rpc_url" 2>"$errfile")"
+    rc=$?
+    set -e
+    if [[ "$rc" -eq 0 ]]; then
+        rm -f "$errfile"
+        printf '%s' "$balance"
+        return 0
+    fi
+
+    echo "Warning: failed to query ERC20 balance via cast call on $rpc_url; using raw eth_call fallback." >&2
+    if [[ -f "$errfile" ]]; then
+        tail -n1 "$errfile" >&2 || true
+    fi
+    rm -f "$errfile"
+
+    calldata="$(cast calldata "balanceOf(address)" "$account")"
+    rpc_payload="$(printf '{"jsonrpc":"2.0","id":1,"method":"eth_call","params":[{"to":"%s","data":"%s"},"latest"]}' "$token" "$calldata")"
+    rpc_result="$(curl -sS -H "content-type: application/json" --data "$rpc_payload" "$rpc_url" || true)"
+    raw_balance="$(printf '%s' "$rpc_result" | sed -n 's/.*"result":"\([^"]*\)".*/\1/p')"
+
+    if [[ -z "$raw_balance" ]]; then
+        printf '%s' "unknown"
+        return 0
+    fi
+
+    cast --to-dec "$raw_balance"
+}
+
 require_cmd cast
 require_cmd forge
 require_cmd awk
@@ -173,6 +256,10 @@ if [[ "$USE_DOCKER_PROVER" == "1" ]]; then
         echo "Mint docker prover script not found: $DOCKER_MINT_PROVER_SCRIPT" >&2
         exit 1
     fi
+    if [[ ! -f "$DOCKER_ACK_PROVER_SCRIPT" ]]; then
+        echo "Ack docker prover script not found: $DOCKER_ACK_PROVER_SCRIPT" >&2
+        exit 1
+    fi
     LOCK_IMAGE_ID="$(
         cd "$ROOT_DIR"
         PROVER_ACTION=print-image-id \
@@ -182,6 +269,11 @@ if [[ "$USE_DOCKER_PROVER" == "1" ]]; then
         cd "$ROOT_DIR"
         PROVER_ACTION=print-image-id \
         bash "$DOCKER_MINT_PROVER_SCRIPT"
+    )"
+    ACK_IMAGE_ID="$(
+        cd "$ROOT_DIR"
+        PROVER_ACTION=print-image-id \
+        bash "$DOCKER_ACK_PROVER_SCRIPT"
     )"
 else
     (
@@ -194,6 +286,11 @@ else
         RISC0_GUEST_USE_DOCKER="$RISC0_GUEST_USE_DOCKER" \
         cargo build -p mint-proof-host --bin print_image_id >/dev/null
     )
+    (
+        cd "$ACK_RZ_DIR"
+        RISC0_GUEST_USE_DOCKER="$RISC0_GUEST_USE_DOCKER" \
+        cargo build -p ack-proof-host --bin print_image_id >/dev/null
+    )
 
     LOCK_IMAGE_ID="$(
         cd "$LOCK_RZ_DIR"
@@ -205,9 +302,15 @@ else
         RISC0_GUEST_USE_DOCKER="$RISC0_GUEST_USE_DOCKER" \
         cargo run -q -p mint-proof-host --bin print_image_id
     )"
+    ACK_IMAGE_ID="$(
+        cd "$ACK_RZ_DIR"
+        RISC0_GUEST_USE_DOCKER="$RISC0_GUEST_USE_DOCKER" \
+        cargo run -q -p ack-proof-host --bin print_image_id
+    )"
 fi
 echo "Lock guest image ID: $LOCK_IMAGE_ID"
 echo "Mint guest image ID: $MINT_IMAGE_ID"
+echo "Ack guest image ID:  $ACK_IMAGE_ID"
 
 echo "Deploying destination chain contracts..."
 DEST_RISC0_VERIFIER="$(
@@ -221,6 +324,12 @@ DEST_RISC0_ADAPTER="$(
         "$DEST_RPC" \
         "src/zk-proof/adapters/RiscZeroAdapter.sol:RiscZeroAdapter" \
         --constructor-args "$DEST_RISC0_VERIFIER" "$LOCK_IMAGE_ID"
+)"
+DEST_ACK_RISC0_ADAPTER="$(
+    deploy_contract \
+        "$DEST_RPC" \
+        "src/zk-proof/adapters/RiscZeroAdapter.sol:RiscZeroAdapter" \
+        --constructor-args "$DEST_RISC0_VERIFIER" "$ACK_IMAGE_ID"
 )"
 DEST_MOCK_SNARK_VERIFIER="$(
     deploy_contract \
@@ -238,6 +347,12 @@ DEST_CONNECTOR="$(
         "$DEST_RPC" \
         "src/connectors/Connector.sol:Connector" \
         --constructor-args "$DEST_RISC0_ADAPTER" "$DEST_SNARK_ADAPTER" "$ACK_WINDOW_SECONDS"
+)"
+DEST_TOKEN="$(
+    deploy_contract \
+        "$DEST_RPC" \
+        "script/MockERC20.s.sol:MockERC20" \
+        --constructor-args "$DEST_TOKEN_NAME" "$DEST_TOKEN_SYMBOL"
 )"
 
 echo "Deploying source chain contracts..."
@@ -286,6 +401,12 @@ cast send \
     --rpc-url "$SOURCE_RPC" \
     --private-key "$PRIVATE_KEY" >/dev/null
 
+SOURCE_BALANCE_BEFORE="$(query_erc20_balance "$SOURCE_RPC" "$SOURCE_TOKEN" "$DEPLOYER_ADDRESS")"
+DEST_BALANCE_BEFORE="$(query_erc20_balance "$DEST_RPC" "$DEST_TOKEN" "$DEPLOYER_ADDRESS")"
+echo "Account token balances before transfer:"
+echo "  source chain ($SOURCE_CHAIN_ID): $SOURCE_BALANCE_BEFORE"
+echo "  destination chain ($DEST_CHAIN_ID): $DEST_BALANCE_BEFORE"
+
 cast send \
     "$SOURCE_TOKEN" \
     "approve(address,uint256)" \
@@ -298,7 +419,7 @@ cast send \
     "$SOURCE_CONNECTOR" \
     "depositAndLock(address,address,address,uint256,address)" \
     "$SOURCE_TOKEN" \
-    "$SOURCE_TOKEN" \
+    "$DEST_TOKEN" \
     "$DEPLOYER_ADDRESS" \
     "$AMOUNT_WEI" \
     "$DEST_CONNECTOR" \
@@ -311,7 +432,7 @@ TX_ID="$(
         "$DEPLOYER_ADDRESS" \
         "$AMOUNT_WEI" \
         "$SOURCE_TOKEN" \
-        "$SOURCE_TOKEN" \
+        "$DEST_TOKEN" \
         "$SOURCE_CONNECTOR" \
         "$DEST_CONNECTOR" \
         0
@@ -402,28 +523,16 @@ cast send \
     --rpc-url "$DEST_RPC" \
     --private-key "$PRIVATE_KEY" >/dev/null
 
-DEST_STATUS=""
-set +e
-DEST_STATUS="$(cast call "$DEST_CONNECTOR" "txStatus(bytes32)(uint8)" "$TX_ID" --rpc-url "$DEST_RPC" 2>/tmp/cast_txstatus_err.log)"
-TXSTATUS_RC=$?
-set -e
-if [[ "$TXSTATUS_RC" -ne 0 ]]; then
-    echo "Warning: failed to query destination tx status via cast call." >&2
-    echo "Hardhat returned a JSON parse error; lock proof submission transaction may still be successful." >&2
-    if [[ -f /tmp/cast_txstatus_err.log ]]; then
-        tail -n1 /tmp/cast_txstatus_err.log >&2 || true
-    fi
-    CALLDATA="$(cast calldata "txStatus(bytes32)" "$TX_ID")"
-    RPC_PAYLOAD="$(printf '{"jsonrpc":"2.0","id":1,"method":"eth_call","params":[{"to":"%s","data":"%s"},"latest"]}' "$DEST_CONNECTOR" "$CALLDATA")"
-    RPC_RESULT="$(curl -sS -H "content-type: application/json" --data "$RPC_PAYLOAD" "$DEST_RPC" || true)"
-    RAW_STATUS="$(printf '%s' "$RPC_RESULT" | sed -n 's/.*"result":"\([^"]*\)".*/\1/p')"
-    if [[ -n "$RAW_STATUS" ]]; then
-        DEST_STATUS="$(cast --to-dec "$RAW_STATUS")"
-    else
-        DEST_STATUS="unknown (status query failed)"
-    fi
-fi
-rm -f /tmp/cast_txstatus_err.log
+DEST_STATUS="$(query_tx_status "$DEST_RPC" "$DEST_CONNECTOR" "$TX_ID")"
+echo "Minting wrapped tokens on destination for balance verification..."
+cast send \
+    "$DEST_TOKEN" \
+    "mint(address,uint256)" \
+    "$DEST_CONNECTOR" \
+    "$AMOUNT_WEI" \
+    --gas-limit "$DEST_TOKEN_MINT_GAS_LIMIT" \
+    --rpc-url "$DEST_RPC" \
+    --private-key "$PRIVATE_KEY" >/dev/null
 
 echo "Generating RISC Zero mint proof from destination FundsReleased..."
 MINT_PROOF_LOG="$(mktemp)"
@@ -498,26 +607,122 @@ cast send \
     --rpc-url "$SOURCE_RPC" \
     --private-key "$PRIVATE_KEY" >/dev/null
 
-SOURCE_STATUS="$(cast call "$SOURCE_CONNECTOR" "txStatus(bytes32)(uint8)" "$TX_ID" --rpc-url "$SOURCE_RPC")"
 if [[ "$DEST_STATUS" != "4" && "$DEST_STATUS" != unknown* ]]; then
     echo "Destination tx status mismatch: expected 4 (MINTED_IN_HOLDING), got $DEST_STATUS" >&2
     exit 1
 fi
+
+echo "Switching destination RISC0 verifier to ack image adapter..."
+cast send \
+    "$DEST_CONNECTOR" \
+    "setVerifier(uint8,address)" \
+    0 \
+    "$DEST_ACK_RISC0_ADAPTER" \
+    --gas-limit "$SET_VERIFIER_GAS_LIMIT" \
+    --rpc-url "$DEST_RPC" \
+    --private-key "$PRIVATE_KEY" >/dev/null
+
+echo "Generating RISC Zero ack proof from source AckReady..."
+ACK_PROOF_LOG="$(mktemp)"
+set +e
+if [[ "$USE_DOCKER_PROVER" == "1" ]]; then
+    (
+        cd "$ROOT_DIR"
+        PROVER_ACTION=prove \
+        RISC0_PROVER_MODE="$RISC0_PROVER_MODE" \
+        RPC_URL="$SOURCE_RPC" \
+        EXECUTION_BLOCK="$EXECUTION_BLOCK" \
+        CONNECTOR="$SOURCE_CONNECTOR" \
+        TX_ID="$TX_ID" \
+        SOURCE_CHAIN_ID="$SOURCE_CHAIN_ID" \
+        bash "$DOCKER_ACK_PROVER_SCRIPT"
+    ) 2>&1 | tee "$ACK_PROOF_LOG"
+    ACK_PROOF_STATUS=${PIPESTATUS[0]}
+else
+    (
+        cd "$ACK_RZ_DIR"
+        RISC0_GUEST_USE_DOCKER="$RISC0_GUEST_USE_DOCKER" \
+        RISC0_PROVER="$RISC0_PROVER_MODE" \
+        RPC_URL="$SOURCE_RPC" \
+        EXECUTION_BLOCK="$EXECUTION_BLOCK" \
+        cargo run -p ack-proof-host --bin ack-proof-host -- \
+            --connector "$SOURCE_CONNECTOR" \
+            --tx-id "$TX_ID" \
+            --source-chain-id "$SOURCE_CHAIN_ID"
+    ) 2>&1 | tee "$ACK_PROOF_LOG"
+    ACK_PROOF_STATUS=${PIPESTATUS[0]}
+fi
+set -e
+if [[ "$ACK_PROOF_STATUS" -ne 0 ]]; then
+    echo "Ack proof generation failed." >&2
+    rm -f "$ACK_PROOF_LOG"
+    exit "$ACK_PROOF_STATUS"
+fi
+ACK_PROOF_OUTPUT="$(cat "$ACK_PROOF_LOG")"
+rm -f "$ACK_PROOF_LOG"
+
+ACK_PROOF_PAYLOAD="$(extract_proof_value "$ACK_PROOF_OUTPUT" "proofPayload")"
+ACK_PROOF_TX_ID="$(extract_proof_value "$ACK_PROOF_OUTPUT" "txId")"
+ACK_PROOF_SRC_CONNECTOR="$(extract_proof_value "$ACK_PROOF_OUTPUT" "srcChainConnector")"
+ACK_PROOF_DST_CONNECTOR="$(extract_proof_value "$ACK_PROOF_OUTPUT" "dstChainConnector")"
+
+if [[ "$(to_lower "$ACK_PROOF_TX_ID")" != "$(to_lower "$TX_ID")" ]]; then
+    echo "Ack proof txId mismatch: expected $TX_ID, got $ACK_PROOF_TX_ID" >&2
+    exit 1
+fi
+if [[ "$(to_lower "$ACK_PROOF_SRC_CONNECTOR")" != "$(to_lower "$SOURCE_CONNECTOR")" ]]; then
+    echo "Ack proof src connector mismatch: expected $SOURCE_CONNECTOR, got $ACK_PROOF_SRC_CONNECTOR" >&2
+    exit 1
+fi
+if [[ "$(to_lower "$ACK_PROOF_DST_CONNECTOR")" != "$(to_lower "$DEST_CONNECTOR")" ]]; then
+    echo "Ack proof dst connector mismatch: expected $DEST_CONNECTOR, got $ACK_PROOF_DST_CONNECTOR" >&2
+    exit 1
+fi
+
+echo "Submitting ack proof on destination chain..."
+cast send \
+    "$DEST_CONNECTOR" \
+    "submitAckProof(uint8,bytes,bytes32)" \
+    0 \
+    "$ACK_PROOF_PAYLOAD" \
+    "$TX_ID" \
+    --gas-limit "$ACK_PROOF_GAS_LIMIT" \
+    --rpc-url "$DEST_RPC" \
+    --private-key "$PRIVATE_KEY" >/dev/null
+
+SOURCE_STATUS="$(cast call "$SOURCE_CONNECTOR" "txStatus(bytes32)(uint8)" "$TX_ID" --rpc-url "$SOURCE_RPC")"
+DEST_FINAL_STATUS="$(query_tx_status "$DEST_RPC" "$DEST_CONNECTOR" "$TX_ID")"
 if [[ "$SOURCE_STATUS" != "2" ]]; then
     echo "Source tx status mismatch: expected 2 (MINT_PROOF_ACCEPTED), got $SOURCE_STATUS" >&2
     exit 1
 fi
+if [[ "$DEST_FINAL_STATUS" != "0" ]]; then
+    echo "Destination tx status mismatch after ack: expected 0 (NONE), got $DEST_FINAL_STATUS" >&2
+    exit 1
+fi
+
+SOURCE_BALANCE_AFTER="$(query_erc20_balance "$SOURCE_RPC" "$SOURCE_TOKEN" "$DEPLOYER_ADDRESS")"
+DEST_BALANCE_AFTER="$(query_erc20_balance "$DEST_RPC" "$DEST_TOKEN" "$DEPLOYER_ADDRESS")"
+echo "Account token balances after transfer:"
+echo "  source chain ($SOURCE_CHAIN_ID): $SOURCE_BALANCE_AFTER"
+echo "  destination chain ($DEST_CHAIN_ID): $DEST_BALANCE_AFTER"
 
 echo
 echo "Done."
 echo "sourceConnector:        $SOURCE_CONNECTOR"
 echo "destConnector:          $DEST_CONNECTOR"
 echo "sourceToken:            $SOURCE_TOKEN"
+echo "destToken:              $DEST_TOKEN"
 echo "lockImageId:            $LOCK_IMAGE_ID"
 echo "mintImageId:            $MINT_IMAGE_ID"
+echo "ackImageId:             $ACK_IMAGE_ID"
 echo "lockProofPayload:       $LOCK_PROOF_PAYLOAD"
 echo "mintProofPayload:       $MINT_PROOF_PAYLOAD"
+echo "ackProofPayload:        $ACK_PROOF_PAYLOAD"
 echo "mintProofAmount:        $MINT_PROOF_AMOUNT"
 echo "mintProofReceiver:      $MINT_PROOF_RECEIVER"
 echo "destination txStatus:   $DEST_STATUS (expected 4 for MINTED_IN_HOLDING)"
+echo "destination final:      $DEST_FINAL_STATUS (expected 0 for NONE)"
 echo "source txStatus:        $SOURCE_STATUS (expected 2 for MINT_PROOF_ACCEPTED)"
+echo "account source balance: $SOURCE_BALANCE_BEFORE -> $SOURCE_BALANCE_AFTER"
+echo "account dest balance:   $DEST_BALANCE_BEFORE -> $DEST_BALANCE_AFTER"
