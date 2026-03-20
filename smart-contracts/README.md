@@ -39,6 +39,65 @@ cd /path/to/repo
 bash scripts/e2e-anvil-hardhat.sh
 ```
 
+### Run Against Other Networks
+
+The same script now supports per-side network profiles:
+
+- `local-anvil`
+- `local-hardhat`
+- `mainnet`
+- `sepolia`
+- `holesky`
+- `hoodi`
+- `gnosis`
+- `chiado`
+
+Defaults remain:
+
+- source: `local-anvil`
+- destination: `local-hardhat`
+
+Example using public testnet profiles:
+
+```shell
+cd /path/to/repo
+SOURCE_NETWORK_PROFILE=sepolia \
+DEST_NETWORK_PROFILE=hoodi \
+COLIBRI_VERIFY=0 \
+PRIVATE_KEY=0x... \
+bash scripts/e2e-anvil-hardhat.sh
+```
+
+You can still override explicitly with `SOURCE_RPC`, `DEST_RPC`, `SOURCE_CHAIN_ID`, `DEST_CHAIN_ID`.
+
+Note:
+
+- For `holesky` and `hoodi`, the script sets RPC/beacon defaults only.
+- If you run with `COLIBRI_VERIFY=1`, provide `COLIBRI_SOURCE_PROVER_URLS` / `COLIBRI_DEST_PROVER_URLS` (or rely on local proof generation).
+- `hoodi` defaults use `https://ethereum-hoodi-rpc.publicnode.com` and `https://ethereum-hoodi-beacon-api.publicnode.com`.
+
+### Reuse Existing Deployments (save gas)
+
+To avoid redeploying contracts every run:
+
+- set `REUSE_SOURCE_DEPLOYMENTS=1` and/or `REUSE_DEST_DEPLOYMENTS=1`
+- pass already deployed addresses via env vars
+
+Required vars when reusing source:
+
+- `EXISTING_SOURCE_CONNECTOR`
+- `EXISTING_SOURCE_TOKEN`
+- optional: `EXISTING_SOURCE_MINT_RISC0_ADAPTER` (if you want script to force source verifier to this adapter)
+
+Required vars when reusing destination:
+
+- `EXISTING_DEST_CONNECTOR`
+- `EXISTING_DEST_TOKEN`
+- `EXISTING_DEST_LOCK_RISC0_ADAPTER`
+- `EXISTING_DEST_ACK_RISC0_ADAPTER`
+
+The script now computes `txId` using current `txNonce()` from source connector, so repeated runs with reused deployments stay consistent.
+
 Default behavior in this repo:
 
 - host Rust runs locally
@@ -67,6 +126,67 @@ This script performs:
 - `submitMintProof` on source
 - ack proof generation via `zk-proofs/risc_zero/ack_event`
 - `submitAckProof` on destination
+
+### Optional Colibri Trustless Verification (MVP)
+
+An optional Colibri step is integrated into `scripts/e2e-anvil-hardhat.sh` and can run before each RISC0 proof stage.
+
+Colibri support is chain-dependent in the installed `@corpus-core/colibri-stateless` package.
+If a profile is not proofable for `eth_getLogs`/`eth_call`, the script exits early with a clear unsupported-chain message.
+
+What Colibri verifies:
+
+- Source: `DepositLocked` (`eth_getLogs`) + `getTx(txId)` (`eth_call`)
+- Destination: `FundsReleased` (`eth_getLogs`) + `getTx(txId)` (`eth_call`)
+- Source: `AckReady` (`eth_getLogs`) + `getTx(txId)` (`eth_call`)
+
+Colibri checks:
+
+- event existence for the target `txId`
+- event `txId` and connector addresses (`srcChainConnector`, `dstChainConnector`)
+- log `address` equals the expected connector
+- `getTx(txId)` exists and its `status` matches stage (`1`, `4`, `2`)
+
+What Colibri does not do in this repo:
+
+- no replacement of RISC0 proof hosts
+- no change to on-chain proof payload format
+- no change to connector proof submission path
+- no trustless verification on local dev chain IDs (`31337`/`31338`)
+
+Install helper dependencies:
+
+```shell
+cd colibri/ts_folder
+npm install
+```
+
+Run E2E with Colibri enabled:
+
+```shell
+cd /path/to/repo
+COLIBRI_VERIFY=1 bash scripts/e2e-anvil-hardhat.sh
+```
+
+Useful env vars:
+
+- `SOURCE_NETWORK_PROFILE`, `DEST_NETWORK_PROFILE`
+- `COLIBRI_TS_DIR` (default: `./colibri/ts_folder`)
+- `COLIBRI_SOURCE_RPC_URLS`, `COLIBRI_DEST_RPC_URLS`
+- `COLIBRI_SOURCE_PROVER_URLS`, `COLIBRI_DEST_PROVER_URLS`
+- `COLIBRI_SOURCE_BEACON_URLS`, `COLIBRI_DEST_BEACON_URLS`
+- `COLIBRI_CHIADO_PARENT_ROOT_BEACON_FALLBACK_URL` (default `https://rpc-gbc.chiadochain.net`; auto-prepended for Chiado when PublicNode beacon returns unsigned-parent-root style errors)
+- For Chiado prover `cannot sync backwards` errors, the script now automatically retries with range `[eventBlock,latest]`, then retries without `COLIBRI_DEST_PROVER_URLS` for that stage.
+- `COLIBRI_SOURCE_CHECKPOINTZ_URLS`, `COLIBRI_DEST_CHECKPOINTZ_URLS`
+- `COLIBRI_LOG_LOOKBACK_BLOCKS` (default `50000`; Chiado is auto-capped to `10000` because many providers enforce that `eth_getLogs` limit)
+- `COLIBRI_VERIFY_RETRIES` (default `6`) and `COLIBRI_VERIFY_RETRY_DELAY_SEC` (default `12`) for transient Colibri timing/bootstrap retries (`parentBeaconBlockRoot`, unsigned block, SSZ bootstrap parse)
+- stage toggles: `COLIBRI_VERIFY_SOURCE_DEPOSIT`, `COLIBRI_VERIFY_DEST_FUNDS_RELEASED`, `COLIBRI_VERIFY_SOURCE_ACK_READY` (each default `1`)
+- `COLIBRI_RESET_STATE_ON_SYNC_BACKWARDS` (default `1`): on Chiado `cannot sync backwards`, the script removes local Colibri state files (`states_<chainId>`) once and retries.
+- `LOCK_EXECUTION_BLOCK`, `MINT_EXECUTION_BLOCK`, `ACK_EXECUTION_BLOCK` (optional overrides; by default the script now auto-pins each proof host to the exact tx receipt block for that stage event)
+
+RISC Zero note:
+
+- If your machine has `rzup` components installed but `r0vm` is not symlinked into `PATH`, the script auto-detects `~/.risc0/extensions/*/r0vm` and exports it to avoid slow ImageID fallback.
 
 ## Deployment Scripts
 

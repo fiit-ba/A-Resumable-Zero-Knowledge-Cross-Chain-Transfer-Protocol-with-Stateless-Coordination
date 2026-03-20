@@ -137,8 +137,18 @@ pub fn deposit_locked_topic0() -> B256 {
 }
 
 pub fn chain_spec_from_id(chain_id: u64) -> Option<&'static EthChainSpec> {
-    // Local dev chains (Anvil/Hardhat) are not built into Steel's chain constants.
-    // Reuse Ethereum mainnet fork rules but keep the local chain id in the chain spec.
+    // Additional chains (Gnosis/Chiado/local) are not built into Steel's chain constants.
+    // Reuse Ethereum mainnet fork rules but keep the chain id in the chain spec.
+    static GNOSIS_CHAIN_SPEC: LazyLock<EthChainSpec> = LazyLock::new(|| {
+        let mut spec = ETH_MAINNET_CHAIN_SPEC.clone();
+        spec.chain_id = 100;
+        spec
+    });
+    static CHIADO_CHAIN_SPEC: LazyLock<EthChainSpec> = LazyLock::new(|| {
+        let mut spec = ETH_MAINNET_CHAIN_SPEC.clone();
+        spec.chain_id = 10200;
+        spec
+    });
     static ANVIL_CHAIN_SPEC: LazyLock<EthChainSpec> = LazyLock::new(|| {
         let mut spec = ETH_MAINNET_CHAIN_SPEC.clone();
         spec.chain_id = 31337;
@@ -152,6 +162,8 @@ pub fn chain_spec_from_id(chain_id: u64) -> Option<&'static EthChainSpec> {
 
     match chain_id {
         1 => Some(&ETH_MAINNET_CHAIN_SPEC),
+        100 => Some(&GNOSIS_CHAIN_SPEC),
+        10200 => Some(&CHIADO_CHAIN_SPEC),
         11155111 => Some(&ETH_SEPOLIA_CHAIN_SPEC),
         17000 => Some(&ETH_HOLESKY_CHAIN_SPEC),
         31337 => Some(&ANVIL_CHAIN_SPEC),
