@@ -1,0 +1,5 @@
+node_modules
+dist
+coverage
+colibri-cache/*
+!colibri-cache/.gitkeep
