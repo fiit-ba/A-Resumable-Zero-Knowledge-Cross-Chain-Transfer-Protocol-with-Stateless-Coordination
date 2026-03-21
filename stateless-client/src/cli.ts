@@ -12,14 +12,21 @@ import {
   runRelayMint,
   runVerifyStageCommand
 } from "./relay/relay.js";
-import type { HappyPathResult, RelayStageResult, Stage } from "./core/types.js";
+import { runRelayResume } from "./relay/resume.js";
+import type {
+  HappyPathResult,
+  RelayStageResult,
+  ResumeResult,
+  Stage
+} from "./core/types.js";
 
 const SUPPORTED_COMMANDS = new Set([
   "verify-stage",
   "relay-lock",
   "relay-mint",
   "relay-ack",
-  "relay-happy-path"
+  "relay-happy-path",
+  "relay-resume"
 ]);
 
 function usage(): string {
@@ -30,6 +37,7 @@ function usage(): string {
     "  stateless-client relay-mint --tx-id <bytes32> --private-key <hex> --proof-backend <local|docker> --source-connector <address> --destination-connector <address> [network and proof options]",
     "  stateless-client relay-ack --tx-id <bytes32> --private-key <hex> --proof-backend <local|docker> --source-connector <address> --destination-connector <address> [network and proof options]",
     "  stateless-client relay-happy-path --tx-id <bytes32> --private-key <hex> --proof-backend <local|docker> --source-connector <address> --destination-connector <address> [network and proof options]",
+    "  stateless-client relay-resume --tx-id <bytes32> --private-key <hex> --proof-backend <local|docker> --source-connector <address> --destination-connector <address> [network and proof options]",
     "",
     "Common network options:",
     "  --source-profile <local-anvil|local-hardhat|mainnet|sepolia|holesky|hoodi|gnosis|chiado>",
@@ -136,6 +144,16 @@ function printRelayResult(result: RelayStageResult): void {
   console.log(`resultingStatus: ${result.submission.resultingStatus}`);
 }
 
+function printResumeResult(result: ResumeResult): void {
+  console.log(`plannedAction: ${result.decision.action}`);
+  console.log(`sourceStatus: ${result.decision.sourceStatus}`);
+  console.log(`destinationStatus: ${result.decision.destinationStatus}`);
+  console.log(`decisionReason: ${result.decision.reason}`);
+  if (result.executed) {
+    printRelayResult(result.executed);
+  }
+}
+
 function printHappyPathResult(result: HappyPathResult): void {
   console.log("lock:");
   printRelayResult(result.lock);
@@ -201,6 +219,13 @@ async function main(): Promise<void> {
       const config = resolveRelayConfig(parsed.options);
       const result = await runRelayHappyPath(config);
       printHappyPathResult(result);
+      return;
+    }
+
+    case "relay-resume": {
+      const config = resolveRelayConfig(parsed.options);
+      const result = await runRelayResume(config);
+      printResumeResult(result);
       return;
     }
 

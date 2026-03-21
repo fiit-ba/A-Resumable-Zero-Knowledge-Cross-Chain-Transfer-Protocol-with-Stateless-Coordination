@@ -3,6 +3,8 @@ export * from "./config/config.js";
 export * from "./config/profiles.js";
 export * from "./relay/proof-runner.js";
 export * from "./relay/relay.js";
+export * from "./relay/planner.js";
+export * from "./relay/resume.js";
 export * from "./relay/stages.js";
 export * from "./core/types.js";
 export * from "./core/utils.js";
