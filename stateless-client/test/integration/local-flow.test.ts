@@ -71,4 +71,43 @@ integrationDescribe("local relay integration", () => {
     expect(result.status, result.stderr).toBe(0);
     expect(result.stdout).toContain("resultingStatus: 0");
   });
+
+  it("relay-resume executes mint when lock was already done", () => {
+    const txId = requiredEnv("INTEGRATION_TX_ID_RESUME_AFTER_LOCK");
+
+    const lock = runCli(["relay-lock", ...commonArgs(txId)]);
+    expect(lock.status, lock.stderr).toBe(0);
+
+    const resume = runCli(["relay-resume", ...commonArgs(txId)]);
+    expect(resume.status, resume.stderr).toBe(0);
+    expect(resume.stdout).toContain("plannedAction: mint");
+    expect(resume.stdout).toContain("resultingStatus: 2");
+  });
+
+  it("relay-resume executes ack when mint was already done", () => {
+    const txId = requiredEnv("INTEGRATION_TX_ID_RESUME_AFTER_MINT");
+
+    const lock = runCli(["relay-lock", ...commonArgs(txId)]);
+    expect(lock.status, lock.stderr).toBe(0);
+
+    const mint = runCli(["relay-mint", ...commonArgs(txId)]);
+    expect(mint.status, mint.stderr).toBe(0);
+
+    const resume = runCli(["relay-resume", ...commonArgs(txId)]);
+    expect(resume.status, resume.stderr).toBe(0);
+    expect(resume.stdout).toContain("plannedAction: ack");
+    expect(resume.stdout).toContain("resultingStatus: 0");
+  });
+
+  it("relay-resume returns noop when destination is fully complete", () => {
+    const txId = requiredEnv("INTEGRATION_TX_ID_RESUME_TERMINAL");
+
+    const happy = runCli(["relay-happy-path", ...commonArgs(txId)]);
+    expect(happy.status, happy.stderr).toBe(0);
+
+    const resume = runCli(["relay-resume", ...commonArgs(txId)]);
+    expect(resume.status, resume.stderr).toBe(0);
+    expect(resume.stdout).toContain("plannedAction: noop");
+    expect(resume.stdout).toContain("transaction already terminal");
+  });
 });

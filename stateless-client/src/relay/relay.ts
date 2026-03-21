@@ -20,7 +20,7 @@ import type {
   VerificationConfig
 } from "../core/types.js";
 import { normalizeAddress, normalizeBytes32 } from "../core/utils.js";
-import { verifyStage } from "./verification.js";
+import { verifyAckEventOnly, verifyStage } from "./verification.js";
 
 interface ConnectorTxSnapshot {
   txId: string;
@@ -451,7 +451,21 @@ export async function runRelayMint(config: RelayConfig): Promise<RelayStageResul
 
 export async function runRelayAck(config: RelayConfig): Promise<RelayStageResult> {
   const handles = await createChainHandles(config);
-  const verification = await verifyStageFromConfig(config, "source-ack-ready");
+
+  let verification: StageVerificationResult;
+  if (config.allowPrunedSourceAck) {
+    verification = await verifyAckEventOnly({
+      stage: "source-ack-ready",
+      chain: config.source,
+      connector: config.connectors.source,
+      txId: config.txId,
+      expectedSrcConnector: config.connectors.source,
+      expectedDstConnector: config.connectors.destination,
+      blockTag: config.executionBlocks.sourceAckReady
+    });
+  } else {
+    verification = await verifyStageFromConfig(config, "source-ack-ready");
+  }
 
   const proof = await runProof({
     stage: "ack",

@@ -312,6 +312,76 @@ function validateGetTxResult(
   return status;
 }
 
+export async function verifyAckEventOnly(
+  request: VerifyStageRequest
+): Promise<StageVerificationResult> {
+  const connector = normalizeAddress(request.connector, "connector");
+  const txId = normalizeBytes32(request.txId, "txId");
+  const expectedSrcConnector = normalizeAddress(
+    request.expectedSrcConnector,
+    "expectedSrcConnector"
+  );
+  const expectedDstConnector = normalizeAddress(
+    request.expectedDstConnector,
+    "expectedDstConnector"
+  );
+  const effectiveBlockTag = normalizeBlockTag(request.blockTag, "latest");
+  const provider =
+    request.provider ??
+    new JsonRpcProvider(request.chain.rpcUrls[0], request.chain.chainId);
+
+  const event = connectorInterface.getEvent("AckReady");
+  if (!event) {
+    throw new Error("Missing ABI event fragment for AckReady");
+  }
+  const eventTopic = event.topicHash;
+  const logRange = await resolveLogRange(effectiveBlockTag, provider);
+
+  const logs = await provider.getLogs({
+    address: connector,
+    topics: [eventTopic, txId],
+    fromBlock: logRange.fromBlock,
+    toBlock: logRange.toBlock
+  });
+
+  if (logs.length === 0) {
+    throw new Error(
+      `No AckReady event found for txId ${txId} (source origin pruned path)`
+    );
+  }
+  if (logs.length !== 1) {
+    throw new Error(
+      `Expected exactly 1 AckReady event for txId ${txId}, got ${logs.length}`
+    );
+  }
+
+  const firstLog = logs[0];
+  if (!firstLog) {
+    throw new Error(
+      `No AckReady event found for txId ${txId} (source origin pruned path)`
+    );
+  }
+
+  validateStageLog(
+    "source-ack-ready",
+    firstLog,
+    connector,
+    txId,
+    expectedSrcConnector,
+    expectedDstConnector
+  );
+
+  return {
+    stage: "source-ack-ready",
+    mode: "rpc-fallback",
+    degraded: true,
+    eventName: "AckReady",
+    txId,
+    connector,
+    status: 0
+  };
+}
+
 export async function verifyStage(
   request: VerifyStageRequest
 ): Promise<StageVerificationResult> {

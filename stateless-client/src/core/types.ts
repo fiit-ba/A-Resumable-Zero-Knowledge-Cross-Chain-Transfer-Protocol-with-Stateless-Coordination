@@ -65,6 +65,7 @@ export interface RelayConfig {
   repoRoot: string;
   proofPaths: ProofPaths;
   risc0ProverMode: "local" | "bonsai";
+  allowPrunedSourceAck?: boolean;
 }
 
 export interface VerificationConfig {
@@ -122,6 +123,27 @@ export interface HappyPathResult {
   lock: RelayStageResult;
   mint: RelayStageResult;
   ack: RelayStageResult;
+}
+
+export type ResumeAction = "lock" | "mint" | "ack" | "noop" | "error";
+
+export interface HistoryFlags {
+  depositLocked: boolean;
+  fundsReleased: boolean;
+  ackReady: boolean;
+}
+
+export interface ResumeDecision {
+  action: ResumeAction;
+  reason: string;
+  sourceStatus: number;
+  destinationStatus: number;
+  historyFlags: HistoryFlags;
+}
+
+export interface ResumeResult {
+  decision: ResumeDecision;
+  executed?: RelayStageResult;
 }
 
 export interface ProofRunnerInput {
