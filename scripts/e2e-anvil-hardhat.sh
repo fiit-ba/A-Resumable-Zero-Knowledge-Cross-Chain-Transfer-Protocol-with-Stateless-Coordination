@@ -43,7 +43,7 @@ DEST_RPC="${DEST_RPC:-}"
 SOURCE_CHAIN_ID="${SOURCE_CHAIN_ID:-}"
 DEST_CHAIN_ID="${DEST_CHAIN_ID:-}"
 
-PRIVATE_KEY="${PRIVATE_KEY:-0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80}"
+PRIVATE_KEY="${PRIVATE_KEY:-}"
 ACK_WINDOW_SECONDS="${ACK_WINDOW_SECONDS:-3600}"
 AMOUNT_WEI="${AMOUNT_WEI:-1000000000000000000}" # 1 token with 18 decimals
 EXECUTION_BLOCK="${EXECUTION_BLOCK:-latest}"
@@ -65,6 +65,15 @@ DOCKER_LOCK_PROVER_SCRIPT="${DOCKER_LOCK_PROVER_SCRIPT:-${DOCKER_PROVER_SCRIPT:-
 DOCKER_MINT_PROVER_SCRIPT="${DOCKER_MINT_PROVER_SCRIPT:-$MINT_RZ_DIR/scripts/prove-mint-docker.sh}"
 DOCKER_ACK_PROVER_SCRIPT="${DOCKER_ACK_PROVER_SCRIPT:-$ACK_RZ_DIR/scripts/prove-ack-docker.sh}"
 RISC0_GUEST_USE_DOCKER="${RISC0_GUEST_USE_DOCKER:-1}"
+USE_STATELESS_CLIENT="${USE_STATELESS_CLIENT:-1}"
+STATELESS_CLIENT_DIR="${STATELESS_CLIENT_DIR:-$ROOT_DIR/stateless-client}"
+STATELESS_CLIENT_AUTO_BUILD="${STATELESS_CLIENT_AUTO_BUILD:-1}"
+STATELESS_CLIENT_RELAY_RETRIES="${STATELESS_CLIENT_RELAY_RETRIES:-6}"
+STATELESS_CLIENT_RELAY_RETRY_DELAY_SEC="${STATELESS_CLIENT_RELAY_RETRY_DELAY_SEC:-12}"
+STATELESS_CLIENT_SUCCESSOR_BLOCK_WAIT_ATTEMPTS="${STATELESS_CLIENT_SUCCESSOR_BLOCK_WAIT_ATTEMPTS:-45}"
+STATELESS_CLIENT_SUCCESSOR_BLOCK_WAIT_INTERVAL_SEC="${STATELESS_CLIENT_SUCCESSOR_BLOCK_WAIT_INTERVAL_SEC:-2}"
+STATELESS_CLIENT_LOG_LOOKBACK_BLOCKS="${STATELESS_CLIENT_LOG_LOOKBACK_BLOCKS:-50000}"
+STATELESS_CLIENT_CHIADO_SYNC_BACKWARDS_RPC_FALLBACK="${STATELESS_CLIENT_CHIADO_SYNC_BACKWARDS_RPC_FALLBACK:-}"
 COLIBRI_VERIFY="${COLIBRI_VERIFY:-0}"
 COLIBRI_TS_DIR="${COLIBRI_TS_DIR:-$ROOT_DIR/colibri}"
 COLIBRI_PROVER_URLS="${COLIBRI_PROVER_URLS:-}"
@@ -119,6 +128,52 @@ require_env_value() {
         echo "Missing required env var: $name" >&2
         exit 1
     fi
+}
+
+trim_string() {
+    local value="$1"
+    # Trim leading/trailing whitespace.
+    value="$(printf '%s' "$value" | sed -E 's/^[[:space:]]+//; s/[[:space:]]+$//')"
+    # Strip optional wrapping quotes.
+    value="$(printf '%s' "$value" | sed -E 's/^"(.*)"$/\1/; s/^'\''(.*)'\''$/\1/')"
+    printf '%s' "$value"
+}
+
+resolve_private_key() {
+    local env_file="$SC_DIR/.env"
+    local candidate="$PRIVATE_KEY"
+    local source="env:PRIVATE_KEY"
+
+    if [[ -z "$candidate" && -f "$env_file" ]]; then
+        candidate="$(
+            awk -F= '
+                /^[[:space:]]*(export[[:space:]]+)?PRIVATE_KEY[[:space:]]*=/ {
+                    print substr($0, index($0, "=") + 1)
+                }
+            ' "$env_file" | tail -n1
+        )"
+        candidate="${candidate%%#*}"
+        candidate="$(trim_string "$candidate")"
+        source="$env_file"
+    fi
+
+    if [[ -z "$candidate" ]]; then
+        echo "Missing PRIVATE_KEY. Set PRIVATE_KEY env var or add PRIVATE_KEY=<hex> to $env_file" >&2
+        exit 1
+    fi
+
+    # Allow both bare hex and 0x-prefixed values.
+    if [[ "$candidate" =~ ^[0-9a-fA-F]{64}$ ]]; then
+        candidate="0x$candidate"
+    fi
+
+    if [[ ! "$candidate" =~ ^0x[0-9a-fA-F]{64}$ ]]; then
+        echo "Invalid PRIVATE_KEY format from $source. Expected 32-byte hex (with or without 0x)." >&2
+        exit 1
+    fi
+
+    PRIVATE_KEY="$candidate"
+    echo "Using private key from $source"
 }
 
 send_tx_async() {
@@ -367,6 +422,454 @@ query_erc20_balance() {
     fi
 
     cast --to-dec "$raw_balance"
+}
+
+extract_stateless_client_value() {
+    local cli_output="$1"
+    local key="$2"
+    local value
+    value="$(printf '%s\n' "$cli_output" | awk -F': ' -v k="$key" '$1 == k {print $2}' | tail -n1)"
+    if [[ -z "$value" ]]; then
+        echo "Failed to extract '$key' from stateless-client output." >&2
+        exit 1
+    fi
+    printf '%s' "$value"
+}
+
+ensure_stateless_client_ready() {
+    if [[ "$USE_STATELESS_CLIENT" != "1" ]]; then
+        return 0
+    fi
+
+    require_cmd node
+    require_cmd npm
+
+    if [[ ! -d "$STATELESS_CLIENT_DIR" ]]; then
+        echo "Missing stateless-client directory: $STATELESS_CLIENT_DIR" >&2
+        exit 1
+    fi
+    if [[ ! -f "$STATELESS_CLIENT_DIR/package.json" ]]; then
+        echo "Missing stateless-client package.json in: $STATELESS_CLIENT_DIR" >&2
+        exit 1
+    fi
+
+    if [[ ! -d "$STATELESS_CLIENT_DIR/node_modules" ]]; then
+        echo "Installing stateless-client npm dependencies..."
+        (
+            cd "$STATELESS_CLIENT_DIR"
+            npm install
+        )
+    fi
+
+    if [[ "$STATELESS_CLIENT_AUTO_BUILD" == "1" ]]; then
+        echo "Building stateless-client..."
+        (
+            cd "$STATELESS_CLIENT_DIR"
+            npm run build >/dev/null
+        )
+    fi
+
+    if [[ ! -f "$STATELESS_CLIENT_DIR/dist/cli.js" ]]; then
+        echo "Missing stateless-client CLI build output: $STATELESS_CLIENT_DIR/dist/cli.js" >&2
+        echo "Run: (cd \"$STATELESS_CLIENT_DIR\" && npm run build)" >&2
+        exit 1
+    fi
+
+    mkdir -p "$STATELESS_CLIENT_DIR/colibri-cache"
+}
+
+run_stateless_client_cli_with_retry() {
+    local command="$1"
+    shift
+    local max_retries="$STATELESS_CLIENT_RELAY_RETRIES"
+    local retry_delay_sec="$STATELESS_CLIENT_RELAY_RETRY_DELAY_SEC"
+    local effective_log_lookback="$STATELESS_CLIENT_LOG_LOOKBACK_BLOCKS"
+    local attempt=0
+    local output rc max_range_from_error
+
+    while true; do
+        set +e
+        output="$(
+            cd "$STATELESS_CLIENT_DIR/colibri-cache"
+            RISC0_GUEST_USE_DOCKER="$RISC0_GUEST_USE_DOCKER" \
+            STATELESS_CLIENT_LOG_LOOKBACK_BLOCKS="$effective_log_lookback" \
+            STATELESS_CLIENT_CHIADO_SYNC_BACKWARDS_RPC_FALLBACK="$STATELESS_CLIENT_CHIADO_SYNC_BACKWARDS_RPC_FALLBACK" \
+            node ../dist/cli.js "$command" "$@" 2>&1
+        )"
+        rc=$?
+        set -e
+
+        if [[ "$rc" -eq 0 ]]; then
+            printf '%s' "$output"
+            return 0
+        fi
+
+        # Colibri/public RPC transient errors that are typically resolved by short retries.
+        if [[ "$output" == *"parentBeaconBlockRoot"* \
+            || "$output" == *"Block after "* \
+            || "$output" == *"can not be found in the execution layer"* \
+            || "$output" == *"cannot be found in the execution layer"* \
+            || "$output" == *"has not been signed yet and cannot be verified"* \
+            || "$output" == *"requested block has not been signed yet"* \
+            || "$output" == *"Invalid offset for container"* \
+            || "$output" == *"Invalid SSZ structure in bootstrap data"* ]]; then
+            if [[ "$attempt" -lt "$max_retries" ]]; then
+                attempt=$((attempt + 1))
+                echo "stateless-client $command hit a transient verification error. Retrying in ${retry_delay_sec}s (${attempt}/${max_retries})..."
+                sleep "$retry_delay_sec"
+                continue
+            fi
+        fi
+
+        max_range_from_error="$(
+            printf '%s\n' "$output" | sed -n 's/.*exceed maximum block range: \([0-9][0-9]*\).*/\1/p' | head -n1
+        )"
+        if [[ "$max_range_from_error" =~ ^[0-9]+$ && "$effective_log_lookback" =~ ^[0-9]+$ ]]; then
+            if (( effective_log_lookback > max_range_from_error )) && [[ "$attempt" -lt "$max_retries" ]]; then
+                attempt=$((attempt + 1))
+                effective_log_lookback="$max_range_from_error"
+                echo "stateless-client $command hit RPC log range limit; reducing lookback to ${effective_log_lookback} and retrying (${attempt}/${max_retries})..."
+                sleep "$retry_delay_sec"
+                continue
+            fi
+        fi
+
+        printf '%s' "$output"
+        return "$rc"
+    done
+}
+
+to_decimal_block_if_fixed() {
+    local block_tag="$1"
+
+    if [[ "$block_tag" =~ ^0x[0-9a-fA-F]+$ ]]; then
+        cast --to-dec "$block_tag" 2>/dev/null || true
+        return 0
+    fi
+
+    if [[ "$block_tag" =~ ^[0-9]+$ ]]; then
+        printf '%s' "$block_tag"
+        return 0
+    fi
+
+    # Dynamic tags (latest/safe/finalized/pending/earliest) do not have a fixed successor.
+    printf ''
+}
+
+wait_for_successor_execution_block() {
+    local rpc_url="$1"
+    local block_tag="$2"
+    local stage_label="$3"
+    local attempts="$STATELESS_CLIENT_SUCCESSOR_BLOCK_WAIT_ATTEMPTS"
+    local interval_sec="$STATELESS_CLIENT_SUCCESSOR_BLOCK_WAIT_INTERVAL_SEC"
+    local target_dec current_head i
+
+    target_dec="$(to_decimal_block_if_fixed "$block_tag")"
+    if [[ ! "$target_dec" =~ ^[0-9]+$ ]]; then
+        return 0
+    fi
+
+    current_head="$(cast block-number --rpc-url "$rpc_url" 2>/dev/null || true)"
+    if [[ "$current_head" =~ ^[0-9]+$ ]] && (( current_head > target_dec )); then
+        return 0
+    fi
+
+    echo "Waiting for stage '$stage_label' successor block after $target_dec on $rpc_url..."
+    for ((i = 1; i <= attempts; i++)); do
+        current_head="$(cast block-number --rpc-url "$rpc_url" 2>/dev/null || true)"
+        if [[ "$current_head" =~ ^[0-9]+$ ]] && (( current_head > target_dec )); then
+            echo "Observed successor block for stage '$stage_label': head=$current_head target=$target_dec"
+            return 0
+        fi
+        sleep "$interval_sec"
+    done
+
+    echo "Warning: did not observe successor block for stage '$stage_label' after ${attempts} attempts; continuing with CLI retries." >&2
+}
+
+is_colibri_sync_backwards_error() {
+    local output="$1"
+    [[ "$output" == *"last sync state is higher than the required period"* && "$output" == *"cannot sync backwards"* ]]
+}
+
+run_stateless_client_relay_flow() {
+    local tx_id="$1"
+    local source_deposit_block="$2"
+    local proof_backend="local"
+    local lock_execution_block_effective
+    local mint_execution_block_effective
+    local ack_execution_block_effective
+    local lock_output mint_output ack_output
+    local lock_submit_tx_hash mint_submit_tx_hash ack_submit_tx_hash
+    local dest_funds_released_block source_ack_ready_block
+    local dest_status source_status source_status_after_ack dest_final_status
+    local source_balance_after dest_balance_after
+    local -a common_args
+
+    ensure_stateless_client_ready
+
+    if [[ "$USE_DOCKER_PROVER" == "1" ]]; then
+        proof_backend="docker"
+    fi
+
+    lock_execution_block_effective="${LOCK_EXECUTION_BLOCK:-$source_deposit_block}"
+    lock_execution_block_effective="$(normalize_execution_block_tag "$lock_execution_block_effective")"
+    echo "Lock proof execution block: $lock_execution_block_effective"
+    wait_for_successor_execution_block "$SOURCE_RPC" "$lock_execution_block_effective" "source-deposit"
+
+    common_args=(
+        --tx-id "$tx_id"
+        --private-key "$PRIVATE_KEY"
+        --proof-backend "$proof_backend"
+        --source-profile "$SOURCE_NETWORK_PROFILE"
+        --destination-profile "$DEST_NETWORK_PROFILE"
+        --source-chain-id "$SOURCE_CHAIN_ID"
+        --destination-chain-id "$DEST_CHAIN_ID"
+        --source-rpc-url "$SOURCE_RPC"
+        --destination-rpc-url "$DEST_RPC"
+        --source-connector "$SOURCE_CONNECTOR"
+        --destination-connector "$DEST_CONNECTOR"
+        --repo-root "$ROOT_DIR"
+        --risc0-prover-mode "$RISC0_PROVER_MODE"
+        --lock-workspace "$LOCK_RZ_DIR"
+        --mint-workspace "$MINT_RZ_DIR"
+        --ack-workspace "$ACK_RZ_DIR"
+        --lock-docker-script "$DOCKER_LOCK_PROVER_SCRIPT"
+        --mint-docker-script "$DOCKER_MINT_PROVER_SCRIPT"
+        --ack-docker-script "$DOCKER_ACK_PROVER_SCRIPT"
+    )
+
+    if [[ -n "$COLIBRI_SOURCE_PROVER_URLS" ]]; then
+        common_args+=(--source-prover-urls "$COLIBRI_SOURCE_PROVER_URLS")
+    fi
+    if [[ -n "$COLIBRI_DEST_PROVER_URLS" ]]; then
+        common_args+=(--destination-prover-urls "$COLIBRI_DEST_PROVER_URLS")
+    fi
+    if [[ -n "$COLIBRI_SOURCE_BEACON_URLS" ]]; then
+        common_args+=(--source-beacon-urls "$COLIBRI_SOURCE_BEACON_URLS")
+    fi
+    if [[ -n "$COLIBRI_DEST_BEACON_URLS" ]]; then
+        common_args+=(--destination-beacon-urls "$COLIBRI_DEST_BEACON_URLS")
+    fi
+    if [[ -n "$COLIBRI_SOURCE_CHECKPOINTZ_URLS" ]]; then
+        common_args+=(--source-checkpointz-urls "$COLIBRI_SOURCE_CHECKPOINTZ_URLS")
+    fi
+    if [[ -n "$COLIBRI_DEST_CHECKPOINTZ_URLS" ]]; then
+        common_args+=(--destination-checkpointz-urls "$COLIBRI_DEST_CHECKPOINTZ_URLS")
+    fi
+
+    echo "Running stateless-client relay-lock..."
+    if ! lock_output="$(
+        run_stateless_client_cli_with_retry \
+            relay-lock \
+            "${common_args[@]}" \
+            --lock-execution-block "$lock_execution_block_effective"
+    )"; then
+        printf '%s\n' "$lock_output"
+        echo "stateless-client relay-lock failed." >&2
+        exit 1
+    fi
+    printf '%s\n' "$lock_output"
+
+    lock_submit_tx_hash="$(extract_stateless_client_value "$lock_output" "submissionTxHash")"
+    dest_funds_released_block="$(extract_stateless_client_value "$lock_output" "submissionBlock")"
+    dest_status="$(extract_stateless_client_value "$lock_output" "resultingStatus")"
+    echo "submitLockProof tx hash: $lock_submit_tx_hash (block $dest_funds_released_block)"
+
+    echo "Minting wrapped tokens on destination for balance verification..."
+    cast send \
+        "$DEST_TOKEN" \
+        "mint(address,uint256)" \
+        "$DEST_CONNECTOR" \
+        "$AMOUNT_WEI" \
+        --gas-limit "$DEST_TOKEN_MINT_GAS_LIMIT" \
+        --rpc-url "$DEST_RPC" \
+        --private-key "$PRIVATE_KEY" >/dev/null
+
+    mint_execution_block_effective="${MINT_EXECUTION_BLOCK:-$dest_funds_released_block}"
+    mint_execution_block_effective="$(normalize_execution_block_tag "$mint_execution_block_effective")"
+    echo "Mint proof execution block: $mint_execution_block_effective"
+    wait_for_successor_execution_block "$DEST_RPC" "$mint_execution_block_effective" "destination-funds-released"
+
+    echo "Running stateless-client relay-mint..."
+    if ! mint_output="$(
+        run_stateless_client_cli_with_retry \
+            relay-mint \
+            "${common_args[@]}" \
+            --mint-execution-block "$mint_execution_block_effective"
+    )"; then
+        if is_colibri_sync_backwards_error "$mint_output" && [[ "$mint_execution_block_effective" != "latest" ]]; then
+            echo "relay-mint hit sync-backwards with fixed execution block $mint_execution_block_effective. Retrying with --mint-execution-block latest..."
+            mint_execution_block_effective="latest"
+            if ! mint_output="$(
+                run_stateless_client_cli_with_retry \
+                    relay-mint \
+                    "${common_args[@]}" \
+                    --mint-execution-block "$mint_execution_block_effective"
+            )"; then
+                if is_colibri_sync_backwards_error "$mint_output"; then
+                    echo "relay-mint still hit sync-backwards at latest. Retrying with destination prover URLs disabled..."
+                    if ! mint_output="$(
+                        run_stateless_client_cli_with_retry \
+                            relay-mint \
+                            "${common_args[@]}" \
+                            --destination-prover-urls "," \
+                            --mint-execution-block "$mint_execution_block_effective"
+                    )"; then
+                        printf '%s\n' "$mint_output"
+                        echo "stateless-client relay-mint failed." >&2
+                        exit 1
+                    fi
+                else
+                    printf '%s\n' "$mint_output"
+                    echo "stateless-client relay-mint failed." >&2
+                    exit 1
+                fi
+            fi
+        elif is_colibri_sync_backwards_error "$mint_output"; then
+            echo "relay-mint hit sync-backwards. Retrying with destination prover URLs disabled..."
+            if ! mint_output="$(
+                run_stateless_client_cli_with_retry \
+                    relay-mint \
+                    "${common_args[@]}" \
+                    --destination-prover-urls "," \
+                    --mint-execution-block "$mint_execution_block_effective"
+            )"; then
+                printf '%s\n' "$mint_output"
+                echo "stateless-client relay-mint failed." >&2
+                exit 1
+            fi
+        else
+            printf '%s\n' "$mint_output"
+            echo "stateless-client relay-mint failed." >&2
+            exit 1
+        fi
+    fi
+    printf '%s\n' "$mint_output"
+
+    mint_submit_tx_hash="$(extract_stateless_client_value "$mint_output" "submissionTxHash")"
+    source_ack_ready_block="$(extract_stateless_client_value "$mint_output" "submissionBlock")"
+    source_status="$(extract_stateless_client_value "$mint_output" "resultingStatus")"
+    echo "submitMintProof tx hash: $mint_submit_tx_hash (block $source_ack_ready_block)"
+
+    if [[ "$dest_status" != "4" && "$dest_status" != unknown* ]]; then
+        echo "Destination tx status mismatch: expected 4 (MINTED_IN_HOLDING), got $dest_status" >&2
+        exit 1
+    fi
+
+    echo "Switching destination RISC0 verifier to ack image adapter..."
+    cast send \
+        "$DEST_CONNECTOR" \
+        "setVerifier(uint8,address)" \
+        0 \
+        "$DEST_ACK_RISC0_ADAPTER" \
+        --gas-limit "$SET_VERIFIER_GAS_LIMIT" \
+        --rpc-url "$DEST_RPC" \
+        --private-key "$PRIVATE_KEY" >/dev/null
+
+    ack_execution_block_effective="${ACK_EXECUTION_BLOCK:-$source_ack_ready_block}"
+    ack_execution_block_effective="$(normalize_execution_block_tag "$ack_execution_block_effective")"
+    echo "Ack proof execution block: $ack_execution_block_effective"
+    wait_for_successor_execution_block "$SOURCE_RPC" "$ack_execution_block_effective" "source-ack-ready"
+
+    echo "Running stateless-client relay-ack..."
+    if ! ack_output="$(
+        run_stateless_client_cli_with_retry \
+            relay-ack \
+            "${common_args[@]}" \
+            --ack-execution-block "$ack_execution_block_effective"
+    )"; then
+        if is_colibri_sync_backwards_error "$ack_output" && [[ "$ack_execution_block_effective" != "latest" ]]; then
+            echo "relay-ack hit sync-backwards with fixed execution block $ack_execution_block_effective. Retrying with --ack-execution-block latest..."
+            ack_execution_block_effective="latest"
+            if ! ack_output="$(
+                run_stateless_client_cli_with_retry \
+                    relay-ack \
+                    "${common_args[@]}" \
+                    --ack-execution-block "$ack_execution_block_effective"
+            )"; then
+                if is_colibri_sync_backwards_error "$ack_output"; then
+                    echo "relay-ack still hit sync-backwards at latest. Retrying with source prover URLs disabled..."
+                    if ! ack_output="$(
+                        run_stateless_client_cli_with_retry \
+                            relay-ack \
+                            "${common_args[@]}" \
+                            --source-prover-urls "," \
+                            --ack-execution-block "$ack_execution_block_effective"
+                    )"; then
+                        printf '%s\n' "$ack_output"
+                        echo "stateless-client relay-ack failed." >&2
+                        exit 1
+                    fi
+                else
+                    printf '%s\n' "$ack_output"
+                    echo "stateless-client relay-ack failed." >&2
+                    exit 1
+                fi
+            fi
+        elif is_colibri_sync_backwards_error "$ack_output"; then
+            echo "relay-ack hit sync-backwards. Retrying with source prover URLs disabled..."
+            if ! ack_output="$(
+                run_stateless_client_cli_with_retry \
+                    relay-ack \
+                    "${common_args[@]}" \
+                    --source-prover-urls "," \
+                    --ack-execution-block "$ack_execution_block_effective"
+            )"; then
+                printf '%s\n' "$ack_output"
+                echo "stateless-client relay-ack failed." >&2
+                exit 1
+            fi
+        else
+            printf '%s\n' "$ack_output"
+            echo "stateless-client relay-ack failed." >&2
+            exit 1
+        fi
+    fi
+    printf '%s\n' "$ack_output"
+
+    ack_submit_tx_hash="$(extract_stateless_client_value "$ack_output" "submissionTxHash")"
+    dest_final_status="$(extract_stateless_client_value "$ack_output" "resultingStatus")"
+    echo "submitAckProof tx hash: $ack_submit_tx_hash"
+
+    source_status_after_ack="$(cast call "$SOURCE_CONNECTOR" "txStatus(bytes32)(uint8)" "$tx_id" --rpc-url "$SOURCE_RPC")"
+    if [[ "$source_status_after_ack" != "2" ]]; then
+        echo "Source tx status mismatch: expected 2 (MINT_PROOF_ACCEPTED), got $source_status_after_ack" >&2
+        exit 1
+    fi
+    if [[ "$source_status" != "2" ]]; then
+        echo "Source tx status mismatch after relay-mint: expected 2 (MINT_PROOF_ACCEPTED), got $source_status" >&2
+        exit 1
+    fi
+    if [[ "$dest_final_status" != "0" ]]; then
+        echo "Destination tx status mismatch after ack: expected 0 (NONE), got $dest_final_status" >&2
+        exit 1
+    fi
+
+    source_balance_after="$(query_erc20_balance "$SOURCE_RPC" "$SOURCE_TOKEN" "$DEPLOYER_ADDRESS")"
+    dest_balance_after="$(query_erc20_balance "$DEST_RPC" "$DEST_TOKEN" "$DEPLOYER_ADDRESS")"
+    echo "Account token balances after transfer:"
+    echo "  source chain ($SOURCE_CHAIN_ID): $source_balance_after"
+    echo "  destination chain ($DEST_CHAIN_ID): $dest_balance_after"
+
+    echo
+    echo "Done (stateless-client relay)."
+    echo "txId:                   $tx_id"
+    echo "sourceConnector:        $SOURCE_CONNECTOR"
+    echo "destConnector:          $DEST_CONNECTOR"
+    echo "sourceToken:            $SOURCE_TOKEN"
+    echo "destToken:              $DEST_TOKEN"
+    echo "relay backend:          $proof_backend"
+    echo "lock submit tx:         $lock_submit_tx_hash (block $dest_funds_released_block)"
+    echo "mint submit tx:         $mint_submit_tx_hash (block $source_ack_ready_block)"
+    echo "ack submit tx:          $ack_submit_tx_hash"
+    echo "destination txStatus:   $dest_status (expected 4 for MINTED_IN_HOLDING)"
+    echo "destination final:      $dest_final_status (expected 0 for NONE)"
+    echo "source txStatus:        $source_status_after_ack (expected 2 for MINT_PROOF_ACCEPTED)"
+    echo "account source balance: $SOURCE_BALANCE_BEFORE -> $source_balance_after"
+    echo "account dest balance:   $DEST_BALANCE_BEFORE -> $dest_balance_after"
+    echo "reuse source env:       REUSE_SOURCE_DEPLOYMENTS=1 EXISTING_SOURCE_CONNECTOR=$SOURCE_CONNECTOR EXISTING_SOURCE_TOKEN=$SOURCE_TOKEN EXISTING_SOURCE_MINT_RISC0_ADAPTER=${SOURCE_RISC0_ADAPTER:-}"
+    echo "reuse dest env:         REUSE_DEST_DEPLOYMENTS=1 EXISTING_DEST_CONNECTOR=$DEST_CONNECTOR EXISTING_DEST_TOKEN=$DEST_TOKEN EXISTING_DEST_LOCK_RISC0_ADAPTER=$DEST_RISC0_ADAPTER EXISTING_DEST_ACK_RISC0_ADAPTER=$DEST_ACK_RISC0_ADAPTER"
 }
 
 set_if_empty_var() {
@@ -749,7 +1252,8 @@ run_colibri_stage_verification() {
                     "$PWD/$state_file" \
                     "$ROOT_DIR/$state_file" \
                     "$SC_DIR/$state_file" \
-                    "$COLIBRI_TS_DIR/$state_file"; do
+                    "$COLIBRI_TS_DIR/$state_file" \
+                    "$STATELESS_CLIENT_DIR/colibri-cache/$state_file"; do
                     if [[ -f "$candidate" ]]; then
                         rm -f "$candidate"
                         echo "Colibri stage '$stage' removed stale local state file: $candidate"
@@ -800,6 +1304,10 @@ require_cmd awk
 require_cmd tr
 require_cmd curl
 require_cmd sed
+if [[ "$USE_STATELESS_CLIENT" == "1" ]]; then
+    require_cmd node
+    require_cmd npm
+fi
 if [[ "$USE_DOCKER_PROVER" == "1" ]]; then
     require_cmd docker
 else
@@ -810,6 +1318,7 @@ else
 fi
 ensure_colibri_verifier_ready
 ensure_risc0_r0vm_available
+resolve_private_key
 
 ACTUAL_SOURCE_CHAIN_ID="$(cast chain-id --rpc-url "$SOURCE_RPC")"
 ACTUAL_DEST_CHAIN_ID="$(cast chain-id --rpc-url "$DEST_RPC")"
@@ -836,7 +1345,17 @@ echo "Dest RPC: $DEST_RPC (chain $DEST_CHAIN_ID)"
 echo "RISC0 prover: $RISC0_PROVER_MODE"
 echo "Docker prover: $USE_DOCKER_PROVER"
 echo "RISC0 guest docker build: $RISC0_GUEST_USE_DOCKER"
+echo "Stateless client relay: $USE_STATELESS_CLIENT"
 echo "Colibri verification: $COLIBRI_VERIFY"
+if [[ "$USE_STATELESS_CLIENT" == "1" ]]; then
+    if [[ -z "$STATELESS_CLIENT_CHIADO_SYNC_BACKWARDS_RPC_FALLBACK" ]]; then
+        echo "Chiado sync-backwards RPC fallback: enabled (default)"
+    elif [[ "$STATELESS_CLIENT_CHIADO_SYNC_BACKWARDS_RPC_FALLBACK" == "0" || "${STATELESS_CLIENT_CHIADO_SYNC_BACKWARDS_RPC_FALLBACK,,}" == "false" ]]; then
+        echo "Chiado sync-backwards RPC fallback: disabled"
+    else
+        echo "Chiado sync-backwards RPC fallback: enabled"
+    fi
+fi
 
 echo "Building contracts and zk host binaries..."
 (
@@ -1098,6 +1617,11 @@ TX_ID="$(
         "$SOURCE_TX_NONCE"
 )"
 echo "Computed txId: $TX_ID"
+
+if [[ "$USE_STATELESS_CLIENT" == "1" ]]; then
+    run_stateless_client_relay_flow "$TX_ID" "$SOURCE_DEPOSIT_BLOCK"
+    exit 0
+fi
 
 run_colibri_stage_verification \
     "source-deposit" \
