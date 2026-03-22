@@ -104,15 +104,15 @@ REUSE_SOURCE_DEPLOYMENTS="${REUSE_SOURCE_DEPLOYMENTS:-0}"
 REUSE_DEST_DEPLOYMENTS="${REUSE_DEST_DEPLOYMENTS:-0}"
 EXISTING_SOURCE_CONNECTOR="${EXISTING_SOURCE_CONNECTOR:-}"
 EXISTING_SOURCE_TOKEN="${EXISTING_SOURCE_TOKEN:-}"
-EXISTING_SOURCE_MINT_RISC0_ADAPTER="${EXISTING_SOURCE_MINT_RISC0_ADAPTER:-}"
+EXISTING_SOURCE_RISC0_ADAPTER="${EXISTING_SOURCE_RISC0_ADAPTER:-}"
 EXISTING_DEST_CONNECTOR="${EXISTING_DEST_CONNECTOR:-}"
 EXISTING_DEST_TOKEN="${EXISTING_DEST_TOKEN:-}"
-EXISTING_DEST_LOCK_RISC0_ADAPTER="${EXISTING_DEST_LOCK_RISC0_ADAPTER:-}"
-EXISTING_DEST_ACK_RISC0_ADAPTER="${EXISTING_DEST_ACK_RISC0_ADAPTER:-}"
+EXISTING_DEST_RISC0_ADAPTER="${EXISTING_DEST_RISC0_ADAPTER:-}"
 
 # RISC Zero Groth16 verifier params from risc0-ethereum ControlID.sol.
 CONTROL_ROOT="0xa54dc85ac99f851c92d7c96d7318af41dbe7c0194edfcc37eb4d422a998c1f56"
 BN254_CONTROL_ID="0x04446e66d300eb7fb45c9726bb53c793dda407a62e9601618bb43c5c14657ac0"
+BYTES32_ZERO="0x0000000000000000000000000000000000000000000000000000000000000000"
 
 require_cmd() {
     if ! command -v "$1" >/dev/null 2>&1; then
@@ -757,16 +757,6 @@ run_stateless_client_relay_flow() {
         exit 1
     fi
 
-    echo "Switching destination RISC0 verifier to ack image adapter..."
-    cast send \
-        "$DEST_CONNECTOR" \
-        "setVerifier(uint8,address)" \
-        0 \
-        "$DEST_ACK_RISC0_ADAPTER" \
-        --gas-limit "$SET_VERIFIER_GAS_LIMIT" \
-        --rpc-url "$DEST_RPC" \
-        --private-key "$PRIVATE_KEY" >/dev/null
-
     ack_execution_block_effective="${ACK_EXECUTION_BLOCK:-$source_ack_ready_block}"
     ack_execution_block_effective="$(normalize_execution_block_tag "$ack_execution_block_effective")"
     echo "Ack proof execution block: $ack_execution_block_effective"
@@ -868,8 +858,8 @@ run_stateless_client_relay_flow() {
     echo "source txStatus:        $source_status_after_ack (expected 2 for MINT_PROOF_ACCEPTED)"
     echo "account source balance: $SOURCE_BALANCE_BEFORE -> $source_balance_after"
     echo "account dest balance:   $DEST_BALANCE_BEFORE -> $dest_balance_after"
-    echo "reuse source env:       REUSE_SOURCE_DEPLOYMENTS=1 EXISTING_SOURCE_CONNECTOR=$SOURCE_CONNECTOR EXISTING_SOURCE_TOKEN=$SOURCE_TOKEN EXISTING_SOURCE_MINT_RISC0_ADAPTER=${SOURCE_RISC0_ADAPTER:-}"
-    echo "reuse dest env:         REUSE_DEST_DEPLOYMENTS=1 EXISTING_DEST_CONNECTOR=$DEST_CONNECTOR EXISTING_DEST_TOKEN=$DEST_TOKEN EXISTING_DEST_LOCK_RISC0_ADAPTER=$DEST_RISC0_ADAPTER EXISTING_DEST_ACK_RISC0_ADAPTER=$DEST_ACK_RISC0_ADAPTER"
+    echo "reuse source env:       REUSE_SOURCE_DEPLOYMENTS=1 EXISTING_SOURCE_CONNECTOR=$SOURCE_CONNECTOR EXISTING_SOURCE_TOKEN=$SOURCE_TOKEN EXISTING_SOURCE_RISC0_ADAPTER=${SOURCE_RISC0_ADAPTER:-}"
+    echo "reuse dest env:         REUSE_DEST_DEPLOYMENTS=1 EXISTING_DEST_CONNECTOR=$DEST_CONNECTOR EXISTING_DEST_TOKEN=$DEST_TOKEN EXISTING_DEST_RISC0_ADAPTER=$DEST_RISC0_ADAPTER"
 }
 
 set_if_empty_var() {
@@ -1430,19 +1420,16 @@ echo "Ack guest image ID:  $ACK_IMAGE_ID"
 if [[ "$REUSE_DEST_DEPLOYMENTS" == "1" ]]; then
     require_env_value "EXISTING_DEST_CONNECTOR" "$EXISTING_DEST_CONNECTOR"
     require_env_value "EXISTING_DEST_TOKEN" "$EXISTING_DEST_TOKEN"
-    require_env_value "EXISTING_DEST_LOCK_RISC0_ADAPTER" "$EXISTING_DEST_LOCK_RISC0_ADAPTER"
-    require_env_value "EXISTING_DEST_ACK_RISC0_ADAPTER" "$EXISTING_DEST_ACK_RISC0_ADAPTER"
+    require_env_value "EXISTING_DEST_RISC0_ADAPTER" "$EXISTING_DEST_RISC0_ADAPTER"
 
     DEST_CONNECTOR="$EXISTING_DEST_CONNECTOR"
     DEST_TOKEN="$EXISTING_DEST_TOKEN"
-    DEST_RISC0_ADAPTER="$EXISTING_DEST_LOCK_RISC0_ADAPTER"
-    DEST_ACK_RISC0_ADAPTER="$EXISTING_DEST_ACK_RISC0_ADAPTER"
+    DEST_RISC0_ADAPTER="$EXISTING_DEST_RISC0_ADAPTER"
 
     echo "Reusing destination deployments:"
     echo "  DEST_CONNECTOR: $DEST_CONNECTOR"
     echo "  DEST_TOKEN: $DEST_TOKEN"
-    echo "  DEST_LOCK_RISC0_ADAPTER: $DEST_RISC0_ADAPTER"
-    echo "  DEST_ACK_RISC0_ADAPTER:  $DEST_ACK_RISC0_ADAPTER"
+    echo "  DEST_RISC0_ADAPTER: $DEST_RISC0_ADAPTER"
 else
     echo "Deploying destination chain contracts..."
     DEST_RISC0_VERIFIER="$(
@@ -1455,13 +1442,7 @@ else
         deploy_contract \
             "$DEST_RPC" \
             "src/zk-proof/adapters/RiscZeroAdapter.sol:RiscZeroAdapter" \
-            --constructor-args "$DEST_RISC0_VERIFIER" "$LOCK_IMAGE_ID"
-    )"
-    DEST_ACK_RISC0_ADAPTER="$(
-        deploy_contract \
-            "$DEST_RPC" \
-            "src/zk-proof/adapters/RiscZeroAdapter.sol:RiscZeroAdapter" \
-            --constructor-args "$DEST_RISC0_VERIFIER" "$ACK_IMAGE_ID"
+            --constructor-args "$DEST_RISC0_VERIFIER" "[$LOCK_IMAGE_ID,$ACK_IMAGE_ID]"
     )"
     DEST_MOCK_SNARK_VERIFIER="$(
         deploy_contract \
@@ -1478,7 +1459,7 @@ else
         deploy_contract \
             "$DEST_RPC" \
             "src/connectors/Connector.sol:Connector" \
-            --constructor-args "$DEST_RISC0_ADAPTER" "$DEST_SNARK_ADAPTER" "$ACK_WINDOW_SECONDS"
+            --constructor-args "$DEST_RISC0_ADAPTER" "$DEST_SNARK_ADAPTER" "$ACK_WINDOW_SECONDS" "[$BYTES32_ZERO,$BYTES32_ZERO,$LOCK_IMAGE_ID,$ACK_IMAGE_ID,$BYTES32_ZERO]"
     )"
     DEST_TOKEN="$(
         deploy_contract \
@@ -1494,13 +1475,13 @@ if [[ "$REUSE_SOURCE_DEPLOYMENTS" == "1" ]]; then
 
     SOURCE_CONNECTOR="$EXISTING_SOURCE_CONNECTOR"
     SOURCE_TOKEN="$EXISTING_SOURCE_TOKEN"
-    SOURCE_RISC0_ADAPTER="$EXISTING_SOURCE_MINT_RISC0_ADAPTER"
+    SOURCE_RISC0_ADAPTER="$EXISTING_SOURCE_RISC0_ADAPTER"
 
     echo "Reusing source deployments:"
     echo "  SOURCE_CONNECTOR: $SOURCE_CONNECTOR"
     echo "  SOURCE_TOKEN: $SOURCE_TOKEN"
     if [[ -n "$SOURCE_RISC0_ADAPTER" ]]; then
-        echo "  SOURCE_MINT_RISC0_ADAPTER: $SOURCE_RISC0_ADAPTER"
+        echo "  SOURCE_RISC0_ADAPTER: $SOURCE_RISC0_ADAPTER"
     fi
 else
     echo "Deploying source chain contracts..."
@@ -1519,7 +1500,7 @@ else
         deploy_contract \
             "$SOURCE_RPC" \
             "src/zk-proof/adapters/RiscZeroAdapter.sol:RiscZeroAdapter" \
-            --constructor-args "$SOURCE_RISC0_VERIFIER" "$MINT_IMAGE_ID"
+            --constructor-args "$SOURCE_RISC0_VERIFIER" "[$MINT_IMAGE_ID]"
     )"
     SOURCE_SNARK_ADAPTER="$(
         deploy_contract \
@@ -1531,7 +1512,7 @@ else
         deploy_contract \
             "$SOURCE_RPC" \
             "src/connectors/Connector.sol:Connector" \
-            --constructor-args "$SOURCE_RISC0_ADAPTER" "$SOURCE_SNARK_ADAPTER" "$ACK_WINDOW_SECONDS"
+            --constructor-args "$SOURCE_RISC0_ADAPTER" "$SOURCE_SNARK_ADAPTER" "$ACK_WINDOW_SECONDS" "[$MINT_IMAGE_ID,$BYTES32_ZERO,$BYTES32_ZERO,$BYTES32_ZERO,$BYTES32_ZERO]"
     )"
     SOURCE_TOKEN="$(
         deploy_contract \
@@ -1539,30 +1520,6 @@ else
             "script/MockERC20.s.sol:MockERC20" \
             --constructor-args "$TOKEN_NAME" "$TOKEN_SYMBOL"
     )"
-fi
-
-if [[ "$REUSE_DEST_DEPLOYMENTS" == "1" ]]; then
-    echo "Reusing destination deployment: switching verifier to lock adapter..."
-    cast send \
-        "$DEST_CONNECTOR" \
-        "setVerifier(uint8,address)" \
-        0 \
-        "$DEST_RISC0_ADAPTER" \
-        --gas-limit "$SET_VERIFIER_GAS_LIMIT" \
-        --rpc-url "$DEST_RPC" \
-        --private-key "$PRIVATE_KEY" >/dev/null
-fi
-
-if [[ "$REUSE_SOURCE_DEPLOYMENTS" == "1" && -n "$SOURCE_RISC0_ADAPTER" ]]; then
-    echo "Reusing source deployment: ensuring source verifier uses mint adapter..."
-    cast send \
-        "$SOURCE_CONNECTOR" \
-        "setVerifier(uint8,address)" \
-        0 \
-        "$SOURCE_RISC0_ADAPTER" \
-        --gas-limit "$SET_VERIFIER_GAS_LIMIT" \
-        --rpc-url "$SOURCE_RPC" \
-        --private-key "$PRIVATE_KEY" >/dev/null
 fi
 
 echo "Minting and locking on source chain..."
@@ -1847,16 +1804,6 @@ if [[ "$DEST_STATUS" != "4" && "$DEST_STATUS" != unknown* ]]; then
     exit 1
 fi
 
-echo "Switching destination RISC0 verifier to ack image adapter..."
-cast send \
-    "$DEST_CONNECTOR" \
-    "setVerifier(uint8,address)" \
-    0 \
-    "$DEST_ACK_RISC0_ADAPTER" \
-    --gas-limit "$SET_VERIFIER_GAS_LIMIT" \
-    --rpc-url "$DEST_RPC" \
-    --private-key "$PRIVATE_KEY" >/dev/null
-
 echo "Generating RISC Zero ack proof from source AckReady..."
 ACK_EXECUTION_BLOCK_EFFECTIVE="${ACK_EXECUTION_BLOCK:-$SOURCE_ACK_READY_BLOCK}"
 ACK_EXECUTION_BLOCK_EFFECTIVE="$(normalize_execution_block_tag "$ACK_EXECUTION_BLOCK_EFFECTIVE")"
@@ -1964,5 +1911,5 @@ echo "destination final:      $DEST_FINAL_STATUS (expected 0 for NONE)"
 echo "source txStatus:        $SOURCE_STATUS (expected 2 for MINT_PROOF_ACCEPTED)"
 echo "account source balance: $SOURCE_BALANCE_BEFORE -> $SOURCE_BALANCE_AFTER"
 echo "account dest balance:   $DEST_BALANCE_BEFORE -> $DEST_BALANCE_AFTER"
-echo "reuse source env:       REUSE_SOURCE_DEPLOYMENTS=1 EXISTING_SOURCE_CONNECTOR=$SOURCE_CONNECTOR EXISTING_SOURCE_TOKEN=$SOURCE_TOKEN EXISTING_SOURCE_MINT_RISC0_ADAPTER=${SOURCE_RISC0_ADAPTER:-}"
-echo "reuse dest env:         REUSE_DEST_DEPLOYMENTS=1 EXISTING_DEST_CONNECTOR=$DEST_CONNECTOR EXISTING_DEST_TOKEN=$DEST_TOKEN EXISTING_DEST_LOCK_RISC0_ADAPTER=$DEST_RISC0_ADAPTER EXISTING_DEST_ACK_RISC0_ADAPTER=$DEST_ACK_RISC0_ADAPTER"
+echo "reuse source env:       REUSE_SOURCE_DEPLOYMENTS=1 EXISTING_SOURCE_CONNECTOR=$SOURCE_CONNECTOR EXISTING_SOURCE_TOKEN=$SOURCE_TOKEN EXISTING_SOURCE_RISC0_ADAPTER=${SOURCE_RISC0_ADAPTER:-}"
+echo "reuse dest env:         REUSE_DEST_DEPLOYMENTS=1 EXISTING_DEST_CONNECTOR=$DEST_CONNECTOR EXISTING_DEST_TOKEN=$DEST_TOKEN EXISTING_DEST_RISC0_ADAPTER=$DEST_RISC0_ADAPTER"

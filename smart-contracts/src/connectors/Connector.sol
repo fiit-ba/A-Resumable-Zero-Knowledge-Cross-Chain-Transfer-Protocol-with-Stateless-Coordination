@@ -11,20 +11,40 @@ import {ProofOutputs} from "../libs/ProofOutputs.sol";
 import {ConnectorStorage} from "./ConnectorStorage.sol";
 import {IConnector} from "./IConnector.sol";
 
+interface IBurnableERC20 {
+    function burn(uint256 amount) external;
+}
+
 contract Connector is ConnectorStorage, IConnector, ReentrancyGuard {
     using SafeERC20 for IERC20;
 
     address public immutable admin;
 
-    constructor(address _risc0Adapter, address _snarkAdapter, uint64 _ackWindowSeconds) {
+    /// @param _risc0Adapter   Single RiscZeroAdapter allowlisting all image IDs used on this chain.
+    /// @param _snarkAdapter   SnarkAdapter for SNARKJS proof routes.
+    /// @param _ackWindowSeconds  Ack window duration in seconds.
+    /// @param risc0RouteImageIds  Expected RISC Zero image ID per VerifierRoute (index == uint8 route).
+    ///        Routes unused on this chain should be set to bytes32(0); they will never be checked.
+    constructor(
+        address _risc0Adapter,
+        address _snarkAdapter,
+        uint64 _ackWindowSeconds,
+        bytes32[5] memory risc0RouteImageIds
+    ) {
         if (_risc0Adapter == address(0)) revert Errors.ZeroAddress();
         if (_snarkAdapter == address(0)) revert Errors.ZeroAddress();
 
         admin = msg.sender;
-        _verifiers[uint8(Enums.ProofType.RISC0)] = _risc0Adapter;
-        _verifiers[uint8(Enums.ProofType.SNARKJS)] = _snarkAdapter;
-
         ackWindowSeconds = _ackWindowSeconds;
+
+        // Seed every route with the same default adapters so existing flows
+        // work out of the box without an explicit setVerifier call.
+        uint8 numRoutes = 5;
+        for (uint8 r = 0; r < numRoutes; r++) {
+            _verifiers[r][uint8(Enums.ProofType.RISC0)] = _risc0Adapter;
+            _verifiers[r][uint8(Enums.ProofType.SNARKJS)] = _snarkAdapter;
+            _risc0RouteImageIds[r] = risc0RouteImageIds[r];
+        }
     }
 
     modifier requireStatus(bytes32 _txId, Enums.TxStatus _expected) {
@@ -38,10 +58,22 @@ contract Connector is ConnectorStorage, IConnector, ReentrancyGuard {
     }
 
     /// @inheritdoc IConnector
-    function setVerifier(Enums.ProofType _proofType, address _verifier) external onlyAdmin {
+    function setVerifier(Enums.VerifierRoute _route, Enums.ProofType _proofType, address _verifier)
+        external
+        onlyAdmin
+    {
         if (_verifier == address(0)) revert Errors.ZeroAddress();
-        _verifiers[uint8(_proofType)] = _verifier;
-        emit VerifierUpdated(_proofType, _verifier);
+        _verifiers[uint8(_route)][uint8(_proofType)] = _verifier;
+        emit VerifierUpdated(_route, _proofType, _verifier);
+    }
+
+    /// @inheritdoc IConnector
+    function getVerifier(Enums.VerifierRoute _route, Enums.ProofType _proofType)
+        external
+        view
+        returns (address)
+    {
+        return _verifiers[uint8(_route)][uint8(_proofType)];
     }
 
     /*//////////////////////////////////////////////////////////////
@@ -110,15 +142,24 @@ contract Connector is ConnectorStorage, IConnector, ReentrancyGuard {
     }
 
     /// @inheritdoc IConnector
+    function getExpectedRisc0ImageId(Enums.VerifierRoute _route) external view returns (bytes32) {
+        return _risc0RouteImageIds[uint8(_route)];
+    }
+
+    /// @inheritdoc IConnector
     function submitMintProof(Enums.ProofType _proofType, bytes calldata _proofPayload, bytes32 _txId)
         external
         nonReentrant
         requireStatus(_txId, Enums.TxStatus.DEPOSIT_LOCKED)
     {
+        _checkRouteImageId(Enums.VerifierRoute.ORIGIN_MINT, _proofType, _proofPayload);
         CrossChainTx storage tx_ = _txs[_txId];
 
-        (bytes32 commitment, bytes32 proofHash) = _verifyProof(_proofType, _proofPayload, _txId);
-        bytes32 expected = _expectedCommitment(_proofType, abi.encode(_txId, tx_.dstChainConnector, tx_.amount, tx_.to));
+        (bytes32 commitment, bytes32 proofHash) =
+            _verifyProof(Enums.VerifierRoute.ORIGIN_MINT, _proofType, _proofPayload, _txId);
+        bytes32 expected = _expectedCommitment(
+            Enums.VerifierRoute.ORIGIN_MINT, _proofType, abi.encode(_txId, tx_.dstChainConnector, tx_.amount, tx_.to)
+        );
 
         if (commitment != expected) {
             revert Errors.CommitmentMismatch(commitment, expected);
@@ -167,10 +208,13 @@ contract Connector is ConnectorStorage, IConnector, ReentrancyGuard {
         nonReentrant
         requireStatus(_txId, Enums.TxStatus.REFUND_INITIATED)
     {
+        _checkRouteImageId(Enums.VerifierRoute.ORIGIN_BURN, _proofType, _proofPayload);
         CrossChainTx memory tx_ = _txs[_txId];
 
-        (bytes32 commitment,) = _verifyProof(_proofType, _proofPayload, _txId);
-        bytes32 expected = _expectedCommitment(_proofType, abi.encode(_txId, tx_.dstChainConnector, tx_.amount));
+        (bytes32 commitment,) =
+            _verifyProof(Enums.VerifierRoute.ORIGIN_BURN, _proofType, _proofPayload, _txId);
+        bytes32 expected =
+            _expectedCommitment(Enums.VerifierRoute.ORIGIN_BURN, _proofType, abi.encode(_txId, tx_.dstChainConnector, tx_.amount));
         if (commitment != expected) {
             revert Errors.CommitmentMismatch(commitment, expected);
         }
@@ -247,12 +291,15 @@ contract Connector is ConnectorStorage, IConnector, ReentrancyGuard {
         uint256 _nonce,
         uint256 _sourceChainId
     ) external nonReentrant {
+        _checkRouteImageId(Enums.VerifierRoute.DEST_LOCK, _proofType, _proofPayload);
         if (txStatus[_txId] != Enums.TxStatus.NONE) {
             revert Errors.TxAlreadyExists(_txId);
         }
 
-        (bytes32 commitment, bytes32 proofHash) = _verifyProof(_proofType, _proofPayload, _txId);
+        (bytes32 commitment, bytes32 proofHash) =
+            _verifyProof(Enums.VerifierRoute.DEST_LOCK, _proofType, _proofPayload, _txId);
         bytes32 expected = _expectedCommitment(
+            Enums.VerifierRoute.DEST_LOCK,
             _proofType,
             ProofOutputs.encodeLockProof(
                 ProofOutputs.LockProofPublicInputs({
@@ -318,11 +365,16 @@ contract Connector is ConnectorStorage, IConnector, ReentrancyGuard {
         nonReentrant
         requireStatus(_txId, Enums.TxStatus.MINTED_IN_HOLDING)
     {
+        _checkRouteImageId(Enums.VerifierRoute.DEST_ACK, _proofType, _proofPayload);
         CrossChainTx memory tx_ = _txs[_txId];
 
-        (bytes32 commitment, bytes32 proofHash) = _verifyProof(_proofType, _proofPayload, _txId);
-        bytes32 expected =
-            _expectedCommitment(_proofType, abi.encode(_txId, tx_.srcChainConnector, tx_.dstChainConnector));
+        (bytes32 commitment, bytes32 proofHash) =
+            _verifyProof(Enums.VerifierRoute.DEST_ACK, _proofType, _proofPayload, _txId);
+        bytes32 expected = _expectedCommitment(
+            Enums.VerifierRoute.DEST_ACK,
+            _proofType,
+            abi.encode(_txId, tx_.srcChainConnector, tx_.dstChainConnector)
+        );
         if (commitment != expected) {
             revert Errors.CommitmentMismatch(commitment, expected);
         }
@@ -353,14 +405,18 @@ contract Connector is ConnectorStorage, IConnector, ReentrancyGuard {
         nonReentrant
         requireStatus(_txId, Enums.TxStatus.MINTED_IN_HOLDING)
     {
+        _checkRouteImageId(Enums.VerifierRoute.DEST_REFUND_CLAIM, _proofType, _proofPayload);
         CrossChainTx storage tx_ = _txs[_txId];
 
         if (block.timestamp < tx_.ackDeadline) {
             revert Errors.AckWindowNotExpired(tx_.ackDeadline, uint64(block.timestamp));
         }
 
-        (bytes32 commitment, bytes32 proofHash) = _verifyProof(_proofType, _proofPayload, _txId);
-        bytes32 expected = _expectedCommitment(_proofType, abi.encode(_txId, tx_.srcChainConnector, tx_.amount));
+        (bytes32 commitment, bytes32 proofHash) =
+            _verifyProof(Enums.VerifierRoute.DEST_REFUND_CLAIM, _proofType, _proofPayload, _txId);
+        bytes32 expected = _expectedCommitment(
+            Enums.VerifierRoute.DEST_REFUND_CLAIM, _proofType, abi.encode(_txId, tx_.srcChainConnector, tx_.amount)
+        );
         if (commitment != expected) {
             revert Errors.CommitmentMismatch(commitment, expected);
         }
@@ -392,6 +448,9 @@ contract Connector is ConnectorStorage, IConnector, ReentrancyGuard {
     {
         CrossChainTx memory tx_ = _txs[_txId];
 
+        // Burn the held destination wrapped tokens before cleanup.
+        IBurnableERC20(tx_.currencyTo).burn(tx_.amount);
+
         _cleanupTx(_txId);
 
         emit DestTxClosed(
@@ -411,10 +470,28 @@ contract Connector is ConnectorStorage, IConnector, ReentrancyGuard {
                             INTERNAL FUNCTIONS
     //////////////////////////////////////////////////////////////*/
 
-    function _verifyProof(Enums.ProofType _proofType, bytes calldata _proofPayload, bytes32 _txId)
-        internal
-        returns (bytes32 commitment, bytes32 proofHash)
-    {
+    /// @dev For RISC0 proofs, asserts that the imageId embedded in the payload matches
+    ///      the expected imageId stored for this route. Reverts with ImageIdRouteMismatch on mismatch.
+    ///      No-op for non-RISC0 proof types.
+    function _checkRouteImageId(
+        Enums.VerifierRoute _route,
+        Enums.ProofType _proofType,
+        bytes calldata _proofPayload
+    ) internal view {
+        if (_proofType != Enums.ProofType.RISC0) return;
+        (, bytes32 proofImageId,) = abi.decode(_proofPayload, (bytes, bytes32, bytes32));
+        bytes32 expected = _risc0RouteImageIds[uint8(_route)];
+        if (proofImageId != expected) {
+            revert Errors.ImageIdRouteMismatch(uint8(_route), proofImageId, expected);
+        }
+    }
+
+    function _verifyProof(
+        Enums.VerifierRoute _route,
+        Enums.ProofType _proofType,
+        bytes calldata _proofPayload,
+        bytes32 _txId
+    ) internal returns (bytes32 commitment, bytes32 proofHash) {
         proofHash = keccak256(_proofPayload);
         if (txProofUsed[_txId][proofHash]) {
             revert Errors.ProofAlreadyProcessed(proofHash);
@@ -422,7 +499,7 @@ contract Connector is ConnectorStorage, IConnector, ReentrancyGuard {
         txProofUsed[_txId][proofHash] = true;
         txProofHashes[_txId].push(proofHash);
 
-        address verifier = _verifiers[uint8(_proofType)];
+        address verifier = _verifiers[uint8(_route)][uint8(_proofType)];
         if (verifier == address(0)) revert Errors.VerifierNotRegistered(uint8(_proofType));
 
         commitment = IZKVerifier(verifier).verify(_proofPayload);
@@ -430,12 +507,12 @@ contract Connector is ConnectorStorage, IConnector, ReentrancyGuard {
         emit ProofVerified(_txId, _proofType, proofHash, commitment, _proofPayload);
     }
 
-    function _expectedCommitment(Enums.ProofType _proofType, bytes memory _publicInputs)
-        internal
-        view
-        returns (bytes32)
-    {
-        address verifier = _verifiers[uint8(_proofType)];
+    function _expectedCommitment(
+        Enums.VerifierRoute _route,
+        Enums.ProofType _proofType,
+        bytes memory _publicInputs
+    ) internal view returns (bytes32) {
+        address verifier = _verifiers[uint8(_route)][uint8(_proofType)];
         if (verifier == address(0)) revert Errors.VerifierNotRegistered(uint8(_proofType));
         return IZKVerifier(verifier).computeCommitment(_publicInputs);
     }
@@ -476,9 +553,5 @@ contract Connector is ConnectorStorage, IConnector, ReentrancyGuard {
 
     function getTx(bytes32 _txId) external view returns (CrossChainTx memory) {
         return _txs[_txId];
-    }
-
-    function getVerifier(Enums.ProofType _proofType) external view returns (address) {
-        return _verifiers[uint8(_proofType)];
     }
 }

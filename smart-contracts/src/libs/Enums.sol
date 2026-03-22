@@ -7,6 +7,14 @@ library Enums {
         SNARKJS
     }
 
+    enum VerifierRoute {
+        ORIGIN_MINT, // 0  submitMintProof
+        ORIGIN_BURN, // 1  submitBurnProof
+        DEST_LOCK, //   2  submitLockProof
+        DEST_ACK, //    3  submitAckProof
+        DEST_REFUND_CLAIM // 4  submitRefundClaimProof
+    }
+
     enum TxStatus {
         NONE, // 0  default / tx does not exist
         DEPOSIT_LOCKED, // 1  origin: funds locked in vault

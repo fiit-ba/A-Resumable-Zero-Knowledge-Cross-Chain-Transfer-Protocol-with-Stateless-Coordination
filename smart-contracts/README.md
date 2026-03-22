@@ -87,14 +87,13 @@ Required vars when reusing source:
 
 - `EXISTING_SOURCE_CONNECTOR`
 - `EXISTING_SOURCE_TOKEN`
-- optional: `EXISTING_SOURCE_MINT_RISC0_ADAPTER` (if you want script to force source verifier to this adapter)
+- optional: `EXISTING_SOURCE_RISC0_ADAPTER`
 
 Required vars when reusing destination:
 
 - `EXISTING_DEST_CONNECTOR`
 - `EXISTING_DEST_TOKEN`
-- `EXISTING_DEST_LOCK_RISC0_ADAPTER`
-- `EXISTING_DEST_ACK_RISC0_ADAPTER`
+- `EXISTING_DEST_RISC0_ADAPTER`
 
 The script now computes `txId` using current `txNonce()` from source connector, so repeated runs with reused deployments stay consistent.
 
@@ -118,8 +117,8 @@ USE_DOCKER_PROVER=1 bash scripts/e2e-anvil-hardhat.sh
 ```
 
 This script performs:
-- destination deploy (real `RiscZeroGroth16Verifier` + `RiscZeroAdapter` + `Connector`)
-- source deploy (real `RiscZeroGroth16Verifier` + `RiscZeroAdapter` + `Connector` + mock token), mint, approve, `depositAndLock`
+- destination deploy (real `RiscZeroGroth16Verifier` + single `RiscZeroAdapter` allowlisting lock+ack image IDs + `Connector`)
+- source deploy (real `RiscZeroGroth16Verifier` + single `RiscZeroAdapter` allowlisting mint image ID + `Connector` + mock token), mint, approve, `depositAndLock`
 - lock proof generation via `zk-proofs/risc_zero/lock_event`
 - `submitLockProof` on destination
 - mint proof generation via `zk-proofs/risc_zero/mint_event`
@@ -201,13 +200,22 @@ Deploys `Connector` with pre-deployed adapter addresses.
 
 ## Deploy RiscZeroAdapter (real verifier)
 
-Set env vars:
+`RiscZeroAdapter` accepts a `bytes32[]` allowlist of image IDs so a single
+adapter instance can serve multiple proof routes on the same chain.
+
+Set env vars (zero-valued entries are skipped):
 
 ```shell
 export RPC_URL=https://your-rpc
 export PRIVATE_KEY=0x...
 export RISC0_VERIFIER=0x...
-export RISC0_IMAGE_ID=0x... # from zk-proofs/risc_zero host output: imageId
+
+# Set only the image IDs used by proofs submitted on this chain.
+# Origin chain: set ORIGIN_MINT_IMAGE_ID and/or ORIGIN_BURN_IMAGE_ID.
+# Destination chain: set DEST_LOCK_IMAGE_ID, DEST_ACK_IMAGE_ID, and/or DEST_REFUND_CLAIM_IMAGE_ID.
+export ORIGIN_MINT_IMAGE_ID=0x...
+export DEST_LOCK_IMAGE_ID=0x...
+export DEST_ACK_IMAGE_ID=0x...
 ```
 
 Run:
@@ -218,16 +226,56 @@ forge script script/DeployRiscZeroAdapter.s.sol:DeployRiscZeroAdapter \
   --broadcast
 ```
 
-The script logs:
+The script logs the deployed adapter address, the verifier address, and the full allowlist.
 
-- deployed adapter address
-- verifier address used
-- image id used
+## Route-Aware Verifier API
+
+`Connector` stores one verifier adapter per `(route, proofType)` pair using a
+two-dimensional mapping:
+
+```
+_verifiers[VerifierRoute][ProofType] → adapter address
+```
+
+In addition, `Connector` stores the expected RISC Zero guest image ID per route
+immutably in `_risc0RouteImageIds[5]`. Before calling the adapter, each proof
+submission function checks that the image ID in the proof payload matches the
+stored value for that route, reverting with `ImageIdRouteMismatch` on mismatch.
+
+### VerifierRoute enum
+
+| Value | Name                | Proof function              |
+|-------|---------------------|-----------------------------|
+| 0     | `ORIGIN_MINT`       | `submitMintProof`           |
+| 1     | `ORIGIN_BURN`       | `submitBurnProof`           |
+| 2     | `DEST_LOCK`         | `submitLockProof`           |
+| 3     | `DEST_ACK`          | `submitAckProof`            |
+| 4     | `DEST_REFUND_CLAIM` | `submitRefundClaimProof`    |
+
+### ProofType enum
+
+| Value | Name      | Adapter            |
+|-------|-----------|--------------------|
+| 0     | `RISC0`   | `RiscZeroAdapter`  |
+| 1     | `SNARKJS` | `SnarkAdapter`     |
+
+The constructor seeds every route with the same two default adapters (one per
+proof type). Route image IDs are set once in the constructor and cannot be
+changed — upgrading a guest ELF requires redeploying the Connector.
+
+```solidity
+// Read the expected image ID for a route
+function getExpectedRisc0ImageId(Enums.VerifierRoute route) external view returns (bytes32);
+// Read the adapter for a (route, proofType) pair
+function getVerifier(Enums.VerifierRoute route, Enums.ProofType proofType) external view returns (address);
+// Admin: replace the adapter for a (route, proofType) pair
+function setVerifier(Enums.VerifierRoute route, Enums.ProofType proofType, address verifier) external;
+```
 
 ## Wiring With Connector
 
-`Connector` receives adapter addresses in its constructor and currently has no public setter to change verifiers later.
-Deploy real adapters first, then deploy `Connector` with those adapter addresses:
+Deploy one `RiscZeroAdapter` per chain with all image IDs used on that chain,
+then deploy `Connector` with the adapter addresses and per-route image IDs:
 
 ```shell
 export RPC_URL=https://your-rpc
@@ -236,7 +284,89 @@ export RISC0_ADAPTER=0x...
 export SNARK_ADAPTER=0x...
 export ACK_WINDOW_SECONDS=3600
 
+# Set only the image IDs for routes used on this chain; omit or leave as 0x0 for unused routes.
+# Origin chain example (submitMintProof only):
+export ORIGIN_MINT_IMAGE_ID=0x...
+
+# Destination chain example (submitLockProof + submitAckProof):
+export DEST_LOCK_IMAGE_ID=0x...
+export DEST_ACK_IMAGE_ID=0x...
+
 forge script script/DeployConnectorWithAdapters.s.sol:DeployConnectorWithAdapters \
   --rpc-url "$RPC_URL" \
   --broadcast
+```
+
+Route image IDs are immutable after deployment. To update a guest ELF, redeploy
+both the `RiscZeroAdapter` (with the new allowlist) and `Connector` (with the
+new `risc0RouteImageIds`).
+
+## Refund Flow E2E (Local Anvil → Hardhat)
+
+The refund path lets users recover locked funds when the cross-chain transfer
+does not complete within the ack window.
+
+### Full refund flow
+
+```
+Origin (Anvil 31337)                   Destination (Hardhat 31338)
+─────────────────────────────────────────────────────────────────
+depositAndLock ──────────────────────────────────────────────►
+                                        submitLockProof (lock proof)
+                                        [mint dstToken to dstConnector]
+[warp time past ackDeadline]
+initiateRefund (emits RefundClaimed) ──────────────────────────►
+                                        submitRefundClaimProof (refund-claim proof)
+                                        executeBurn (burns dstToken, emits DestTxClosed)
+◄────────────────────────────────────────────────────────────
+submitBurnProof (burn proof)
+[srcToken returned to user]
+```
+
+### RISC Zero proof workspaces
+
+| Proof              | Workspace                                    | Proves event       | Committed inputs                     |
+|--------------------|----------------------------------------------|--------------------|--------------------------------------|
+| Refund claim       | `zk-proofs/risc_zero/refund_claim_event`     | `RefundClaimed`    | `(txId, srcChainConnector, amount)`  |
+| Burn               | `zk-proofs/risc_zero/burn_event`             | `DestTxClosed`     | `(txId, dstChainConnector, amount)`  |
+
+### One-command refund E2E
+
+With Anvil (port 8545) and Hardhat (port 8546) running:
+
+```shell
+cd /path/to/repo
+bash scripts/e2e-refund-anvil-hardhat.sh
+```
+
+Key environment variables:
+
+| Variable              | Default            | Description                                       |
+|-----------------------|--------------------|---------------------------------------------------|
+| `SOURCE_RPC`          | `http://127.0.0.1:8545` | Anvil RPC URL                               |
+| `DEST_RPC`            | `http://127.0.0.1:8546` | Hardhat RPC URL                             |
+| `PRIVATE_KEY`         | *(required)*       | 32-byte hex private key (or in `.env`)            |
+| `ACK_WINDOW_SECONDS`  | `60`               | Short window for local refund testing             |
+| `AMOUNT_WEI`          | `1000000000000000000` | Transfer amount (1 token with 18 decimals)     |
+| `RISC0_PROVER_MODE`   | `local`            | `local` or `bonsai`                               |
+| `RISC0_GUEST_USE_DOCKER` | `1`            | Build RISC Zero guest ELF inside Docker           |
+
+### Generating proofs individually
+
+```bash
+# Refund claim proof (run after initiateRefund on origin)
+cd zk-proofs/risc_zero/refund_claim_event
+RPC_URL=http://127.0.0.1:8545 \
+cargo run -p refund-claim-proof-host -- \
+  --connector 0xOriginConnector \
+  --tx-id 0xTxId \
+  --source-chain-id 31337
+
+# Burn proof (run after executeBurn on destination)
+cd zk-proofs/risc_zero/burn_event
+RPC_URL=http://127.0.0.1:8546 \
+cargo run -p burn-proof-host -- \
+  --connector 0xDestConnector \
+  --tx-id 0xTxId \
+  --dest-chain-id 31338
 ```
