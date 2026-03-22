@@ -38,10 +38,16 @@ contract DeployConnector is Script {
         MockRiscZeroVerifier risc0 = new MockRiscZeroVerifier();
         MockSnarkVerifier snark = new MockSnarkVerifier();
 
-        RiscZeroAdapter risc0Adapter = new RiscZeroAdapter(address(risc0), IMAGE_ID);
+        bytes32[] memory allowedIds = new bytes32[](1);
+        allowedIds[0] = IMAGE_ID;
+        RiscZeroAdapter risc0Adapter = new RiscZeroAdapter(address(risc0), allowedIds);
         SnarkAdapter snarkAdapter = new SnarkAdapter(address(snark));
 
-        connector = new Connector(address(risc0Adapter), address(snarkAdapter), ACK_WINDOW_SECONDS);
+        bytes32[5] memory routeImageIds;
+        for (uint8 i = 0; i < 5; i++) {
+            routeImageIds[i] = IMAGE_ID;
+        }
+        connector = new Connector(address(risc0Adapter), address(snarkAdapter), ACK_WINDOW_SECONDS, routeImageIds);
 
         vm.stopBroadcast();
     }

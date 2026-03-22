@@ -146,13 +146,14 @@ abstract contract ConnectorStorage {
         bytes proofPayload
     );
 
-    event VerifierUpdated(Enums.ProofType indexed proofType, address verifier);
+    event VerifierUpdated(Enums.VerifierRoute indexed route, Enums.ProofType indexed proofType, address verifier);
 
     /*//////////////////////////////////////////////////////////////
                             ZK
     //////////////////////////////////////////////////////////////*/
 
-    mapping(uint8 => address) internal _verifiers;
+    // _verifiers[route][proofType] => adapter address
+    mapping(uint8 => mapping(uint8 => address)) internal _verifiers;
 
     mapping(bytes32 => mapping(bytes32 => bool)) public txProofUsed;
 
@@ -173,4 +174,9 @@ abstract contract ConnectorStorage {
     uint256 public txNonce;
 
     uint64 public ackWindowSeconds;
+
+    /// @dev Expected RISC Zero image ID per VerifierRoute (index == uint8(VerifierRoute)).
+    /// Enforced by Connector before calling the adapter so a single multi-image adapter
+    /// can serve all routes while each route still binds to exactly one guest ELF.
+    bytes32[5] internal _risc0RouteImageIds;
 }

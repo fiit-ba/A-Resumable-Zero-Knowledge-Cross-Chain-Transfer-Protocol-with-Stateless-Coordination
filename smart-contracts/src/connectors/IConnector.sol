@@ -4,7 +4,13 @@ pragma solidity ^0.8.28;
 import {Enums} from "../libs/Enums.sol";
 
 interface IConnector {
-    function setVerifier(Enums.ProofType proofType, address verifier) external;
+    function setVerifier(Enums.VerifierRoute route, Enums.ProofType proofType, address verifier) external;
+
+    function getVerifier(Enums.VerifierRoute route, Enums.ProofType proofType) external view returns (address);
+
+    /// @notice Returns the expected RISC Zero image ID for the given proof route.
+    /// Connector checks this before calling the adapter for every RISC0 proof.
+    function getExpectedRisc0ImageId(Enums.VerifierRoute route) external view returns (bytes32);
 
     /*//////////////////////////////////////////////////////////////
                             ORIGIN FUNCTIONS

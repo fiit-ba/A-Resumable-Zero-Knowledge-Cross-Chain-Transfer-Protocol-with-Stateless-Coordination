@@ -18,6 +18,8 @@ library Errors {
     error InvalidSnarkProof();
     error InvalidRiscZeroProof();
     error ImageIdNotAllowed(bytes32 imageId);
+    error EmptyAllowlist();
+    error ImageIdRouteMismatch(uint8 route, bytes32 got, bytes32 expected);
     error InvalidProofType();
     error ProofAlreadyProcessed(bytes32 proofHash);
     error CommitmentMismatch(bytes32 got, bytes32 expected);
