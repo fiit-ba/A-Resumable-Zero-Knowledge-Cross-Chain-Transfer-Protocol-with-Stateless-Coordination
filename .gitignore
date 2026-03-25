@@ -1,6 +1,7 @@
 .DS_Store
 .idea
 .vscode
+
 .generated_files/
 build/
 dist/
@@ -8,8 +9,15 @@ nbproject/
 Package-*
 private/
 _build/
+
 !cmake/**/user.cmake
 cmake/**/.generated/*
 cmake/**/CMake*
+
 out/
 target/
+node_modules/
+
+# Keep npm lockfiles trackable (Package-* matches package-lock.json on case-insensitive FS).
+!package-lock.json
+!**/package-lock.json

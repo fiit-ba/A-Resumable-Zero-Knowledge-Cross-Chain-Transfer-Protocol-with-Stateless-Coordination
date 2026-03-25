@@ -1,0 +1,26 @@
+@import "tailwindcss";
+
+/* Global design tokens — only constants that Tailwind doesn't provide */
+@theme {
+  --color-accent: #aa3bff;
+  --color-accent-dark: #c084fc;
+  --font-mono: ui-monospace, Consolas, monospace;
+}
+
+body {
+  margin: 0;
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+  background-color: rgb(249 250 251);
+}
+
+@media (prefers-color-scheme: dark) {
+  body {
+    background-color: rgb(3 7 18);
+  }
+}
+
+#root {
+  min-height: 100svh;
+}

@@ -13,7 +13,15 @@ describe("decideVerificationMode", () => {
     expect(mode).toBe("colibri");
   });
 
-  it("falls back to RPC in local mode when either method is not proofable", () => {
+  it("always falls back to RPC in local mode", () => {
+    const proofableMode = decideVerificationMode({
+      isLocal: true,
+      getLogsSupport: MethodType.PROOFABLE,
+      ethCallSupport: MethodType.PROOFABLE
+    });
+
+    expect(proofableMode).toBe("rpc-fallback");
+
     const mode = decideVerificationMode({
       isLocal: true,
       getLogsSupport: MethodType.NOT_SUPPORTED,

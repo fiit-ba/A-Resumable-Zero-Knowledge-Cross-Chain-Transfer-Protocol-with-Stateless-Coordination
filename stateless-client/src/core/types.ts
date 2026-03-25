@@ -54,18 +54,25 @@ export interface ProofPaths {
   ackDockerScript: string;
 }
 
-export interface RelayConfig {
+/**
+ * The subset of RelayConfig that does not require a signer private key.
+ * Used by prepareStageSubmission for agent-facing proof preparation.
+ */
+export interface StageSubmissionConfig {
   source: ChainConfig;
   destination: ChainConfig;
   connectors: ConnectorConfig;
   txId: string;
-  signerPrivateKey: string;
   proofBackend: ProofBackend;
   executionBlocks: StageExecutionBlocks;
   repoRoot: string;
   proofPaths: ProofPaths;
   risc0ProverMode: "local" | "bonsai";
   allowPrunedSourceAck?: boolean;
+}
+
+export interface RelayConfig extends StageSubmissionConfig {
+  signerPrivateKey: string;
 }
 
 export interface VerificationConfig {
@@ -125,6 +132,16 @@ export interface HappyPathResult {
   ack: RelayStageResult;
 }
 
+/**
+ * Returned by prepareStageSubmission: proof artifact, the browser-ready
+ * unsigned payload, and the verification result (including Colibri/fallback mode).
+ */
+export interface StageSubmissionResult {
+  proof: ProofArtifact;
+  payload: StageReadyPayload;
+  verification: StageVerificationResult;
+}
+
 export type ResumeAction = "lock" | "mint" | "ack" | "noop" | "error";
 
 export interface HistoryFlags {
@@ -165,4 +182,58 @@ export interface StageDefinition {
   eventName: "DepositLocked" | "FundsReleased" | "AckReady";
   expectedStatus: number;
   side: Side;
+}
+
+// ---------------------------------------------------------------------------
+// Shared types used by the local agent and web app
+// ---------------------------------------------------------------------------
+
+/** The user's intent passed via the custom URL scheme and stored in each job. */
+export interface TransferIntent {
+  sourceProfile: string;
+  destinationProfile: string;
+  sourceConnector: string;
+  destinationConnector: string;
+  tokenFrom: string;
+  tokenTo: string;
+  /** Amount as a decimal string (bigint-safe JSON). */
+  amount: string;
+  receiver: string;
+}
+
+export type JobStatus =
+  | "pending"
+  | "running"
+  | "proof-ready"
+  | "done"
+  | "error"
+  | "unsupported";
+
+/** Persisted per-job state stored in the local agent SQLite database. */
+export interface RelayJob {
+  id: string;
+  txId: string;
+  currentStage: RelayProofStage | "pending" | "done";
+  status: JobStatus;
+  sourceStatus: number;
+  destinationStatus: number;
+  lastError?: string;
+  latestSubmissionTxHash?: string;
+  intent: TransferIntent;
+  createdAt: number;
+  updatedAt: number;
+}
+
+/**
+ * Payload returned by GET /jobs/:id/stages/:stage/proof when the proof is
+ * ready. contractArgs are bigint-free (all converted to decimal strings) so
+ * they can be safely JSON-serialised and used with ethers.js in the browser.
+ */
+export interface StageReadyPayload {
+  stage: RelayProofStage;
+  proofPayload: string;
+  contractMethod: string;
+  contractArgs: unknown[];
+  targetChainId: number;
+  targetConnector: string;
 }

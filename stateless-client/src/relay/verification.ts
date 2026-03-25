@@ -187,16 +187,16 @@ export function isChiadoSyncBackwardsFallbackAllowed(chainId: number): boolean {
 export function decideVerificationMode(
   input: VerificationPolicyInput
 ): VerificationMode {
+  if (input.isLocal) {
+    return "rpc-fallback";
+  }
+
   const proofable =
     input.getLogsSupport === MethodType.PROOFABLE &&
     input.ethCallSupport === MethodType.PROOFABLE;
 
   if (proofable) {
     return "colibri";
-  }
-
-  if (input.isLocal) {
-    return "rpc-fallback";
   }
 
   throw new Error(
