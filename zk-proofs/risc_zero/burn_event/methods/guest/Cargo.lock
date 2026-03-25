@@ -1007,6 +1007,33 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "5d20789868f4b01b2f2caec9f5c4e0213b41e3e5702a50157d699ae31ced2fcb"
 
 [[package]]
+name = "burn-proof-core"
+version = "0.1.0"
+dependencies = [
+ "alloy-primitives",
+ "alloy-sol-types",
+ "risc0-steel",
+ "serde",
+]
+
+[[package]]
+name = "burn-proof-guest"
+version = "0.1.0"
+dependencies = [
+ "alloy-primitives",
+ "alloy-sol-types",
+ "blst",
+ "burn-proof-core",
+ "c-kzg",
+ "k256",
+ "revm 34.0.0",
+ "risc0-steel",
+ "risc0-zkvm",
+ "substrate-bn",
+ "tiny-keccak",
+]
+
+[[package]]
 name = "byte-slice-cast"
 version = "1.2.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2000,33 +2027,6 @@ name = "linux-raw-sys"
 version = "0.12.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "32a66949e030da00e8c7d4434b251670a91556f4144941d37452769c25d58a53"
-
-[[package]]
-name = "burn-proof-core"
-version = "0.1.0"
-dependencies = [
- "alloy-primitives",
- "alloy-sol-types",
- "risc0-steel",
- "serde",
-]
-
-[[package]]
-name = "burn-proof-guest"
-version = "0.1.0"
-dependencies = [
- "alloy-primitives",
- "alloy-sol-types",
- "blst",
- "c-kzg",
- "k256",
- "burn-proof-core",
- "revm 34.0.0",
- "risc0-steel",
- "risc0-zkvm",
- "substrate-bn",
- "tiny-keccak",
-]
 
 [[package]]
 name = "log"

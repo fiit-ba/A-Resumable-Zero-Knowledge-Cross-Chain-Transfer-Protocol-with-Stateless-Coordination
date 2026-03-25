@@ -8,14 +8,18 @@ import {
 } from "ethers";
 import { CONNECTOR_ABI } from "../contracts/abi.js";
 import { runProof } from "./proof-runner.js";
-import { STAGE_DEFINITIONS } from "./stages.js";
+import { RELAY_STAGE_TO_SUBMISSION_METHOD, RELAY_STAGE_TO_VERIFY_STAGE, STAGE_DEFINITIONS } from "./stages.js";
 import type {
   BlockTagInput,
   HappyPathResult,
   RelayConfig,
+  RelayProofStage,
   RelayStageResult,
   Stage,
   StageExecutionBlocks,
+  StageReadyPayload,
+  StageSubmissionConfig,
+  StageSubmissionResult,
   StageVerificationResult,
   VerificationConfig
 } from "../core/types.js";
@@ -211,7 +215,7 @@ async function waitForSubmission(
 }
 
 function assertLockProofConsistency(
-  config: RelayConfig,
+  config: StageSubmissionConfig,
   sourceTx: ConnectorTxSnapshot,
   artifact: RelayStageResult["proof"]
 ): void {
@@ -221,41 +225,33 @@ function assertLockProofConsistency(
       `Lock proof txId mismatch: expected ${expectedTxId}, got ${artifact.txId}`
     );
   }
-  if (artifact.srcChainConnector !== config.connectors.source) {
-    throw new Error(
-      `Lock proof srcChainConnector mismatch: expected ${config.connectors.source}, got ${artifact.srcChainConnector}`
-    );
-  }
-  if (artifact.dstChainConnector !== config.connectors.destination) {
-    throw new Error(
-      `Lock proof dstChainConnector mismatch: expected ${config.connectors.destination}, got ${artifact.dstChainConnector}`
-    );
-  }
+  assertAddressMatch(
+    "Lock proof srcChainConnector",
+    config.connectors.source,
+    artifact.srcChainConnector
+  );
+  assertAddressMatch(
+    "Lock proof dstChainConnector",
+    config.connectors.destination,
+    artifact.dstChainConnector
+  );
   if (artifact.amount !== sourceTx.amount) {
     throw new Error(
       `Lock proof amount mismatch: expected ${sourceTx.amount}, got ${artifact.amount}`
     );
   }
-  if (artifact.receiver !== sourceTx.to) {
-    throw new Error(
-      `Lock proof receiver mismatch: expected ${sourceTx.to}, got ${artifact.receiver}`
-    );
-  }
-  if (artifact.sender !== sourceTx.from) {
-    throw new Error(
-      `Lock proof sender mismatch: expected ${sourceTx.from}, got ${artifact.sender}`
-    );
-  }
-  if (artifact.currencyFrom !== sourceTx.currencyFrom) {
-    throw new Error(
-      `Lock proof currencyFrom mismatch: expected ${sourceTx.currencyFrom}, got ${artifact.currencyFrom}`
-    );
-  }
-  if (artifact.currencyTo !== sourceTx.currencyTo) {
-    throw new Error(
-      `Lock proof currencyTo mismatch: expected ${sourceTx.currencyTo}, got ${artifact.currencyTo}`
-    );
-  }
+  assertAddressMatch("Lock proof receiver", sourceTx.to, artifact.receiver);
+  assertAddressMatch("Lock proof sender", sourceTx.from, artifact.sender);
+  assertAddressMatch(
+    "Lock proof currencyFrom",
+    sourceTx.currencyFrom,
+    artifact.currencyFrom
+  );
+  assertAddressMatch(
+    "Lock proof currencyTo",
+    sourceTx.currencyTo,
+    artifact.currencyTo
+  );
   if (artifact.sourceChainId !== config.source.chainId) {
     throw new Error(
       `Lock proof sourceChainId mismatch: expected ${config.source.chainId}, got ${artifact.sourceChainId}`
@@ -269,7 +265,7 @@ function assertLockProofConsistency(
 }
 
 function assertMintProofConsistency(
-  config: RelayConfig,
+  config: StageSubmissionConfig,
   destinationTx: ConnectorTxSnapshot,
   artifact: RelayStageResult["proof"]
 ): void {
@@ -279,25 +275,21 @@ function assertMintProofConsistency(
       `Mint proof txId mismatch: expected ${expectedTxId}, got ${artifact.txId}`
     );
   }
-  if (artifact.dstChainConnector !== config.connectors.destination) {
-    throw new Error(
-      `Mint proof dstChainConnector mismatch: expected ${config.connectors.destination}, got ${artifact.dstChainConnector}`
-    );
-  }
+  assertAddressMatch(
+    "Mint proof dstChainConnector",
+    config.connectors.destination,
+    artifact.dstChainConnector
+  );
   if (artifact.amount !== destinationTx.amount) {
     throw new Error(
       `Mint proof amount mismatch: expected ${destinationTx.amount}, got ${artifact.amount}`
     );
   }
-  if (artifact.receiver !== destinationTx.to) {
-    throw new Error(
-      `Mint proof receiver mismatch: expected ${destinationTx.to}, got ${artifact.receiver}`
-    );
-  }
+  assertAddressMatch("Mint proof receiver", destinationTx.to, artifact.receiver);
 }
 
 function assertAckProofConsistency(
-  config: RelayConfig,
+  config: StageSubmissionConfig,
   artifact: RelayStageResult["proof"]
 ): void {
   const expectedTxId = normalizeBytes32(config.txId, "tx-id");
@@ -306,15 +298,30 @@ function assertAckProofConsistency(
       `Ack proof txId mismatch: expected ${expectedTxId}, got ${artifact.txId}`
     );
   }
-  if (artifact.srcChainConnector !== config.connectors.source) {
-    throw new Error(
-      `Ack proof srcChainConnector mismatch: expected ${config.connectors.source}, got ${artifact.srcChainConnector}`
-    );
+  assertAddressMatch(
+    "Ack proof srcChainConnector",
+    config.connectors.source,
+    artifact.srcChainConnector
+  );
+  assertAddressMatch(
+    "Ack proof dstChainConnector",
+    config.connectors.destination,
+    artifact.dstChainConnector
+  );
+}
+
+function assertAddressMatch(
+  label: string,
+  expected: string,
+  actual: string | undefined
+): void {
+  if (!actual) {
+    throw new Error(`${label} missing in proof artifact`);
   }
-  if (artifact.dstChainConnector !== config.connectors.destination) {
-    throw new Error(
-      `Ack proof dstChainConnector mismatch: expected ${config.connectors.destination}, got ${artifact.dstChainConnector}`
-    );
+  const normalizedExpected = normalizeAddress(expected, `${label}.expected`);
+  const normalizedActual = normalizeAddress(actual, `${label}.actual`);
+  if (normalizedExpected.toLowerCase() !== normalizedActual.toLowerCase()) {
+    throw new Error(`${label} mismatch: expected ${normalizedExpected}, got ${normalizedActual}`);
   }
 }
 
@@ -329,131 +336,36 @@ export async function runVerifyStageCommand(
   return verifyStageFromConfig(config, stage);
 }
 
-export async function runRelayLock(config: RelayConfig): Promise<RelayStageResult> {
-  const handles = await createChainHandles(config);
-  const verification = await verifyStageFromConfig(config, "source-deposit");
+// ---------------------------------------------------------------------------
+// Core shared preparation API (no private key / signing required)
+// ---------------------------------------------------------------------------
 
-  const sourceTx = await fetchTxSnapshot(
-    handles.sourceReadContract,
-    config.txId,
-    config.executionBlocks.sourceDeposit
-  );
+/**
+ * Performs the full verified preparation sequence for one relay stage:
+ *   1. Stage verification via Colibri (or local RPC fallback)
+ *   2. Proof generation
+ *   3. Proof consistency checks against on-chain data
+ *   4. Unsigned contract-call payload construction
+ *
+ * This is the single authoritative path used by both the local agent and the
+ * CLI relay commands.  The browser wallet signs and submits; we only prepare.
+ */
+export async function prepareStageSubmission(
+  config: StageSubmissionConfig,
+  stage: RelayProofStage
+): Promise<StageSubmissionResult> {
+  const verifyStageKey = RELAY_STAGE_TO_VERIFY_STAGE[stage];
+  const stageDef = STAGE_DEFINITIONS[verifyStageKey];
 
-  const proof = await runProof({
-    stage: "lock",
-    backend: config.proofBackend,
-    txId: config.txId,
-    rpcUrl: config.source.rpcUrls[0],
-    connector: config.connectors.source,
-    sourceChainId: config.source.chainId,
-    destinationChainId: config.destination.chainId,
-    executionBlock: config.executionBlocks.sourceDeposit ?? "latest",
-    repoRoot: config.repoRoot,
-    proofPaths: config.proofPaths,
-    risc0ProverMode: config.risc0ProverMode
-  });
+  // Read-only providers for verification and tx-snapshot fetches
+  const sourceProvider = new JsonRpcProvider(config.source.rpcUrls[0], config.source.chainId);
+  const destinationProvider = new JsonRpcProvider(config.destination.rpcUrls[0], config.destination.chainId);
+  const sourceReadContract = new Contract(config.connectors.source, CONNECTOR_ABI, sourceProvider);
+  const destinationReadContract = new Contract(config.connectors.destination, CONNECTOR_ABI, destinationProvider);
 
-  assertLockProofConsistency(config, sourceTx, proof);
-
-  const submitTx = await handles.destinationWriteContract.submitLockProof(
-    0,
-    proof.proofPayload,
-    config.txId,
-    proof.amount,
-    proof.currencyFrom,
-    proof.currencyTo,
-    proof.sender,
-    proof.receiver,
-    proof.srcChainConnector,
-    proof.originAckDeadline,
-    proof.nonce,
-    proof.sourceChainId
-  );
-
-  const receiptBlock = await waitForSubmission(submitTx, "lock");
-  const resultingStatus = await getStatus(
-    handles.destinationReadContract,
-    config.txId
-  );
-
-  if (resultingStatus !== 4) {
-    throw new Error(
-      `Destination status mismatch after relay-lock: expected 4, got ${resultingStatus}`
-    );
-  }
-
-  return {
-    verification,
-    proof,
-    submission: {
-      stage: "lock",
-      txHash: submitTx.hash,
-      receiptBlock,
-      resultingStatus
-    }
-  };
-}
-
-export async function runRelayMint(config: RelayConfig): Promise<RelayStageResult> {
-  const handles = await createChainHandles(config);
-  const verification = await verifyStageFromConfig(
-    config,
-    "destination-funds-released"
-  );
-
-  const destinationTx = await fetchTxSnapshot(
-    handles.destinationReadContract,
-    config.txId,
-    config.executionBlocks.destinationFundsReleased
-  );
-
-  const proof = await runProof({
-    stage: "mint",
-    backend: config.proofBackend,
-    txId: config.txId,
-    rpcUrl: config.destination.rpcUrls[0],
-    connector: config.connectors.destination,
-    destinationChainId: config.destination.chainId,
-    executionBlock: config.executionBlocks.destinationFundsReleased ?? "latest",
-    repoRoot: config.repoRoot,
-    proofPaths: config.proofPaths,
-    risc0ProverMode: config.risc0ProverMode
-  });
-
-  assertMintProofConsistency(config, destinationTx, proof);
-
-  const submitTx = await handles.sourceWriteContract.submitMintProof(
-    0,
-    proof.proofPayload,
-    config.txId
-  );
-
-  const receiptBlock = await waitForSubmission(submitTx, "mint");
-  const resultingStatus = await getStatus(handles.sourceReadContract, config.txId);
-
-  if (resultingStatus !== 2) {
-    throw new Error(
-      `Source status mismatch after relay-mint: expected 2, got ${resultingStatus}`
-    );
-  }
-
-  return {
-    verification,
-    proof,
-    submission: {
-      stage: "mint",
-      txHash: submitTx.hash,
-      receiptBlock,
-      resultingStatus
-    }
-  };
-}
-
-export async function runRelayAck(config: RelayConfig): Promise<RelayStageResult> {
-  const handles = await createChainHandles(config);
-
+  // 1. Stage verification
   let verification: StageVerificationResult;
-  if (config.allowPrunedSourceAck) {
+  if (stage === "ack" && config.allowPrunedSourceAck) {
     verification = await verifyAckEventOnly({
       stage: "source-ack-ready",
       chain: config.source,
@@ -464,52 +376,137 @@ export async function runRelayAck(config: RelayConfig): Promise<RelayStageResult
       blockTag: config.executionBlocks.sourceAckReady
     });
   } else {
-    verification = await verifyStageFromConfig(config, "source-ack-ready");
+    verification = await verifyStageFromConfig(config, verifyStageKey);
   }
 
+  // Execution block for this stage
+  const executionBlock: BlockTagInput =
+    stage === "lock"
+      ? (config.executionBlocks.sourceDeposit ?? "latest")
+      : stage === "mint"
+        ? (config.executionBlocks.destinationFundsReleased ?? "latest")
+        : (config.executionBlocks.sourceAckReady ?? "latest");
+
+  // 2. Proof generation
   const proof = await runProof({
-    stage: "ack",
+    stage,
     backend: config.proofBackend,
     txId: config.txId,
-    rpcUrl: config.source.rpcUrls[0],
-    connector: config.connectors.source,
+    rpcUrl: stageDef.side === "source" ? config.source.rpcUrls[0] : config.destination.rpcUrls[0],
+    connector: stageDef.side === "source" ? config.connectors.source : config.connectors.destination,
     sourceChainId: config.source.chainId,
-    executionBlock: config.executionBlocks.sourceAckReady ?? "latest",
+    destinationChainId: config.destination.chainId,
+    executionBlock,
     repoRoot: config.repoRoot,
     proofPaths: config.proofPaths,
     risc0ProverMode: config.risc0ProverMode
   });
 
-  assertAckProofConsistency(config, proof);
-
-  const submitTx = await handles.destinationWriteContract.submitAckProof(
-    0,
-    proof.proofPayload,
-    config.txId
-  );
-
-  const receiptBlock = await waitForSubmission(submitTx, "ack");
-  const resultingStatus = await getStatus(
-    handles.destinationReadContract,
-    config.txId
-  );
-
-  if (resultingStatus !== 0) {
-    throw new Error(
-      `Destination status mismatch after relay-ack: expected 0, got ${resultingStatus}`
-    );
+  // 3. Proof consistency checks
+  if (stage === "lock") {
+    const sourceTx = await fetchTxSnapshot(sourceReadContract, config.txId, config.executionBlocks.sourceDeposit);
+    assertLockProofConsistency(config, sourceTx, proof);
+  } else if (stage === "mint") {
+    const destinationTx = await fetchTxSnapshot(destinationReadContract, config.txId, config.executionBlocks.destinationFundsReleased);
+    assertMintProofConsistency(config, destinationTx, proof);
+  } else {
+    assertAckProofConsistency(config, proof);
   }
 
-  return {
-    verification,
-    proof,
-    submission: {
-      stage: "ack",
-      txHash: submitTx.hash,
-      receiptBlock,
-      resultingStatus
-    }
+  // 4. Build unsigned payload
+  const submissionSide: Record<RelayProofStage, "source" | "destination"> = {
+    lock: "destination",
+    mint: "source",
+    ack: "destination"
   };
+  const targetSide = submissionSide[stage];
+  const targetChainId = targetSide === "source" ? config.source.chainId : config.destination.chainId;
+  const targetConnector = targetSide === "source" ? config.connectors.source : config.connectors.destination;
+
+  let contractArgs: unknown[];
+  if (stage === "lock") {
+    contractArgs = [
+      0,
+      proof.proofPayload,
+      config.txId,
+      String(proof.amount),
+      proof.currencyFrom,
+      proof.currencyTo,
+      proof.sender,
+      proof.receiver,
+      proof.srcChainConnector,
+      String(proof.originAckDeadline),
+      String(proof.nonce),
+      proof.sourceChainId
+    ];
+  } else {
+    contractArgs = [0, proof.proofPayload, config.txId];
+  }
+
+  const payload: StageReadyPayload = {
+    stage,
+    proofPayload: proof.proofPayload,
+    contractMethod: RELAY_STAGE_TO_SUBMISSION_METHOD[stage],
+    contractArgs,
+    targetChainId,
+    targetConnector
+  };
+
+  return { proof, payload, verification };
+}
+
+// ---------------------------------------------------------------------------
+// CLI relay commands — thin wrappers over prepareStageSubmission + submission
+// ---------------------------------------------------------------------------
+
+export async function runRelayLock(config: RelayConfig): Promise<RelayStageResult> {
+  const { proof, payload, verification } = await prepareStageSubmission(config, "lock");
+  const handles = await createChainHandles(config);
+
+  const submitTx = await handles.destinationWriteContract.submitLockProof(
+    ...payload.contractArgs
+  );
+
+  const receiptBlock = await waitForSubmission(submitTx, "lock");
+  const resultingStatus = await getStatus(handles.destinationReadContract, config.txId);
+
+  if (resultingStatus !== 4) {
+    throw new Error(`Destination status mismatch after relay-lock: expected 4, got ${resultingStatus}`);
+  }
+
+  return { verification, proof, submission: { stage: "lock", txHash: submitTx.hash, receiptBlock, resultingStatus } };
+}
+
+export async function runRelayMint(config: RelayConfig): Promise<RelayStageResult> {
+  const { proof, payload, verification } = await prepareStageSubmission(config, "mint");
+  const handles = await createChainHandles(config);
+
+  const submitTx = await handles.sourceWriteContract.submitMintProof(...payload.contractArgs);
+
+  const receiptBlock = await waitForSubmission(submitTx, "mint");
+  const resultingStatus = await getStatus(handles.sourceReadContract, config.txId);
+
+  if (resultingStatus !== 2) {
+    throw new Error(`Source status mismatch after relay-mint: expected 2, got ${resultingStatus}`);
+  }
+
+  return { verification, proof, submission: { stage: "mint", txHash: submitTx.hash, receiptBlock, resultingStatus } };
+}
+
+export async function runRelayAck(config: RelayConfig): Promise<RelayStageResult> {
+  const { proof, payload, verification } = await prepareStageSubmission(config, "ack");
+  const handles = await createChainHandles(config);
+
+  const submitTx = await handles.destinationWriteContract.submitAckProof(...payload.contractArgs);
+
+  const receiptBlock = await waitForSubmission(submitTx, "ack");
+  const resultingStatus = await getStatus(handles.destinationReadContract, config.txId);
+
+  if (resultingStatus !== 0) {
+    throw new Error(`Destination status mismatch after relay-ack: expected 0, got ${resultingStatus}`);
+  }
+
+  return { verification, proof, submission: { stage: "ack", txHash: submitTx.hash, receiptBlock, resultingStatus } };
 }
 
 function withExecutionBlockOverrides(

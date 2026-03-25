@@ -2002,33 +2002,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "32a66949e030da00e8c7d4434b251670a91556f4144941d37452769c25d58a53"
 
 [[package]]
-name = "refund-claim-proof-core"
-version = "0.1.0"
-dependencies = [
- "alloy-primitives",
- "alloy-sol-types",
- "risc0-steel",
- "serde",
-]
-
-[[package]]
-name = "refund-claim-proof-guest"
-version = "0.1.0"
-dependencies = [
- "alloy-primitives",
- "alloy-sol-types",
- "blst",
- "c-kzg",
- "k256",
- "refund-claim-proof-core",
- "revm 34.0.0",
- "risc0-steel",
- "risc0-zkvm",
- "substrate-bn",
- "tiny-keccak",
-]
-
-[[package]]
 name = "log"
 version = "0.4.29"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2650,6 +2623,33 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 2.0.117",
+]
+
+[[package]]
+name = "refund-claim-proof-core"
+version = "0.1.0"
+dependencies = [
+ "alloy-primitives",
+ "alloy-sol-types",
+ "risc0-steel",
+ "serde",
+]
+
+[[package]]
+name = "refund-claim-proof-guest"
+version = "0.1.0"
+dependencies = [
+ "alloy-primitives",
+ "alloy-sol-types",
+ "blst",
+ "c-kzg",
+ "k256",
+ "refund-claim-proof-core",
+ "revm 34.0.0",
+ "risc0-steel",
+ "risc0-zkvm",
+ "substrate-bn",
+ "tiny-keccak",
 ]
 
 [[package]]
