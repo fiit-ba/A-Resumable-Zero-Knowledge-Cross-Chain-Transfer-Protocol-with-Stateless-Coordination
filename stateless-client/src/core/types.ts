@@ -11,6 +11,20 @@ export type ProofBackend = "local" | "docker";
 
 export type VerificationMode = "colibri" | "rpc-fallback";
 
+/**
+ * Machine-readable reason for why a verification was degraded to rpc-fallback.
+ * Consumers can use this to log or surface chain-specific diagnostics without
+ * parsing human-readable warning messages.
+ */
+export type VerificationDegradeReason =
+  | "chiado_sync_backwards"
+  | "chiado_ssz_parse"
+  | "chiado_parent_beacon_missing"
+  | "chiado_finalization"
+  | "chiado_block_not_signed"
+  | "chiado_bootstrap_unsupported"
+  | "local_chain";
+
 export type NetworkProfileName =
   | "local-anvil"
   | "local-hardhat"
@@ -87,10 +101,13 @@ export interface StageVerificationResult {
   stage: Stage;
   mode: VerificationMode;
   degraded: boolean;
+  /** Present only when degraded is true; identifies the root cause of fallback. */
+  degradeReason?: VerificationDegradeReason;
   eventName: string;
   txId: string;
   connector: string;
   status: number;
+  eventBlockNumber?: number;
 }
 
 export interface ProofArtifact {

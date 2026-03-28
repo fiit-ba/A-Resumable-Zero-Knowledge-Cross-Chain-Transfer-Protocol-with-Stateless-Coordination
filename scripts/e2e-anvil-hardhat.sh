@@ -58,7 +58,6 @@ LOCK_PROOF_GAS_LIMIT="${LOCK_PROOF_GAS_LIMIT:-12000000}"
 MINT_PROOF_GAS_LIMIT="${MINT_PROOF_GAS_LIMIT:-12000000}"
 ACK_PROOF_GAS_LIMIT="${ACK_PROOF_GAS_LIMIT:-12000000}"
 SET_VERIFIER_GAS_LIMIT="${SET_VERIFIER_GAS_LIMIT:-500000}"
-DEST_TOKEN_MINT_GAS_LIMIT="${DEST_TOKEN_MINT_GAS_LIMIT:-500000}"
 RISC0_PROVER_MODE="${RISC0_PROVER_MODE:-local}"
 USE_DOCKER_PROVER="${USE_DOCKER_PROVER:-0}"
 DOCKER_LOCK_PROVER_SCRIPT="${DOCKER_LOCK_PROVER_SCRIPT:-${DOCKER_PROVER_SCRIPT:-$LOCK_RZ_DIR/scripts/prove-lock-docker.sh}}"
@@ -675,16 +674,6 @@ run_stateless_client_relay_flow() {
     dest_funds_released_block="$(extract_stateless_client_value "$lock_output" "submissionBlock")"
     dest_status="$(extract_stateless_client_value "$lock_output" "resultingStatus")"
     echo "submitLockProof tx hash: $lock_submit_tx_hash (block $dest_funds_released_block)"
-
-    echo "Minting wrapped tokens on destination for balance verification..."
-    cast send \
-        "$DEST_TOKEN" \
-        "mint(address,uint256)" \
-        "$DEST_CONNECTOR" \
-        "$AMOUNT_WEI" \
-        --gas-limit "$DEST_TOKEN_MINT_GAS_LIMIT" \
-        --rpc-url "$DEST_RPC" \
-        --private-key "$PRIVATE_KEY" >/dev/null
 
     mint_execution_block_effective="${MINT_EXECUTION_BLOCK:-$dest_funds_released_block}"
     mint_execution_block_effective="$(normalize_execution_block_tag "$mint_execution_block_effective")"
@@ -1684,15 +1673,6 @@ DEST_FUNDS_RELEASED_BLOCK="$(wait_for_tx_receipt_block "$DEST_RPC" "$LOCK_SUBMIT
 echo "submitLockProof tx hash: $LOCK_SUBMIT_TX_HASH (block $DEST_FUNDS_RELEASED_BLOCK)"
 
 DEST_STATUS="$(query_tx_status "$DEST_RPC" "$DEST_CONNECTOR" "$TX_ID")"
-echo "Minting wrapped tokens on destination for balance verification..."
-cast send \
-    "$DEST_TOKEN" \
-    "mint(address,uint256)" \
-    "$DEST_CONNECTOR" \
-    "$AMOUNT_WEI" \
-    --gas-limit "$DEST_TOKEN_MINT_GAS_LIMIT" \
-    --rpc-url "$DEST_RPC" \
-    --private-key "$PRIVATE_KEY" >/dev/null
 
 run_colibri_stage_verification \
     "destination-funds-released" \

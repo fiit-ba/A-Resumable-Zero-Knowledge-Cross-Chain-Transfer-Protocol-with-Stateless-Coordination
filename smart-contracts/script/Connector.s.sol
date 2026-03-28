@@ -50,8 +50,7 @@ contract DeployConnector is Script {
         bytes32 originBurnImageId = vm.envOr("ORIGIN_BURN_IMAGE_ID", ORIGIN_BURN_IMAGE_ID_DEFAULT);
         bytes32 destLockImageId = vm.envOr("DEST_LOCK_IMAGE_ID", DEST_LOCK_IMAGE_ID_DEFAULT);
         bytes32 destAckImageId = vm.envOr("DEST_ACK_IMAGE_ID", DEST_ACK_IMAGE_ID_DEFAULT);
-        bytes32 destRefundClaimImageId =
-            vm.envOr("DEST_REFUND_CLAIM_IMAGE_ID", DEST_REFUND_CLAIM_IMAGE_ID_DEFAULT);
+        bytes32 destRefundClaimImageId = vm.envOr("DEST_REFUND_CLAIM_IMAGE_ID", DEST_REFUND_CLAIM_IMAGE_ID_DEFAULT);
 
         MockRiscZeroVerifier risc0 = new MockRiscZeroVerifier();
         MockSnarkVerifier snark = new MockSnarkVerifier();

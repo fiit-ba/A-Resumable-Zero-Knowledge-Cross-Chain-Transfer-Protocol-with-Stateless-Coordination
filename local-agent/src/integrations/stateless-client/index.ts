@@ -20,6 +20,39 @@ export type { StageSubmissionResult };
 // Config builder
 // ---------------------------------------------------------------------------
 
+function resolveProofBackend(): "local" | "docker" {
+  const raw = process.env["STATELESS_CLIENT_PROOF_BACKEND"]?.trim().toLowerCase();
+  if (!raw) return "local";
+  if (raw === "local" || raw === "docker") return raw;
+  console.warn(
+    `[agent] Ignoring invalid STATELESS_CLIENT_PROOF_BACKEND='${raw}'. Expected 'local' or 'docker'. Using 'local'.`
+  );
+  return "local";
+}
+
+function resolveRisc0ProverMode(
+  sourceIsLocal: boolean,
+  destinationIsLocal: boolean
+): "local" | "bonsai" {
+  const raw = process.env["STATELESS_CLIENT_RISC0_PROVER_MODE"]?.trim().toLowerCase();
+  if (raw === "local" || raw === "bonsai") {
+    return raw;
+  }
+  if (raw) {
+    console.warn(
+      `[agent] Ignoring invalid STATELESS_CLIENT_RISC0_PROVER_MODE='${raw}'. Expected 'local' or 'bonsai'.`
+    );
+  }
+
+  const hasBonsaiCreds = Boolean(
+    process.env["BONSAI_API_URL"] && process.env["BONSAI_API_KEY"]
+  );
+  if ((!sourceIsLocal || !destinationIsLocal) && hasBonsaiCreds) {
+    return "bonsai";
+  }
+  return "local";
+}
+
 export function buildStageConfig(intent: TransferIntent, txId: string) {
   const repoRoot = discoverRepoRoot(process.cwd());
 
@@ -35,6 +68,17 @@ export function buildStageConfig(intent: TransferIntent, txId: string) {
     defaultProfileName: "local-hardhat" as const
   });
 
+  const proofBackend = resolveProofBackend();
+  const risc0ProverMode = resolveRisc0ProverMode(source.isLocal, destination.isLocal);
+  if (
+    risc0ProverMode === "local" &&
+    (!source.isLocal || !destination.isLocal)
+  ) {
+    console.warn(
+      `[agent] Using local RISC0 prover for non-local profiles ${source.profileName}->${destination.profileName}; proving can take 20+ minutes.`
+    );
+  }
+
   return {
     source,
     destination,
@@ -43,11 +87,11 @@ export function buildStageConfig(intent: TransferIntent, txId: string) {
       destination: normalizeAddress(intent.destinationConnector, "destinationConnector")
     },
     txId: normalizeBytes32(txId, "txId"),
-    proofBackend: "local" as const,
+    proofBackend,
     executionBlocks: {},
     repoRoot,
     proofPaths: defaultProofPaths(repoRoot),
-    risc0ProverMode: "local" as const
+    risc0ProverMode
   };
 }
 

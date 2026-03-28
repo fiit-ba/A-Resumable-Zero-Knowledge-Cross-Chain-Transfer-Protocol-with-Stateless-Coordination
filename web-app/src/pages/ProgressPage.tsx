@@ -53,6 +53,39 @@ const TX_STATUS_LABELS: Record<number, string> = {
 
 const abiCoder = AbiCoder.defaultAbiCoder();
 
+/**
+ * Decodes known connector custom errors from raw revert data so the user
+ * sees a readable message instead of "execution reverted (unknown custom error)".
+ *
+ * AckWindowExpired is emitted by submitLockProof / submitMintProof / submitAckProof
+ * when block.timestamp >= originAckDeadline.  The deployed Chiado connector uses
+ * selector 0x116563d8; the current repo source compiles to 0xaee908ce
+ * (uint64 vs uint256 parameter types change the selector).
+ */
+function decodeContractError(err: unknown): string | null {
+  if (!err || typeof err !== 'object') return null;
+  const data = (err as { data?: unknown }).data;
+  if (typeof data !== 'string' || data.length < 10) return null;
+
+  const selector = data.slice(0, 10).toLowerCase();
+  const payload  = data.slice(10);
+
+  // AckWindowExpired(uint64 ackDeadline, uint64 currentTime)  — both uint64 and
+  // uint256 variants are ABI-encoded identically (zero-padded to 32 bytes).
+  if ((selector === '0x116563d8' || selector === '0xaee908ce') && payload.length >= 128) {
+    const deadline    = BigInt('0x' + payload.slice(0, 64));
+    const currentTime = BigInt('0x' + payload.slice(64, 128));
+    const expiredSec  = Number(currentTime - deadline);
+    return (
+      `ACK window expired — the relay deadline passed ${expiredSec}s ago ` +
+      `(deadline=${deadline.toString()}, now=${currentTime.toString()}). ` +
+      `Refund flow is required.`
+    );
+  }
+
+  return null;
+}
+
 export function ProgressPage() {
   const { jobId } = useParams<{ jobId: string }>();
   const navigate = useNavigate();
@@ -112,11 +145,57 @@ export function ProgressPage() {
         );
       }
 
-      if (stage.stage === 'ack') {
-        const txSnapshot = await readonlyConnector.getTx(stageTxId) as {
+      // Lock stage pre-flight: originAckDeadline is contractArgs[9].
+      // submitLockProof reverts with AckWindowExpired if the deadline has already
+      // passed — check here so the user sees a clear message before we attempt
+      // gas estimation (which would fail after a 28-minute proof run).
+      if (stage.stage === 'lock') {
+        const originAckDeadlineRaw = stage.contractArgs[9];
+        const originAckDeadline = BigInt(String(originAckDeadlineRaw ?? '0'));
+        if (originAckDeadline > 0n) {
+          const latestBlock = await provider.getBlock('latest');
+          if (!latestBlock) {
+            throw new Error('Stage preflight failed: unable to fetch latest block for deadline check.');
+          }
+          const chainNow = BigInt(latestBlock.timestamp.toString());
+          if (chainNow >= originAckDeadline) {
+            throw new Error(
+              `Stage preflight failed: ACK window expired — the relay deadline has passed ` +
+              `(deadline=${originAckDeadline.toString()}, current=${chainNow.toString()}). ` +
+              `Refund flow is required.`
+            );
+          }
+        }
+      }
+
+      let txSnapshot: {
+        amount: bigint;
+        currencyTo: string;
+        ackDeadline: bigint;
+      } | null = null;
+      if (stage.stage === 'mint' || stage.stage === 'ack') {
+        txSnapshot = await readonlyConnector.getTx(stageTxId) as {
           amount: bigint;
           currencyTo: string;
+          ackDeadline: bigint;
         };
+        const latestBlock = await provider.getBlock('latest');
+        if (!latestBlock) {
+          throw new Error('Stage preflight failed: unable to fetch latest block for deadline check.');
+        }
+        const ackDeadline = BigInt(txSnapshot.ackDeadline.toString());
+        const chainNow = BigInt(latestBlock.timestamp.toString());
+        if (chainNow >= ackDeadline) {
+          throw new Error(
+            `Stage preflight failed: ACK window expired. deadline=${ackDeadline.toString()}, current=${chainNow.toString()}. Refund flow is required.`
+          );
+        }
+      }
+
+      if (stage.stage === 'ack') {
+        if (!txSnapshot) {
+          throw new Error('ACK preflight failed: missing destination transaction snapshot.');
+        }
         const payoutToken = String(txSnapshot.currencyTo);
         const payoutAmount = BigInt(txSnapshot.amount.toString());
         const token = new Contract(payoutToken, ERC20_ABI, provider);
@@ -161,7 +240,8 @@ export function ProgressPage() {
 
       await submitReceipt({ jobId: jobId!, stage: stage.stage, txHash }).unwrap();
     } catch (err) {
-      setSubmitError(err instanceof Error ? err.message : String(err));
+      const decodedMsg = decodeContractError(err);
+      setSubmitError(decodedMsg ?? (err instanceof Error ? err.message : String(err)));
     } finally {
       setSubmitting(false);
     }

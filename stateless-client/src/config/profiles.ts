@@ -23,9 +23,6 @@ interface ChainResolveInput {
   defaultProfileName: NetworkProfileName;
 }
 
-const CHIADO_PARENT_ROOT_BEACON_FALLBACK_URL =
-  "https://rpc-gbc.chiadochain.net";
-
 export const NETWORK_PROFILES: Record<NetworkProfileName, NetworkProfileDefaults> = {
   "local-anvil": {
     name: "local-anvil",
@@ -96,12 +93,18 @@ export const NETWORK_PROFILES: Record<NetworkProfileName, NetworkProfileDefaults
     isLocal: false,
     rpcUrls: ["https://gnosis-chiado-rpc.publicnode.com"],
     proverUrls: ["https://chiado.colibri-proof.tech"],
+    // The first entry in beaconUrls and checkpointzUrls MUST be the same host so
+    // that Colibri bootstraps from the same source it uses for finality updates —
+    // a mismatch causes sync-backwards.  chiado.colibri-proof.tech is the
+    // dedicated Colibri prover/beacon for Chiado; rpc-gbc.chiadochain.net is
+    // kept as a secondary beacon fallback only.
     beaconUrls: [
-      CHIADO_PARENT_ROOT_BEACON_FALLBACK_URL,
+      "https://chiado.colibri-proof.tech",
+      "https://rpc-gbc.chiadochain.net",
       "https://gnosis-chiado-beacon-api.publicnode.com"
     ],
     checkpointzUrls: [
-      CHIADO_PARENT_ROOT_BEACON_FALLBACK_URL,
+      "https://chiado.colibri-proof.tech",
       "https://gnosis-chiado-beacon-api.publicnode.com"
     ]
   }

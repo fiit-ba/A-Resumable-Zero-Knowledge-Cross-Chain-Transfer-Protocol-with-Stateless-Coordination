@@ -17,6 +17,7 @@ library ProofOutputs {
         uint256 sourceChainId;
         uint256 destinationChainId;
     }
+
     function encodeLockProof(LockProofPublicInputs memory o) internal pure returns (bytes memory) {
         return abi.encode(
             o.txId,

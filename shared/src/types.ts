@@ -6,6 +6,15 @@ export type RelayProofStage = "lock" | "mint" | "ack";
 
 export type VerificationMode = "colibri" | "rpc-fallback";
 
+export type VerificationDegradeReason =
+  | "chiado_sync_backwards"
+  | "chiado_ssz_parse"
+  | "chiado_parent_beacon_missing"
+  | "chiado_finalization"
+  | "chiado_block_not_signed"
+  | "chiado_bootstrap_unsupported"
+  | "local_chain";
+
 /**
  * Job lifecycle states in the new confirmed-preparation model.
  *
@@ -41,6 +50,8 @@ export interface TransferIntent {
 export interface VerificationSummary {
   mode: VerificationMode;
   degraded: boolean;
+  /** Present only when degraded is true; identifies the root cause of fallback. */
+  degradeReason?: VerificationDegradeReason;
   /** Verify-stage key, e.g. "source-deposit". */
   verifiedStage: string;
 }
@@ -76,6 +87,7 @@ export interface StageReadyPayload {
 export interface EnrichedStagePayload extends StageReadyPayload {
   verificationMode: VerificationMode;
   verificationDegraded: boolean;
+  verificationDegradeReason?: VerificationDegradeReason;
   verifiedStage: string;
 }
 

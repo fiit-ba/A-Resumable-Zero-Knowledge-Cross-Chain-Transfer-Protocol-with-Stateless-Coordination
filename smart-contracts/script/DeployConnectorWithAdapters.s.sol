@@ -3,6 +3,7 @@ pragma solidity ^0.8.28;
 
 import {Script, console2} from "forge-std/Script.sol";
 import {Connector} from "../src/connectors/Connector.sol";
+import {Errors} from "../src/libs/Errors.sol";
 
 /// @notice Deploys Connector with pre-deployed verifier adapters and per-route RISC Zero image IDs.
 /// @dev Required env vars:
@@ -23,6 +24,7 @@ contract DeployConnectorWithAdapters is Script {
         address risc0Adapter = vm.envAddress("RISC0_ADAPTER");
         address snarkAdapter = vm.envAddress("SNARK_ADAPTER");
         uint64 ackWindowSeconds = uint64(vm.envUint("ACK_WINDOW_SECONDS"));
+        if (ackWindowSeconds == 0) revert Errors.ZeroAckWindow();
 
         bytes32[5] memory risc0RouteImageIds;
         risc0RouteImageIds[0] = vm.envOr("ORIGIN_MINT_IMAGE_ID", bytes32(0));

@@ -15,10 +15,15 @@ interface IBurnableERC20 {
     function burn(uint256 amount) external;
 }
 
+interface IMintableERC20 {
+    function mint(address to, uint256 amount) external;
+}
+
 contract Connector is ConnectorStorage, IConnector, ReentrancyGuard {
     using SafeERC20 for IERC20;
 
-    address public immutable admin;
+    address private immutable ADMIN;
+    uint64 private immutable ACK_WINDOW_SECONDS;
 
     /// @param _risc0Adapter   Single RiscZeroAdapter allowlisting all image IDs used on this chain.
     /// @param _snarkAdapter   SnarkAdapter for SNARKJS proof routes.
@@ -33,9 +38,10 @@ contract Connector is ConnectorStorage, IConnector, ReentrancyGuard {
     ) {
         if (_risc0Adapter == address(0)) revert Errors.ZeroAddress();
         if (_snarkAdapter == address(0)) revert Errors.ZeroAddress();
+        if (_ackWindowSeconds == 0) revert Errors.ZeroAckWindow();
 
-        admin = msg.sender;
-        ackWindowSeconds = _ackWindowSeconds;
+        ADMIN = msg.sender;
+        ACK_WINDOW_SECONDS = _ackWindowSeconds;
 
         // Seed every route with the same default adapters so existing flows
         // work out of the box without an explicit setVerifier call.
@@ -53,26 +59,33 @@ contract Connector is ConnectorStorage, IConnector, ReentrancyGuard {
     }
 
     modifier onlyAdmin() {
-        if (msg.sender != admin) revert Errors.NotAdmin();
+        _onlyAdmin();
         _;
     }
 
+    /// @notice Backwards-compatible getter for the connector admin.
+    function admin() external view returns (address) {
+        return ADMIN;
+    }
+
+    /// @notice Returns the configured ACK window duration in seconds.
+    function ackWindowSeconds() external view returns (uint64) {
+        return ACK_WINDOW_SECONDS;
+    }
+
+    function _onlyAdmin() internal view {
+        if (msg.sender != ADMIN) revert Errors.NotAdmin();
+    }
+
     /// @inheritdoc IConnector
-    function setVerifier(Enums.VerifierRoute _route, Enums.ProofType _proofType, address _verifier)
-        external
-        onlyAdmin
-    {
+    function setVerifier(Enums.VerifierRoute _route, Enums.ProofType _proofType, address _verifier) external onlyAdmin {
         if (_verifier == address(0)) revert Errors.ZeroAddress();
         _verifiers[uint8(_route)][uint8(_proofType)] = _verifier;
         emit VerifierUpdated(_route, _proofType, _verifier);
     }
 
     /// @inheritdoc IConnector
-    function getVerifier(Enums.VerifierRoute _route, Enums.ProofType _proofType)
-        external
-        view
-        returns (address)
-    {
+    function getVerifier(Enums.VerifierRoute _route, Enums.ProofType _proofType) external view returns (address) {
         return _verifiers[uint8(_route)][uint8(_proofType)];
     }
 
@@ -86,7 +99,8 @@ contract Connector is ConnectorStorage, IConnector, ReentrancyGuard {
         address _currencyTo,
         address _to,
         uint256 _amount,
-        address _dstChainConnector
+        address _dstChainConnector,
+        uint256 _destinationChainId
     ) external nonReentrant returns (bytes32 txId) {
         if (_amount == 0) revert Errors.ZeroAmount();
         if (_to == address(0)) revert Errors.ZeroAddress();
@@ -96,7 +110,18 @@ contract Connector is ConnectorStorage, IConnector, ReentrancyGuard {
         uint256 nonce = txNonce++;
 
         txId = keccak256(
-            abi.encode(msg.sender, _to, _amount, _currencyFrom, _currencyTo, address(this), _dstChainConnector, nonce)
+            abi.encode(
+                msg.sender,
+                _to,
+                _amount,
+                _currencyFrom,
+                _currencyTo,
+                address(this),
+                _dstChainConnector,
+                nonce,
+                block.chainid,
+                _destinationChainId
+            )
         );
 
         if (txStatus[txId] != Enums.TxStatus.NONE) {
@@ -106,7 +131,7 @@ contract Connector is ConnectorStorage, IConnector, ReentrancyGuard {
         uint256 balanceBefore = IERC20(_currencyFrom).balanceOf(address(this));
         IERC20(_currencyFrom).safeTransferFrom(msg.sender, address(this), _amount);
         uint256 received = IERC20(_currencyFrom).balanceOf(address(this)) - balanceBefore;
-        if (received == 0) revert Errors.ZeroAmount();
+        if (received < 1) revert Errors.ZeroAmount();
 
         _txs[txId] = CrossChainTx({
             txId: txId,
@@ -120,9 +145,11 @@ contract Connector is ConnectorStorage, IConnector, ReentrancyGuard {
             timestamp: uint64(block.timestamp),
             finalizedAt: 0,
             mintedAt: 0,
-            ackDeadline: uint64(block.timestamp) + ackWindowSeconds,
+            ackDeadline: uint64(block.timestamp) + ACK_WINDOW_SECONDS,
             status: Enums.TxStatus.DEPOSIT_LOCKED,
-            nonce: nonce
+            nonce: nonce,
+            sourceChainId: block.chainid,
+            destinationChainId: _destinationChainId
         });
         txStatus[txId] = Enums.TxStatus.DEPOSIT_LOCKED;
 
@@ -137,7 +164,8 @@ contract Connector is ConnectorStorage, IConnector, ReentrancyGuard {
             _dstChainConnector,
             uint64(block.timestamp),
             nonce,
-            block.chainid
+            block.chainid,
+            _destinationChainId
         );
     }
 
@@ -153,20 +181,29 @@ contract Connector is ConnectorStorage, IConnector, ReentrancyGuard {
         requireStatus(_txId, Enums.TxStatus.DEPOSIT_LOCKED)
     {
         _checkRouteImageId(Enums.VerifierRoute.ORIGIN_MINT, _proofType, _proofPayload);
-        CrossChainTx storage tx_ = _txs[_txId];
+        // Memory snapshot so events can be emitted after storage is erased.
+        CrossChainTx memory tx_ = _txs[_txId];
+        if (block.timestamp >= tx_.ackDeadline) {
+            revert Errors.AckWindowExpired(tx_.ackDeadline, uint64(block.timestamp));
+        }
 
         (bytes32 commitment, bytes32 proofHash) =
             _verifyProof(Enums.VerifierRoute.ORIGIN_MINT, _proofType, _proofPayload, _txId);
         bytes32 expected = _expectedCommitment(
-            Enums.VerifierRoute.ORIGIN_MINT, _proofType, abi.encode(_txId, tx_.dstChainConnector, tx_.amount, tx_.to)
+            Enums.VerifierRoute.ORIGIN_MINT,
+            _proofType,
+            abi.encode(_txId, tx_.dstChainConnector, tx_.amount, tx_.to, tx_.sourceChainId, tx_.destinationChainId)
         );
 
         if (commitment != expected) {
             revert Errors.CommitmentMismatch(commitment, expected);
         }
 
-        tx_.mintedAt = uint64(block.timestamp);
-        _setStatus(_txId, Enums.TxStatus.MINT_PROOF_ACCEPTED);
+        // Spec (pp. 3 & 8): "The data on the origin connector is removed after the mint proof
+        // is delivered." Once the proof is accepted the dispute mechanism is disabled and the
+        // ACK proof can be derived from the AckReady event by the stateless client without any
+        // on-chain state. Remove storage immediately to prevent permanent ghost records.
+        _cleanupTx(_txId);
 
         emit AckReady(
             _txId,
@@ -183,6 +220,17 @@ contract Connector is ConnectorStorage, IConnector, ReentrancyGuard {
             commitment,
             _proofPayload
         );
+        emit OriginTxClosed(
+            _txId,
+            tx_.amount,
+            tx_.currencyFrom,
+            tx_.currencyTo,
+            tx_.from,
+            tx_.to,
+            tx_.srcChainConnector,
+            tx_.dstChainConnector,
+            tx_.timestamp
+        );
     }
 
     /// @inheritdoc IConnector
@@ -190,7 +238,17 @@ contract Connector is ConnectorStorage, IConnector, ReentrancyGuard {
         Enums.TxStatus current = txStatus[_txId];
         CrossChainTx storage tx_ = _txs[_txId];
 
-        if (current != Enums.TxStatus.DEPOSIT_LOCKED && current != Enums.TxStatus.MINT_PROOF_ACCEPTED) {
+        // Spec note — Figure 4 vs. page 8 conflict:
+        //   Figure 4 depicts a "No ACK event" refund flow that begins AFTER the mint proof
+        //   arrives on origin, implying initiateRefund should be callable from
+        //   MINT_PROOF_ACCEPTED once ackDeadline expires.
+        //   Page 8 text, however, states: "Once the mint proof is received, the dispute
+        //   mechanism on the origin connector is disabled." We follow page 8: submitMintProof
+        //   erases origin storage immediately (MINT_PROOF_ACCEPTED state never persists), so
+        //   this function can only be reached while the tx is still in DEPOSIT_LOCKED. Users
+        //   who experience transient client downtime after a successful mint should submit the
+        //   ACK proof instead — submitAckProof has no hard deadline (see HIGH-3 fix).
+        if (current != Enums.TxStatus.DEPOSIT_LOCKED) {
             revert Errors.InvalidStateTransition(uint8(current), uint8(Enums.TxStatus.REFUND_INITIATED));
         }
         if (block.timestamp < tx_.ackDeadline) {
@@ -211,10 +269,12 @@ contract Connector is ConnectorStorage, IConnector, ReentrancyGuard {
         _checkRouteImageId(Enums.VerifierRoute.ORIGIN_BURN, _proofType, _proofPayload);
         CrossChainTx memory tx_ = _txs[_txId];
 
-        (bytes32 commitment,) =
-            _verifyProof(Enums.VerifierRoute.ORIGIN_BURN, _proofType, _proofPayload, _txId);
-        bytes32 expected =
-            _expectedCommitment(Enums.VerifierRoute.ORIGIN_BURN, _proofType, abi.encode(_txId, tx_.dstChainConnector, tx_.amount));
+        (bytes32 commitment,) = _verifyProof(Enums.VerifierRoute.ORIGIN_BURN, _proofType, _proofPayload, _txId);
+        bytes32 expected = _expectedCommitment(
+            Enums.VerifierRoute.ORIGIN_BURN,
+            _proofType,
+            abi.encode(_txId, tx_.dstChainConnector, tx_.amount, tx_.sourceChainId, tx_.destinationChainId)
+        );
         if (commitment != expected) {
             revert Errors.CommitmentMismatch(commitment, expected);
         }
@@ -228,37 +288,6 @@ contract Connector is ConnectorStorage, IConnector, ReentrancyGuard {
         IERC20(token).safeTransfer(refundTo, refundAmt);
 
         emit RefundExecuted(_txId, refundTo, refundAmt);
-        emit OriginTxClosed(
-            _txId,
-            tx_.amount,
-            tx_.currencyFrom,
-            tx_.currencyTo,
-            tx_.from,
-            tx_.to,
-            tx_.srcChainConnector,
-            tx_.dstChainConnector,
-            tx_.timestamp
-        );
-    }
-
-    /// @inheritdoc IConnector
-    function closeTx(bytes32 _txId)
-        external
-        nonReentrant
-        requireStatus(_txId, Enums.TxStatus.MINT_PROOF_ACCEPTED)
-    {
-        CrossChainTx memory tx_ = _txs[_txId];
-
-        if (msg.sender != tx_.from) {
-            revert Errors.NotTxOriginator(_txId, msg.sender, tx_.from);
-        }
-
-        uint64 closeAfter = tx_.ackDeadline;
-        if (block.timestamp < closeAfter) {
-            revert Errors.DeadlineNotReached(closeAfter, uint64(block.timestamp));
-        }
-
-        _cleanupTx(_txId);
         emit OriginTxClosed(
             _txId,
             tx_.amount,
@@ -323,6 +352,9 @@ contract Connector is ConnectorStorage, IConnector, ReentrancyGuard {
         }
 
         uint64 deadline = _originAckDeadline;
+        if (block.timestamp >= deadline) {
+            revert Errors.AckWindowExpired(deadline, uint64(block.timestamp));
+        }
 
         _txs[_txId] = CrossChainTx({
             txId: _txId,
@@ -338,9 +370,15 @@ contract Connector is ConnectorStorage, IConnector, ReentrancyGuard {
             mintedAt: uint64(block.timestamp),
             ackDeadline: deadline,
             status: Enums.TxStatus.MINTED_IN_HOLDING,
-            nonce: _nonce
+            nonce: _nonce,
+            sourceChainId: _sourceChainId,
+            destinationChainId: block.chainid
         });
         txStatus[_txId] = Enums.TxStatus.MINTED_IN_HOLDING;
+
+        // Destination flow is lock-and-mint: mint wrapped tokens into connector
+        // custody at lock-proof acceptance, then release to receiver on ACK.
+        IMintableERC20(_currencyTo).mint(address(this), _amount);
 
         emit FundsReleased(
             _txId,
@@ -367,13 +405,18 @@ contract Connector is ConnectorStorage, IConnector, ReentrancyGuard {
     {
         _checkRouteImageId(Enums.VerifierRoute.DEST_ACK, _proofType, _proofPayload);
         CrossChainTx memory tx_ = _txs[_txId];
+        // Spec (p.8): "the protocol allows it to submit the proofs at any point, finishing
+        // the transaction after the client's functionality is restored." No hard deadline
+        // is enforced here. submitRefundClaimProof has the inverse guard (requires
+        // block.timestamp >= ackDeadline), so ACK and refund-claim are mutually exclusive:
+        // whichever valid proof is submitted first wins.
 
         (bytes32 commitment, bytes32 proofHash) =
             _verifyProof(Enums.VerifierRoute.DEST_ACK, _proofType, _proofPayload, _txId);
         bytes32 expected = _expectedCommitment(
             Enums.VerifierRoute.DEST_ACK,
             _proofType,
-            abi.encode(_txId, tx_.srcChainConnector, tx_.dstChainConnector)
+            abi.encode(_txId, tx_.srcChainConnector, tx_.dstChainConnector, tx_.sourceChainId, tx_.destinationChainId)
         );
         if (commitment != expected) {
             revert Errors.CommitmentMismatch(commitment, expected);
@@ -415,7 +458,9 @@ contract Connector is ConnectorStorage, IConnector, ReentrancyGuard {
         (bytes32 commitment, bytes32 proofHash) =
             _verifyProof(Enums.VerifierRoute.DEST_REFUND_CLAIM, _proofType, _proofPayload, _txId);
         bytes32 expected = _expectedCommitment(
-            Enums.VerifierRoute.DEST_REFUND_CLAIM, _proofType, abi.encode(_txId, tx_.srcChainConnector, tx_.amount)
+            Enums.VerifierRoute.DEST_REFUND_CLAIM,
+            _proofType,
+            abi.encode(_txId, tx_.srcChainConnector, tx_.amount, tx_.sourceChainId, tx_.destinationChainId)
         );
         if (commitment != expected) {
             revert Errors.CommitmentMismatch(commitment, expected);
@@ -473,11 +518,10 @@ contract Connector is ConnectorStorage, IConnector, ReentrancyGuard {
     /// @dev For RISC0 proofs, asserts that the imageId embedded in the payload matches
     ///      the expected imageId stored for this route. Reverts with ImageIdRouteMismatch on mismatch.
     ///      No-op for non-RISC0 proof types.
-    function _checkRouteImageId(
-        Enums.VerifierRoute _route,
-        Enums.ProofType _proofType,
-        bytes calldata _proofPayload
-    ) internal view {
+    function _checkRouteImageId(Enums.VerifierRoute _route, Enums.ProofType _proofType, bytes calldata _proofPayload)
+        internal
+        view
+    {
         if (_proofType != Enums.ProofType.RISC0) return;
         (, bytes32 proofImageId,) = abi.decode(_proofPayload, (bytes, bytes32, bytes32));
         bytes32 expected = _risc0RouteImageIds[uint8(_route)];
@@ -507,11 +551,11 @@ contract Connector is ConnectorStorage, IConnector, ReentrancyGuard {
         emit ProofVerified(_txId, _proofType, proofHash, commitment, _proofPayload);
     }
 
-    function _expectedCommitment(
-        Enums.VerifierRoute _route,
-        Enums.ProofType _proofType,
-        bytes memory _publicInputs
-    ) internal view returns (bytes32) {
+    function _expectedCommitment(Enums.VerifierRoute _route, Enums.ProofType _proofType, bytes memory _publicInputs)
+        internal
+        view
+        returns (bytes32)
+    {
         address verifier = _verifiers[uint8(_route)][uint8(_proofType)];
         if (verifier == address(0)) revert Errors.VerifierNotRegistered(uint8(_proofType));
         return IZKVerifier(verifier).computeCommitment(_publicInputs);

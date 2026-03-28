@@ -5,7 +5,7 @@
 #  1. Deploy origin contracts (Groth16 verifier, single RISC0 adapter, SnarkJS adapter, Connector, ERC20)
 #  2. Deploy destination contracts (same set, including a burnable ERC20)
 #  3. Origin: mint tokens, approve, depositAndLock
-#  4. Destination: generate lock proof → submitLockProof → mint dstToken to dstConnector
+#  4. Destination: generate lock proof → submitLockProof (connector mints dstToken to holding)
 #  5. Warp time past ackDeadline on both chains
 #  6. Origin: initiateRefund (emit RefundClaimed)
 #  7. Destination: generate refund-claim proof → submitRefundClaimProof
@@ -79,7 +79,6 @@ REFUND_CLAIM_PROOF_GAS_LIMIT="${REFUND_CLAIM_PROOF_GAS_LIMIT:-12000000}"
 BURN_PROOF_GAS_LIMIT="${BURN_PROOF_GAS_LIMIT:-12000000}"
 EXECUTE_BURN_GAS_LIMIT="${EXECUTE_BURN_GAS_LIMIT:-1000000}"
 SET_VERIFIER_GAS_LIMIT="${SET_VERIFIER_GAS_LIMIT:-500000}"
-DEST_TOKEN_MINT_GAS_LIMIT="${DEST_TOKEN_MINT_GAS_LIMIT:-500000}"
 # Port for the eth_getBlockReceipts proxy used during burn proof generation.
 # Hardhat does not support eth_getBlockReceipts; the proxy wraps Hardhat and
 # implements that method via individual eth_getTransactionReceipt calls.
@@ -782,13 +781,6 @@ if [[ "$DEST_STATUS" != "4" ]]; then
     echo "Unexpected dest tx status: $DEST_STATUS" >&2
     exit 1
 fi
-
-# Mint dstToken to dstConnector so executeBurn can burn it.
-echo "Minting dstToken to DEST_CONNECTOR..."
-cast send "$DEST_TOKEN" "mint(address,uint256)" \
-    "$DEST_CONNECTOR" "$AMOUNT_WEI" \
-    --gas-limit "$DEST_TOKEN_MINT_GAS_LIMIT" \
-    --rpc-url "$DEST_RPC" --private-key "$PRIVATE_KEY" >/dev/null
 
 DEST_SUPPLY_BEFORE="$(query_erc20_total_supply "$DEST_RPC" "$DEST_TOKEN")"
 echo "Dest token total supply before burn: $DEST_SUPPLY_BEFORE"

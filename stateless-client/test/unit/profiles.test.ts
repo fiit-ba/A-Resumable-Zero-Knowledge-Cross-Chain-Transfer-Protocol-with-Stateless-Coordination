@@ -51,4 +51,29 @@ describe("resolveChainConfig", () => {
       })
     ).toThrow(/chain id/i);
   });
+
+  it("chiado profile places chiado.colibri-proof.tech first in beacon and checkpointz lists", () => {
+    const chain = resolveChainConfig({
+      side: "destination",
+      defaultProfileName: "chiado"
+    });
+
+    expect(chain.chainId).toBe(10200);
+
+    // prover: dedicated Chiado colibri node
+    expect(chain.proverUrls[0]).toBe("https://chiado.colibri-proof.tech");
+
+    // beacon: colibri first (bootstrap source), rpc-gbc second (fallback), publicnode third
+    expect(chain.beaconUrls[0]).toBe("https://chiado.colibri-proof.tech");
+    expect(chain.beaconUrls[1]).toBe("https://rpc-gbc.chiadochain.net");
+    expect(chain.beaconUrls[2]).toBe("https://gnosis-chiado-beacon-api.publicnode.com");
+    expect(chain.beaconUrls).toHaveLength(3);
+
+    // checkpointz: colibri first, publicnode second; rpc-gbc must NOT appear
+    // (it does not expose a compatible checkpointz API)
+    expect(chain.checkpointzUrls[0]).toBe("https://chiado.colibri-proof.tech");
+    expect(chain.checkpointzUrls[1]).toBe("https://gnosis-chiado-beacon-api.publicnode.com");
+    expect(chain.checkpointzUrls).toHaveLength(2);
+    expect(chain.checkpointzUrls).not.toContain("https://rpc-gbc.chiadochain.net");
+  });
 });

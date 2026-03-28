@@ -62,6 +62,10 @@ contract MockERC20 is ERC20 {
     }
 }
 
+contract NonMintableERC20 is ERC20 {
+    constructor(string memory name_, string memory symbol_) ERC20(name_, symbol_) {}
+}
+
 /*//////////////////////////////////////////////////////////////
                           TEST CONTRACT
 //////////////////////////////////////////////////////////////*/
@@ -157,18 +161,19 @@ contract ConnectorTest is Test {
         token.mint(ALICE, AMOUNT);
         vm.startPrank(ALICE);
         token.approve(address(connector), AMOUNT);
-        txId = connector.depositAndLock(address(token), address(dstTokenMock), BOB, AMOUNT, DST_CONNECTOR);
+        txId =
+            connector.depositAndLock(address(token), address(dstTokenMock), BOB, AMOUNT, DST_CONNECTOR, block.chainid);
         vm.stopPrank();
     }
 
     function _mintProofInputs(bytes32 txId) internal view returns (bytes memory) {
         ConnectorStorage.CrossChainTx memory t = connector.getTx(txId);
-        return abi.encode(txId, t.dstChainConnector, t.amount, t.to);
+        return abi.encode(txId, t.dstChainConnector, t.amount, t.to, t.sourceChainId, t.destinationChainId);
     }
 
     function _burnProofInputs(bytes32 txId) internal view returns (bytes memory) {
         ConnectorStorage.CrossChainTx memory t = connector.getTx(txId);
-        return abi.encode(txId, t.dstChainConnector, t.amount);
+        return abi.encode(txId, t.dstChainConnector, t.amount, t.sourceChainId, t.destinationChainId);
     }
 
     function _lockProofPublicInputs(bytes32 txId, uint64 originAckDeadline, uint256 nonce, uint256 srcChainId)
@@ -198,9 +203,7 @@ contract ConnectorTest is Test {
         _doLockProofWithNonce(txId, originAckDeadline, 0, block.chainid);
     }
 
-    function _doLockProofWithNonce(bytes32 txId, uint64 originAckDeadline, uint256 nonce, uint256 srcChainId)
-        internal
-    {
+    function _doLockProofWithNonce(bytes32 txId, uint64 originAckDeadline, uint256 nonce, uint256 srcChainId) internal {
         bytes memory pub = _lockProofPublicInputs(txId, originAckDeadline, nonce, srcChainId);
         bytes memory proof = _buildSnarkProof(pub);
         connector.submitLockProof(
@@ -221,12 +224,12 @@ contract ConnectorTest is Test {
 
     function _ackProofInputs(bytes32 txId) internal view returns (bytes memory) {
         ConnectorStorage.CrossChainTx memory t = connector.getTx(txId);
-        return abi.encode(txId, t.srcChainConnector, t.dstChainConnector);
+        return abi.encode(txId, t.srcChainConnector, t.dstChainConnector, t.sourceChainId, t.destinationChainId);
     }
 
     function _refundClaimInputs(bytes32 txId) internal view returns (bytes memory) {
         ConnectorStorage.CrossChainTx memory t = connector.getTx(txId);
-        return abi.encode(txId, t.srcChainConnector, t.amount);
+        return abi.encode(txId, t.srcChainConnector, t.amount, t.sourceChainId, t.destinationChainId);
     }
 
     /// txStatus mapping lives at storage slot 4 in the new ConnectorStorage layout
@@ -243,17 +246,10 @@ contract ConnectorTest is Test {
 
     function test_constructor_SetsParameters() public view {
         // Constructor seeds every route with the same default adapters.
+        assertEq(connector.getVerifier(Enums.VerifierRoute.ORIGIN_MINT, Enums.ProofType.RISC0), address(risc0Adapter));
+        assertEq(connector.getVerifier(Enums.VerifierRoute.DEST_LOCK, Enums.ProofType.SNARKJS), address(snarkAdapter));
         assertEq(
-            connector.getVerifier(Enums.VerifierRoute.ORIGIN_MINT, Enums.ProofType.RISC0),
-            address(risc0Adapter)
-        );
-        assertEq(
-            connector.getVerifier(Enums.VerifierRoute.DEST_LOCK, Enums.ProofType.SNARKJS),
-            address(snarkAdapter)
-        );
-        assertEq(
-            connector.getVerifier(Enums.VerifierRoute.DEST_REFUND_CLAIM, Enums.ProofType.RISC0),
-            address(risc0Adapter)
+            connector.getVerifier(Enums.VerifierRoute.DEST_REFUND_CLAIM, Enums.ProofType.RISC0), address(risc0Adapter)
         );
         assertEq(connector.ackWindowSeconds(), ACK_WINDOW);
         // All five route image IDs were stored correctly.
@@ -272,6 +268,12 @@ contract ConnectorTest is Test {
         bytes32[5] memory ids;
         vm.expectRevert(Errors.ZeroAddress.selector);
         new Connector(address(risc0Adapter), address(0), ACK_WINDOW, ids);
+    }
+
+    function test_constructor_RevertsWhen_AckWindowZero() public {
+        bytes32[5] memory ids;
+        vm.expectRevert(Errors.ZeroAckWindow.selector);
+        new Connector(address(risc0Adapter), address(snarkAdapter), 0, ids);
     }
 
     /*//////////////////////////////////////////////////////////////
@@ -311,14 +313,8 @@ contract ConnectorTest is Test {
             connector.getVerifier(Enums.VerifierRoute.DEST_REFUND_CLAIM, Enums.ProofType.RISC0),
             address(refundClaimAdapter)
         );
-        assertEq(
-            connector.getVerifier(Enums.VerifierRoute.ORIGIN_MINT, Enums.ProofType.RISC0),
-            address(risc0Adapter)
-        );
-        assertEq(
-            connector.getVerifier(Enums.VerifierRoute.DEST_LOCK, Enums.ProofType.RISC0),
-            address(risc0Adapter)
-        );
+        assertEq(connector.getVerifier(Enums.VerifierRoute.ORIGIN_MINT, Enums.ProofType.RISC0), address(risc0Adapter));
+        assertEq(connector.getVerifier(Enums.VerifierRoute.DEST_LOCK, Enums.ProofType.RISC0), address(risc0Adapter));
     }
 
     /*//////////////////////////////////////////////////////////////
@@ -369,10 +365,7 @@ contract ConnectorTest is Test {
     function test_connector_SameAdapterServesAllRoutes() public view {
         // All five RISC0 routes point to the same adapter address.
         for (uint8 i = 0; i < 5; i++) {
-            assertEq(
-                connector.getVerifier(Enums.VerifierRoute(i), Enums.ProofType.RISC0),
-                address(risc0Adapter)
-            );
+            assertEq(connector.getVerifier(Enums.VerifierRoute(i), Enums.ProofType.RISC0), address(risc0Adapter));
         }
     }
 
@@ -382,10 +375,7 @@ contract ConnectorTest is Test {
         bytes memory proof = abi.encode(hex"cafe", wrongId, bytes32(0));
         vm.expectRevert(
             abi.encodeWithSelector(
-                Errors.ImageIdRouteMismatch.selector,
-                uint8(Enums.VerifierRoute.ORIGIN_MINT),
-                wrongId,
-                IMAGE_ID
+                Errors.ImageIdRouteMismatch.selector, uint8(Enums.VerifierRoute.ORIGIN_MINT), wrongId, IMAGE_ID
             )
         );
         connector.submitMintProof(Enums.ProofType.RISC0, proof, txId);
@@ -396,7 +386,8 @@ contract ConnectorTest is Test {
         bytes32 txId = _doDeposit();
         bytes memory proof = _buildSnarkProof(_mintProofInputs(txId));
         connector.submitMintProof(Enums.ProofType.SNARKJS, proof, txId);
-        assertEq(uint8(connector.txStatus(txId)), uint8(Enums.TxStatus.MINT_PROOF_ACCEPTED));
+        // Spec: storage is wiped immediately on successful mint proof.
+        assertEq(uint8(connector.txStatus(txId)), uint8(Enums.TxStatus.NONE));
     }
 
     function test_connector_RouteImageIdIsImmutable() public view {
@@ -415,7 +406,16 @@ contract ConnectorTest is Test {
 
         bytes32 expectedTxId = keccak256(
             abi.encode(
-                ALICE, BOB, AMOUNT, address(token), address(dstTokenMock), address(connector), DST_CONNECTOR, uint256(0)
+                ALICE,
+                BOB,
+                AMOUNT,
+                address(token),
+                address(dstTokenMock),
+                address(connector),
+                DST_CONNECTOR,
+                uint256(0),
+                block.chainid,
+                block.chainid
             )
         );
 
@@ -431,10 +431,12 @@ contract ConnectorTest is Test {
             DST_CONNECTOR,
             uint64(block.timestamp),
             0,
+            block.chainid,
             block.chainid
         );
 
-        bytes32 txId = connector.depositAndLock(address(token), address(dstTokenMock), BOB, AMOUNT, DST_CONNECTOR);
+        bytes32 txId =
+            connector.depositAndLock(address(token), address(dstTokenMock), BOB, AMOUNT, DST_CONNECTOR, block.chainid);
         vm.stopPrank();
 
         assertEq(txId, expectedTxId);
@@ -451,6 +453,8 @@ contract ConnectorTest is Test {
         assertEq(t.ackDeadline, uint64(block.timestamp) + ACK_WINDOW);
         assertEq(t.nonce, 0);
         assertEq(uint8(t.status), uint8(Enums.TxStatus.DEPOSIT_LOCKED));
+        assertEq(t.sourceChainId, block.chainid);
+        assertEq(t.destinationChainId, block.chainid);
     }
 
     function test_depositAndLock_TransfersTokens() public {
@@ -467,27 +471,29 @@ contract ConnectorTest is Test {
 
     function test_depositAndLock_RevertsWhen_ZeroAmount() public {
         vm.expectRevert(Errors.ZeroAmount.selector);
-        connector.depositAndLock(address(token), address(dstTokenMock), BOB, 0, DST_CONNECTOR);
+        connector.depositAndLock(address(token), address(dstTokenMock), BOB, 0, DST_CONNECTOR, block.chainid);
     }
 
     function test_depositAndLock_RevertsWhen_ZeroTo() public {
         vm.expectRevert(Errors.ZeroAddress.selector);
-        connector.depositAndLock(address(token), address(dstTokenMock), address(0), AMOUNT, DST_CONNECTOR);
+        connector.depositAndLock(
+            address(token), address(dstTokenMock), address(0), AMOUNT, DST_CONNECTOR, block.chainid
+        );
     }
 
     function test_depositAndLock_RevertsWhen_ZeroCurrencyFrom() public {
         vm.expectRevert(Errors.ZeroAddress.selector);
-        connector.depositAndLock(address(0), address(dstTokenMock), BOB, AMOUNT, DST_CONNECTOR);
+        connector.depositAndLock(address(0), address(dstTokenMock), BOB, AMOUNT, DST_CONNECTOR, block.chainid);
     }
 
     function test_depositAndLock_RevertsWhen_ZeroCurrencyTo() public {
         vm.expectRevert(Errors.ZeroAddress.selector);
-        connector.depositAndLock(address(token), address(0), BOB, AMOUNT, DST_CONNECTOR);
+        connector.depositAndLock(address(token), address(0), BOB, AMOUNT, DST_CONNECTOR, block.chainid);
     }
 
     function test_depositAndLock_RevertsWhen_ZeroDstConnector() public {
         vm.expectRevert(Errors.ZeroAddress.selector);
-        connector.depositAndLock(address(token), address(dstTokenMock), BOB, AMOUNT, address(0));
+        connector.depositAndLock(address(token), address(dstTokenMock), BOB, AMOUNT, address(0), block.chainid);
     }
 
     /*//////////////////////////////////////////////////////////////
@@ -523,8 +529,9 @@ contract ConnectorTest is Test {
 
         connector.submitMintProof(Enums.ProofType.RISC0, proof, txId);
 
-        assertEq(uint8(connector.txStatus(txId)), uint8(Enums.TxStatus.MINT_PROOF_ACCEPTED));
-        assertTrue(connector.txProofUsed(txId, proofHash));
+        // Spec: storage wiped immediately — status is NONE and proof tracking is cleared.
+        assertEq(uint8(connector.txStatus(txId)), uint8(Enums.TxStatus.NONE));
+        assertFalse(connector.txProofUsed(txId, proofHash));
     }
 
     function test_submitMintProof_Snarkjs_HappyPath() public {
@@ -533,18 +540,22 @@ contract ConnectorTest is Test {
 
         connector.submitMintProof(Enums.ProofType.SNARKJS, proof, txId);
 
-        assertEq(uint8(connector.txStatus(txId)), uint8(Enums.TxStatus.MINT_PROOF_ACCEPTED));
+        // Spec: storage wiped immediately on successful mint proof.
+        assertEq(uint8(connector.txStatus(txId)), uint8(Enums.TxStatus.NONE));
     }
 
-    function test_submitMintProof_SetsMintedAt() public {
+    function test_submitMintProof_CleansUpTxData() public {
         bytes32 txId = _doDeposit();
         bytes memory proof = _buildSnarkProof(_mintProofInputs(txId));
 
-        uint64 ts = uint64(block.timestamp);
         connector.submitMintProof(Enums.ProofType.SNARKJS, proof, txId);
 
+        // All on-chain state for this txId must be erased.
         ConnectorStorage.CrossChainTx memory t = connector.getTx(txId);
-        assertEq(t.mintedAt, ts);
+        assertEq(t.txId, bytes32(0));
+        assertEq(t.amount, 0);
+        assertEq(t.from, address(0));
+        assertEq(uint8(connector.txStatus(txId)), uint8(Enums.TxStatus.NONE));
     }
 
     function test_submitMintProof_RevertsWhen_NotDepositLocked() public {
@@ -557,6 +568,16 @@ contract ConnectorTest is Test {
             )
         );
         connector.submitMintProof(Enums.ProofType.SNARKJS, proof, fake);
+    }
+
+    function test_submitMintProof_RevertsWhen_AckWindowExpired() public {
+        bytes32 txId = _doDeposit();
+        ConnectorStorage.CrossChainTx memory t = connector.getTx(txId);
+        bytes memory proof = _buildSnarkProof(_mintProofInputs(txId));
+
+        vm.warp(t.ackDeadline);
+        vm.expectRevert(abi.encodeWithSelector(Errors.AckWindowExpired.selector, t.ackDeadline, t.ackDeadline));
+        connector.submitMintProof(Enums.ProofType.SNARKJS, proof, txId);
     }
 
     function test_submitMintProof_RevertsWhen_CommitmentMismatch_Risc0() public {
@@ -615,10 +636,13 @@ contract ConnectorTest is Test {
 
         connector.submitMintProof(Enums.ProofType.SNARKJS, proof, txId);
 
-        _forceTxStatus(txId, Enums.TxStatus.DEPOSIT_LOCKED);
-
-        bytes32 proofHash = keccak256(proof);
-        vm.expectRevert(abi.encodeWithSelector(Errors.ProofAlreadyProcessed.selector, proofHash));
+        // Storage is erased (status NONE). A replay attempt is rejected by the status
+        // guard (NONE != DEPOSIT_LOCKED), not by the proof-hash table (which was cleared).
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                Errors.InvalidStateTransition.selector, uint8(Enums.TxStatus.NONE), uint8(Enums.TxStatus.DEPOSIT_LOCKED)
+            )
+        );
         connector.submitMintProof(Enums.ProofType.SNARKJS, proof, txId);
     }
 
@@ -638,14 +662,22 @@ contract ConnectorTest is Test {
         assertEq(uint8(connector.txStatus(txId)), uint8(Enums.TxStatus.REFUND_INITIATED));
     }
 
-    function test_initiateRefund_FromMintProofAccepted() public {
+    function test_initiateRefund_RevertsWhen_AfterMintProof() public {
+        // Spec (p.8): "Once the mint proof is received, the dispute mechanism on the
+        // origin connector is disabled." Storage is erased in submitMintProof, so
+        // initiateRefund must revert because the tx no longer exists.
         bytes32 txId = _doDeposit();
         connector.submitMintProof(Enums.ProofType.SNARKJS, _buildSnarkProof(_mintProofInputs(txId)), txId);
 
         vm.warp(block.timestamp + ACK_WINDOW + 1);
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                Errors.InvalidStateTransition.selector,
+                uint8(Enums.TxStatus.NONE),
+                uint8(Enums.TxStatus.REFUND_INITIATED)
+            )
+        );
         connector.initiateRefund(txId);
-
-        assertEq(uint8(connector.txStatus(txId)), uint8(Enums.TxStatus.REFUND_INITIATED));
     }
 
     function test_initiateRefund_RevertsWhen_AckWindowNotExpired() public {
@@ -773,86 +805,6 @@ contract ConnectorTest is Test {
     }
 
     /*//////////////////////////////////////////////////////////////
-                          closeTx TESTS
-    //////////////////////////////////////////////////////////////*/
-
-    function test_closeTx_HappyPath() public {
-        bytes32 txId = _doDeposit();
-        connector.submitMintProof(Enums.ProofType.SNARKJS, _buildSnarkProof(_mintProofInputs(txId)), txId);
-
-        ConnectorStorage.CrossChainTx memory snap = connector.getTx(txId);
-        vm.warp(block.timestamp + ACK_WINDOW + 1);
-
-        vm.expectEmit(true, true, true, true);
-        emit ConnectorStorage.OriginTxClosed(
-            txId,
-            snap.amount,
-            snap.currencyFrom,
-            snap.currencyTo,
-            snap.from,
-            snap.to,
-            snap.srcChainConnector,
-            snap.dstChainConnector,
-            snap.timestamp
-        );
-
-        vm.prank(ALICE);
-        connector.closeTx(txId);
-
-        assertEq(uint8(connector.txStatus(txId)), uint8(Enums.TxStatus.NONE));
-    }
-
-    function test_closeTx_RevertsWhen_NotOriginator() public {
-        bytes32 txId = _doDeposit();
-        connector.submitMintProof(Enums.ProofType.SNARKJS, _buildSnarkProof(_mintProofInputs(txId)), txId);
-        vm.warp(block.timestamp + ACK_WINDOW + 1);
-
-        vm.expectRevert(abi.encodeWithSelector(Errors.NotTxOriginator.selector, txId, BOB, ALICE));
-        vm.prank(BOB);
-        connector.closeTx(txId);
-    }
-
-    function test_closeTx_RevertsWhen_DeadlineNotReached() public {
-        bytes32 txId = _doDeposit();
-        connector.submitMintProof(Enums.ProofType.SNARKJS, _buildSnarkProof(_mintProofInputs(txId)), txId);
-
-        ConnectorStorage.CrossChainTx memory t = connector.getTx(txId);
-        vm.expectRevert(
-            abi.encodeWithSelector(Errors.DeadlineNotReached.selector, t.ackDeadline, uint64(block.timestamp))
-        );
-        vm.prank(ALICE);
-        connector.closeTx(txId);
-    }
-
-    function test_closeTx_RevertsWhen_NotMintProofAccepted() public {
-        bytes32 txId = _doDeposit();
-
-        vm.expectRevert(
-            abi.encodeWithSelector(
-                Errors.InvalidStateTransition.selector,
-                uint8(Enums.TxStatus.DEPOSIT_LOCKED),
-                uint8(Enums.TxStatus.MINT_PROOF_ACCEPTED)
-            )
-        );
-        vm.prank(ALICE);
-        connector.closeTx(txId);
-    }
-
-    function test_closeTx_CleansTxData() public {
-        bytes32 txId = _doDeposit();
-        connector.submitMintProof(Enums.ProofType.SNARKJS, _buildSnarkProof(_mintProofInputs(txId)), txId);
-        vm.warp(block.timestamp + ACK_WINDOW + 1);
-
-        vm.prank(ALICE);
-        connector.closeTx(txId);
-
-        ConnectorStorage.CrossChainTx memory t = connector.getTx(txId);
-        assertEq(t.txId, bytes32(0));
-        assertEq(t.amount, 0);
-        assertEq(t.from, address(0));
-    }
-
-    /*//////////////////////////////////////////////////////////////
                     submitLockProof TESTS
     //////////////////////////////////////////////////////////////*/
 
@@ -910,6 +862,8 @@ contract ConnectorTest is Test {
         assertEq(t.ackDeadline, deadline);
         assertEq(t.nonce, nonce);
         assertEq(uint8(t.status), uint8(Enums.TxStatus.MINTED_IN_HOLDING));
+        assertEq(t.sourceChainId, srcChainId);
+        assertEq(t.destinationChainId, block.chainid);
     }
 
     function test_submitLockProof_Risc0_HappyPath() public {
@@ -985,6 +939,72 @@ contract ConnectorTest is Test {
         );
     }
 
+    function test_submitLockProof_RevertsWhen_OriginAckWindowExpired() public {
+        bytes32 txId = bytes32(uint256(0xABC));
+        uint64 deadline = uint64(block.timestamp) + ACK_WINDOW;
+        bytes memory pub = _lockProofPublicInputs(txId, deadline, 0, block.chainid);
+        bytes memory proof = _buildSnarkProof(pub);
+
+        vm.warp(deadline);
+        vm.expectRevert(abi.encodeWithSelector(Errors.AckWindowExpired.selector, deadline, deadline));
+        connector.submitLockProof(
+            Enums.ProofType.SNARKJS,
+            proof,
+            txId,
+            AMOUNT,
+            address(token),
+            address(dstTokenMock),
+            ALICE,
+            BOB,
+            SRC_CONNECTOR,
+            deadline,
+            0,
+            block.chainid
+        );
+    }
+
+    function test_submitLockProof_RevertsWhen_DestinationTokenIsNotMintable() public {
+        bytes32 txId = bytes32(uint256(0xABC));
+        uint64 deadline = uint64(block.timestamp) + ACK_WINDOW;
+        uint256 nonce = 0;
+        uint256 srcChainId = block.chainid;
+        NonMintableERC20 nonMintable = new NonMintableERC20("NonMintable", "NMT");
+
+        bytes memory pub = ProofOutputs.encodeLockProof(
+            ProofOutputs.LockProofPublicInputs({
+                txId: txId,
+                amount: AMOUNT,
+                sender: ALICE,
+                receiver: BOB,
+                currencyFrom: address(token),
+                currencyTo: address(nonMintable),
+                srcChainConnector: SRC_CONNECTOR,
+                dstChainConnector: address(connector),
+                originAckDeadline: deadline,
+                nonce: nonce,
+                sourceChainId: srcChainId,
+                destinationChainId: block.chainid
+            })
+        );
+        bytes memory proof = _buildSnarkProof(pub);
+
+        vm.expectRevert();
+        connector.submitLockProof(
+            Enums.ProofType.SNARKJS,
+            proof,
+            txId,
+            AMOUNT,
+            address(token),
+            address(nonMintable),
+            ALICE,
+            BOB,
+            SRC_CONNECTOR,
+            deadline,
+            nonce,
+            srcChainId
+        );
+    }
+
     function test_submitLockProof_ReplayProtection() public {
         bytes32 txId = bytes32(uint256(0xABC));
         uint64 deadline = uint64(block.timestamp) + ACK_WINDOW;
@@ -1030,7 +1050,6 @@ contract ConnectorTest is Test {
         bytes32 txId = bytes32(uint256(0xABC));
         uint64 deadline = uint64(block.timestamp) + ACK_WINDOW;
         _doLockProof(txId, deadline);
-        dstTokenMock.mint(address(connector), AMOUNT);
 
         bytes memory pub = _ackProofInputs(txId);
         bytes memory proof = _buildSnarkProof(pub);
@@ -1067,7 +1086,6 @@ contract ConnectorTest is Test {
         bytes32 txId = bytes32(uint256(0xABC));
         uint64 deadline = uint64(block.timestamp) + ACK_WINDOW;
         _doLockProof(txId, deadline);
-        dstTokenMock.mint(address(connector), AMOUNT);
 
         bytes memory proof = _buildRisc0Proof(_ackProofInputs(txId));
         connector.submitAckProof(Enums.ProofType.RISC0, proof, txId);
@@ -1097,20 +1115,55 @@ contract ConnectorTest is Test {
         connector.submitAckProof(Enums.ProofType.SNARKJS, _buildSnarkProofBadCommitment(), txId);
     }
 
-    function test_submitAckProof_RevertsWhen_InsufficientDestinationLiquidity() public {
+    /// @notice Spec (p.8): "the protocol allows it to submit the proofs at any point."
+    ///         ACK must succeed even after ackDeadline — no hard expiry.
+    function test_submitAckProof_SucceedsAfterDeadline() public {
         bytes32 txId = bytes32(uint256(0xABC));
-        _doLockProof(txId, uint64(block.timestamp) + ACK_WINDOW);
-        // Build proof before vm.expectRevert() to avoid capturing the getTx
-        // staticcall inside _ackProofInputs as the "next call".
+        uint64 deadline = uint64(block.timestamp) + ACK_WINDOW;
+        _doLockProof(txId, deadline);
         bytes memory proof = _buildSnarkProof(_ackProofInputs(txId));
-        vm.expectRevert();
+
+        // Warp well past the deadline — ACK must still be accepted.
+        vm.warp(deadline + 7 days);
         connector.submitAckProof(Enums.ProofType.SNARKJS, proof, txId);
+
+        assertEq(uint8(connector.txStatus(txId)), uint8(Enums.TxStatus.NONE));
+        assertEq(dstTokenMock.balanceOf(BOB), AMOUNT);
+    }
+
+    /// @notice After ackDeadline, ACK and refund-claim race; first valid proof wins.
+    function test_submitAckProof_WinsRaceAgainstRefundClaim() public {
+        bytes32 txId = bytes32(uint256(0xABC));
+        uint64 deadline = uint64(block.timestamp) + ACK_WINDOW;
+        _doLockProof(txId, deadline);
+
+        // Pre-compute both proofs while tx data still exists.
+        bytes memory ackProof = _buildSnarkProof(_ackProofInputs(txId));
+        bytes memory refundProof = _buildSnarkProof(_refundClaimInputs(txId));
+
+        vm.warp(deadline + 1);
+
+        // ACK proof arrives first — transfer completes, refund-claim path is closed.
+        connector.submitAckProof(Enums.ProofType.SNARKJS, ackProof, txId);
+
+        assertEq(uint8(connector.txStatus(txId)), uint8(Enums.TxStatus.NONE));
+        assertEq(dstTokenMock.balanceOf(BOB), AMOUNT);
+
+        // Any subsequent refund-claim attempt must revert (tx no longer exists).
+        // Pre-computed proof is passed directly so no external call precedes expectRevert.
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                Errors.InvalidStateTransition.selector,
+                uint8(Enums.TxStatus.NONE),
+                uint8(Enums.TxStatus.MINTED_IN_HOLDING)
+            )
+        );
+        connector.submitRefundClaimProof(Enums.ProofType.SNARKJS, refundProof, txId);
     }
 
     function test_submitAckProof_CleansTxData() public {
         bytes32 txId = bytes32(uint256(0xABC));
         _doLockProof(txId, uint64(block.timestamp) + ACK_WINDOW);
-        dstTokenMock.mint(address(connector), AMOUNT);
 
         connector.submitAckProof(Enums.ProofType.SNARKJS, _buildSnarkProof(_ackProofInputs(txId)), txId);
 
@@ -1122,7 +1175,6 @@ contract ConnectorTest is Test {
     function test_submitAckProof_CleansProofTracking() public {
         bytes32 txId = bytes32(uint256(0xABC));
         _doLockProof(txId, uint64(block.timestamp) + ACK_WINDOW);
-        dstTokenMock.mint(address(connector), AMOUNT);
 
         bytes memory proof = _buildSnarkProof(_ackProofInputs(txId));
         bytes32 lockProofHash = keccak256(
@@ -1218,8 +1270,6 @@ contract ConnectorTest is Test {
         bytes32 txId = bytes32(uint256(0xABC));
         uint64 deadline = uint64(block.timestamp) + ACK_WINDOW;
         _doLockProof(txId, deadline);
-        // Simulate destination-chain mint-to-holding.
-        dstTokenMock.mint(address(connector), AMOUNT);
         vm.warp(deadline + 1);
         connector.submitRefundClaimProof(Enums.ProofType.SNARKJS, _buildSnarkProof(_refundClaimInputs(txId)), txId);
 
@@ -1264,7 +1314,6 @@ contract ConnectorTest is Test {
         bytes32 txId = bytes32(uint256(0xABC));
         uint64 deadline = uint64(block.timestamp) + ACK_WINDOW;
         _doLockProof(txId, deadline);
-        dstTokenMock.mint(address(connector), AMOUNT);
         vm.warp(deadline + 1);
         connector.submitRefundClaimProof(Enums.ProofType.SNARKJS, _buildSnarkProof(_refundClaimInputs(txId)), txId);
 
@@ -1284,12 +1333,8 @@ contract ConnectorTest is Test {
         bytes32 txId = _doDeposit();
         assertEq(uint8(connector.txStatus(txId)), uint8(Enums.TxStatus.DEPOSIT_LOCKED));
 
+        // Spec: submitMintProof itself cleans up storage — no separate closeTx step needed.
         connector.submitMintProof(Enums.ProofType.SNARKJS, _buildSnarkProof(_mintProofInputs(txId)), txId);
-        assertEq(uint8(connector.txStatus(txId)), uint8(Enums.TxStatus.MINT_PROOF_ACCEPTED));
-
-        vm.warp(block.timestamp + ACK_WINDOW + 1);
-        vm.prank(ALICE);
-        connector.closeTx(txId);
         assertEq(uint8(connector.txStatus(txId)), uint8(Enums.TxStatus.NONE));
     }
 
@@ -1305,26 +1350,130 @@ contract ConnectorTest is Test {
         assertEq(token.balanceOf(ALICE), AMOUNT);
     }
 
-    function test_flow_OriginRefundFromMintProof() public {
+    function test_flow_OriginDisputeDisabledAfterMintProof() public {
+        // Spec (p.8): "Once the mint proof is received, the dispute mechanism on the
+        // origin connector is disabled." Verify that the refund path is blocked once
+        // submitMintProof has erased the tx.
         bytes32 txId = _doDeposit();
 
         connector.submitMintProof(Enums.ProofType.SNARKJS, _buildSnarkProof(_mintProofInputs(txId)), txId);
-        assertEq(uint8(connector.txStatus(txId)), uint8(Enums.TxStatus.MINT_PROOF_ACCEPTED));
+        // Storage cleared immediately — status is NONE, not MINT_PROOF_ACCEPTED.
+        assertEq(uint8(connector.txStatus(txId)), uint8(Enums.TxStatus.NONE));
 
         vm.warp(block.timestamp + ACK_WINDOW + 1);
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                Errors.InvalidStateTransition.selector,
+                uint8(Enums.TxStatus.NONE),
+                uint8(Enums.TxStatus.REFUND_INITIATED)
+            )
+        );
         connector.initiateRefund(txId);
-        assertEq(uint8(connector.txStatus(txId)), uint8(Enums.TxStatus.REFUND_INITIATED));
+    }
 
-        connector.submitBurnProof(Enums.ProofType.SNARKJS, _buildSnarkProof(_burnProofInputs(txId)), txId);
+    /// @notice MEDIUM-1 end-to-end: documents why the Figure 4 refund path is blocked and
+    ///         shows the viable mitigation.
+    ///
+    ///         Spec Figure 4 depicts: origin receives mint proof → ackDeadline expires →
+    ///         initiateRefund on origin → refundClaim on destination → executeBurn →
+    ///         submitBurnProof on origin → Alice refunded.
+    ///
+    ///         Spec page 8 text: "Once the mint proof is received, the dispute mechanism on
+    ///         the origin connector is disabled."  We follow page 8: submitMintProof erases
+    ///         origin storage immediately, so initiateRefund finds status NONE and reverts.
+    ///
+    ///         Mitigation: submitAckProof on destination has no hard deadline (HIGH-3 fix),
+    ///         so the relay can always finalise the transfer by submitting the ACK proof,
+    ///         even long after ackDeadline has expired.
+    function test_flow_Figure4RefundPath_BlockedAfterMintProof() public {
+        // ── Deploy real destination connector ─────────────────────
+        bytes32[5] memory dstRouteIds;
+        for (uint8 i = 0; i < 5; i++) {
+            dstRouteIds[i] = IMAGE_ID;
+        }
+        Connector dstConnector = new Connector(address(risc0Adapter), address(snarkAdapter), ACK_WINDOW, dstRouteIds);
+
+        // ── ORIGIN: Alice deposits targeting the real dstConnector ─
+        token.mint(ALICE, AMOUNT);
+        vm.startPrank(ALICE);
+        token.approve(address(connector), AMOUNT);
+        bytes32 txId = connector.depositAndLock(
+            address(token), address(dstTokenMock), BOB, AMOUNT, address(dstConnector), block.chainid
+        );
+        vm.stopPrank();
+        assertEq(uint8(connector.txStatus(txId)), uint8(Enums.TxStatus.DEPOSIT_LOCKED));
+
+        ConnectorStorage.CrossChainTx memory originTx = connector.getTx(txId);
+        uint64 dstDeadline = originTx.ackDeadline;
+
+        // ── DESTINATION: accept lock proof → MINTED_IN_HOLDING ────
+        bytes memory lockPub = ProofOutputs.encodeLockProof(
+            ProofOutputs.LockProofPublicInputs({
+                txId: txId,
+                amount: originTx.amount,
+                sender: originTx.from,
+                receiver: originTx.to,
+                currencyFrom: originTx.currencyFrom,
+                currencyTo: originTx.currencyTo,
+                srcChainConnector: originTx.srcChainConnector,
+                dstChainConnector: address(dstConnector),
+                originAckDeadline: dstDeadline,
+                nonce: originTx.nonce,
+                sourceChainId: block.chainid,
+                destinationChainId: block.chainid
+            })
+        );
+        dstConnector.submitLockProof(
+            Enums.ProofType.RISC0,
+            _buildRisc0Proof(lockPub),
+            txId,
+            originTx.amount,
+            originTx.currencyFrom,
+            originTx.currencyTo,
+            originTx.from,
+            originTx.to,
+            originTx.srcChainConnector,
+            dstDeadline,
+            originTx.nonce,
+            block.chainid
+        );
+        assertEq(uint8(dstConnector.txStatus(txId)), uint8(Enums.TxStatus.MINTED_IN_HOLDING));
+
+        // ── ORIGIN: receive mint proof → origin storage ERASED ────
+        // Build proof inputs before the call (getTx returns data while tx still exists).
+        connector.submitMintProof(Enums.ProofType.SNARKJS, _buildSnarkProof(_mintProofInputs(txId)), txId);
         assertEq(uint8(connector.txStatus(txId)), uint8(Enums.TxStatus.NONE));
-        assertEq(token.balanceOf(ALICE), AMOUNT);
+
+        // ── ADVANCE PAST ACK DEADLINE ──────────────────────────────
+        vm.warp(dstDeadline + 1);
+
+        // ── ORIGIN: Figure 4 initiateRefund is BLOCKED ────────────
+        // requireStatus expects DEPOSIT_LOCKED; status is NONE.
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                Errors.InvalidStateTransition.selector,
+                uint8(Enums.TxStatus.NONE),
+                uint8(Enums.TxStatus.REFUND_INITIATED)
+            )
+        );
+        connector.initiateRefund(txId);
+
+        // ── MITIGATION: ACK proof finalises destination past deadline
+        // submitAckProof has no hard deadline (HIGH-3). The relay submits
+        // the ACK at any time; BOB receives the wrapped tokens.
+        ConnectorStorage.CrossChainTx memory dstTx = dstConnector.getTx(txId);
+        bytes memory ackPub = abi.encode(
+            txId, dstTx.srcChainConnector, dstTx.dstChainConnector, dstTx.sourceChainId, dstTx.destinationChainId
+        );
+        dstConnector.submitAckProof(Enums.ProofType.SNARKJS, _buildSnarkProof(ackPub), txId);
+        assertEq(uint8(dstConnector.txStatus(txId)), uint8(Enums.TxStatus.NONE));
+        assertEq(dstTokenMock.balanceOf(BOB), AMOUNT);
     }
 
     function test_flow_DestinationHappyPath_LockProof() public {
         bytes32 txId = bytes32(uint256(0xF100));
         uint64 deadline = uint64(block.timestamp) + ACK_WINDOW;
         _doLockProof(txId, deadline);
-        dstTokenMock.mint(address(connector), AMOUNT);
         assertEq(uint8(connector.txStatus(txId)), uint8(Enums.TxStatus.MINTED_IN_HOLDING));
 
         connector.submitAckProof(Enums.ProofType.SNARKJS, _buildSnarkProof(_ackProofInputs(txId)), txId);
@@ -1335,8 +1484,6 @@ contract ConnectorTest is Test {
         bytes32 txId = bytes32(uint256(0xF100));
         uint64 deadline = uint64(block.timestamp) + ACK_WINDOW;
         _doLockProof(txId, deadline);
-        // Simulate destination-chain mint-to-holding.
-        dstTokenMock.mint(address(connector), AMOUNT);
         assertEq(uint8(connector.txStatus(txId)), uint8(Enums.TxStatus.MINTED_IN_HOLDING));
 
         vm.warp(deadline + 1);
@@ -1362,7 +1509,9 @@ contract ConnectorTest is Test {
 
         // 3. Destination: submit Lock Proof with RISC0 backend
         bytes32[5] memory dstRouteIds;
-        for (uint8 i = 0; i < 5; i++) dstRouteIds[i] = IMAGE_ID;
+        for (uint8 i = 0; i < 5; i++) {
+            dstRouteIds[i] = IMAGE_ID;
+        }
         Connector dstConnector = new Connector(address(risc0Adapter), address(snarkAdapter), ACK_WINDOW, dstRouteIds);
         bytes32 dstTxId = txId;
         uint64 dstDeadline = originTx.ackDeadline;
@@ -1419,7 +1568,6 @@ contract ConnectorTest is Test {
 
         // Initially works with SnarkJS adapter
         _doLockProof(txId, deadline);
-        dstTokenMock.mint(address(connector), AMOUNT);
         assertEq(uint8(connector.txStatus(txId)), uint8(Enums.TxStatus.MINTED_IN_HOLDING));
 
         // Admin swaps SNARKJS verifier on DEST_ACK route to a new adapter.
@@ -1443,30 +1591,31 @@ contract ConnectorTest is Test {
         MockRiscZeroVerifier risc0Mock2 = new MockRiscZeroVerifier();
         bytes32[] memory ids = new bytes32[](1);
         ids[0] = IMAGE_ID;
-        RiscZeroAdapter mintAdapter   = new RiscZeroAdapter(address(risc0Mock), ids);
-        RiscZeroAdapter burnAdapter   = new RiscZeroAdapter(address(risc0Mock), ids);
-        RiscZeroAdapter lockAdapter   = new RiscZeroAdapter(address(risc0Mock), ids);
-        RiscZeroAdapter ackAdapter    = new RiscZeroAdapter(address(risc0Mock2), ids);
+        RiscZeroAdapter mintAdapter = new RiscZeroAdapter(address(risc0Mock), ids);
+        RiscZeroAdapter burnAdapter = new RiscZeroAdapter(address(risc0Mock), ids);
+        RiscZeroAdapter lockAdapter = new RiscZeroAdapter(address(risc0Mock), ids);
+        RiscZeroAdapter ackAdapter = new RiscZeroAdapter(address(risc0Mock2), ids);
         RiscZeroAdapter refundAdapter = new RiscZeroAdapter(address(risc0Mock), ids);
 
-        connector.setVerifier(Enums.VerifierRoute.ORIGIN_MINT,     Enums.ProofType.RISC0, address(mintAdapter));
-        connector.setVerifier(Enums.VerifierRoute.ORIGIN_BURN,     Enums.ProofType.RISC0, address(burnAdapter));
-        connector.setVerifier(Enums.VerifierRoute.DEST_LOCK,       Enums.ProofType.RISC0, address(lockAdapter));
-        connector.setVerifier(Enums.VerifierRoute.DEST_ACK,        Enums.ProofType.RISC0, address(ackAdapter));
+        connector.setVerifier(Enums.VerifierRoute.ORIGIN_MINT, Enums.ProofType.RISC0, address(mintAdapter));
+        connector.setVerifier(Enums.VerifierRoute.ORIGIN_BURN, Enums.ProofType.RISC0, address(burnAdapter));
+        connector.setVerifier(Enums.VerifierRoute.DEST_LOCK, Enums.ProofType.RISC0, address(lockAdapter));
+        connector.setVerifier(Enums.VerifierRoute.DEST_ACK, Enums.ProofType.RISC0, address(ackAdapter));
         connector.setVerifier(Enums.VerifierRoute.DEST_REFUND_CLAIM, Enums.ProofType.RISC0, address(refundAdapter));
 
-        assertEq(connector.getVerifier(Enums.VerifierRoute.ORIGIN_MINT,      Enums.ProofType.RISC0), address(mintAdapter));
-        assertEq(connector.getVerifier(Enums.VerifierRoute.ORIGIN_BURN,      Enums.ProofType.RISC0), address(burnAdapter));
-        assertEq(connector.getVerifier(Enums.VerifierRoute.DEST_LOCK,        Enums.ProofType.RISC0), address(lockAdapter));
-        assertEq(connector.getVerifier(Enums.VerifierRoute.DEST_ACK,         Enums.ProofType.RISC0), address(ackAdapter));
-        assertEq(connector.getVerifier(Enums.VerifierRoute.DEST_REFUND_CLAIM, Enums.ProofType.RISC0), address(refundAdapter));
+        assertEq(connector.getVerifier(Enums.VerifierRoute.ORIGIN_MINT, Enums.ProofType.RISC0), address(mintAdapter));
+        assertEq(connector.getVerifier(Enums.VerifierRoute.ORIGIN_BURN, Enums.ProofType.RISC0), address(burnAdapter));
+        assertEq(connector.getVerifier(Enums.VerifierRoute.DEST_LOCK, Enums.ProofType.RISC0), address(lockAdapter));
+        assertEq(connector.getVerifier(Enums.VerifierRoute.DEST_ACK, Enums.ProofType.RISC0), address(ackAdapter));
+        assertEq(
+            connector.getVerifier(Enums.VerifierRoute.DEST_REFUND_CLAIM, Enums.ProofType.RISC0), address(refundAdapter)
+        );
 
         // Proof uses DEST_ACK route which has ackAdapter (wrapping risc0Mock2).
         // Flip risc0Mock2 to revert so that submitAckProof using the ackAdapter fails.
         bytes32 txId = bytes32(uint256(0xBEEF));
         uint64 deadline = uint64(block.timestamp) + ACK_WINDOW;
         _doLockProof(txId, deadline);
-        dstTokenMock.mint(address(connector), AMOUNT);
 
         risc0Mock2.setShouldRevert(true);
         bytes memory proof = _buildRisc0Proof(_ackProofInputs(txId));
@@ -1486,8 +1635,7 @@ contract ConnectorTest is Test {
         uint64 deadline = uint64(block.timestamp) + ACK_WINDOW;
         _doLockProof(txId, deadline);
 
-        // Mint wrapped tokens to connector (simulate destination hold).
-        dstTokenMock.mint(address(connector), AMOUNT);
+        // submitLockProof mints wrapped tokens into connector custody.
         uint256 supplyBefore = dstTokenMock.totalSupply();
         assertEq(dstTokenMock.balanceOf(address(connector)), AMOUNT);
 
@@ -1506,7 +1654,6 @@ contract ConnectorTest is Test {
         bytes32 txId = bytes32(uint256(0xBEEF));
         uint64 deadline = uint64(block.timestamp) + ACK_WINDOW;
         _doLockProof(txId, deadline);
-        dstTokenMock.mint(address(connector), AMOUNT);
 
         // Before ack proof, recipient has no dstToken.
         assertEq(dstTokenMock.balanceOf(BOB), 0);
@@ -1522,7 +1669,9 @@ contract ConnectorTest is Test {
         // ── DESTINATION SIDE ─────────────────────────────────────
         // 1. Deploy destination connector first so we know its address.
         bytes32[5] memory dstRouteIds;
-        for (uint8 i = 0; i < 5; i++) dstRouteIds[i] = IMAGE_ID;
+        for (uint8 i = 0; i < 5; i++) {
+            dstRouteIds[i] = IMAGE_ID;
+        }
         Connector dstConnector = new Connector(address(risc0Adapter), address(snarkAdapter), ACK_WINDOW, dstRouteIds);
 
         // ── ORIGIN SIDE ──────────────────────────────────────────
@@ -1531,7 +1680,7 @@ contract ConnectorTest is Test {
         vm.startPrank(ALICE);
         token.approve(address(connector), AMOUNT);
         bytes32 txId = connector.depositAndLock(
-            address(token), address(dstTokenMock), BOB, AMOUNT, address(dstConnector)
+            address(token), address(dstTokenMock), BOB, AMOUNT, address(dstConnector), block.chainid
         );
         vm.stopPrank();
         assertEq(uint8(connector.txStatus(txId)), uint8(Enums.TxStatus.DEPOSIT_LOCKED));
@@ -1571,9 +1720,6 @@ contract ConnectorTest is Test {
         );
         assertEq(uint8(dstConnector.txStatus(txId)), uint8(Enums.TxStatus.MINTED_IN_HOLDING));
 
-        // 4. Simulate mint-to-holding on destination.
-        dstTokenMock.mint(address(dstConnector), AMOUNT);
-
         // ── ADVANCE PAST DEADLINE ─────────────────────────────────
         vm.warp(dstDeadline + 1);
 
@@ -1585,12 +1731,9 @@ contract ConnectorTest is Test {
         // ── DESTINATION: accept refund-claim proof ────────────────
         // 6. Submit refund-claim proof on destination (proves RefundClaimed event on origin).
         ConnectorStorage.CrossChainTx memory dstTx = dstConnector.getTx(txId);
-        bytes memory refundClaimPub = abi.encode(txId, dstTx.srcChainConnector, dstTx.amount);
-        dstConnector.submitRefundClaimProof(
-            Enums.ProofType.SNARKJS,
-            _buildSnarkProof(refundClaimPub),
-            txId
-        );
+        bytes memory refundClaimPub =
+            abi.encode(txId, dstTx.srcChainConnector, dstTx.amount, dstTx.sourceChainId, dstTx.destinationChainId);
+        dstConnector.submitRefundClaimProof(Enums.ProofType.SNARKJS, _buildSnarkProof(refundClaimPub), txId);
         assertEq(uint8(dstConnector.txStatus(txId)), uint8(Enums.TxStatus.REFUND_CLAIM_ACCEPTED));
 
         // 7. Execute burn: burns held dstToken, deletes destination tx.
@@ -1601,17 +1744,93 @@ contract ConnectorTest is Test {
 
         // ── ORIGIN: accept burn proof and refund ──────────────────
         // 8. Submit burn proof on origin (proves DestTxClosed event on destination).
-        bytes memory burnPub = abi.encode(txId, address(dstConnector), AMOUNT);
-        uint256 aliceBalanceBefore = token.balanceOf(ALICE);
-        connector.submitBurnProof(
-            Enums.ProofType.SNARKJS,
-            _buildSnarkProof(burnPub),
-            txId
+        bytes memory burnPub = abi.encode(
+            txId, originTx.dstChainConnector, originTx.amount, originTx.sourceChainId, originTx.destinationChainId
         );
+        uint256 aliceBalanceBefore = token.balanceOf(ALICE);
+        connector.submitBurnProof(Enums.ProofType.SNARKJS, _buildSnarkProof(burnPub), txId);
 
         // 9. Assert final state.
         assertEq(uint8(connector.txStatus(txId)), uint8(Enums.TxStatus.NONE));
         assertEq(token.balanceOf(ALICE), aliceBalanceBefore + AMOUNT);
         assertEq(dstTokenMock.balanceOf(BOB), 0); // no premature payout
+    }
+
+    /*//////////////////////////////////////////////////////////////
+                 CHAIN-ID BINDING / REPLAY-PROTECTION TESTS
+    //////////////////////////////////////////////////////////////*/
+
+    /// @notice A mint proof built for chain A must be rejected on chain B.
+    ///         We simulate chain B by depositing with a *different* destinationChainId
+    ///         so the stored tx has a different destinationChainId, causing commitment mismatch.
+    function test_crossChainReplay_MintProofRejectedOnWrongDestinationChain() public {
+        // Deposit targeting a different destination chain (chainid + 1).
+        uint256 wrongDstChainId = block.chainid + 1;
+        token.mint(ALICE, AMOUNT);
+        vm.startPrank(ALICE);
+        token.approve(address(connector), AMOUNT);
+        bytes32 txId = connector.depositAndLock(
+            address(token), address(dstTokenMock), BOB, AMOUNT, DST_CONNECTOR, wrongDstChainId
+        );
+        vm.stopPrank();
+
+        // Build a mint proof that uses block.chainid (not wrongDstChainId) as destinationChainId.
+        ConnectorStorage.CrossChainTx memory t = connector.getTx(txId);
+        bytes memory wrongPub = abi.encode(txId, t.dstChainConnector, t.amount, t.to, t.sourceChainId, block.chainid);
+        bytes memory proof = _buildSnarkProof(wrongPub);
+
+        // The commitment derived from wrongPub won't match the one computed from
+        // the stored tx (which has destinationChainId == wrongDstChainId).
+        vm.expectRevert();
+        connector.submitMintProof(Enums.ProofType.SNARKJS, proof, txId);
+    }
+
+    /// @notice A burn proof built with the wrong sourceChainId must be rejected.
+    function test_crossChainReplay_BurnProofRejectedOnWrongSourceChain() public {
+        bytes32 txId = _doDeposit();
+        vm.warp(block.timestamp + ACK_WINDOW + 1);
+        connector.initiateRefund(txId);
+
+        ConnectorStorage.CrossChainTx memory t = connector.getTx(txId);
+        // Build burn proof with a spoofed sourceChainId.
+        bytes memory wrongPub =
+            abi.encode(txId, t.dstChainConnector, t.amount, t.sourceChainId + 1, t.destinationChainId);
+        bytes memory proof = _buildSnarkProof(wrongPub);
+
+        vm.expectRevert();
+        connector.submitBurnProof(Enums.ProofType.SNARKJS, proof, txId);
+    }
+
+    /// @notice An ACK proof built with the wrong destinationChainId must be rejected.
+    function test_crossChainReplay_AckProofRejectedOnWrongDestinationChain() public {
+        bytes32 txId = bytes32(uint256(0xABC));
+        uint64 deadline = uint64(block.timestamp) + ACK_WINDOW;
+        _doLockProof(txId, deadline);
+
+        ConnectorStorage.CrossChainTx memory t = connector.getTx(txId);
+        // Build ACK proof with a spoofed destinationChainId.
+        bytes memory wrongPub =
+            abi.encode(txId, t.srcChainConnector, t.dstChainConnector, t.sourceChainId, t.destinationChainId + 1);
+        bytes memory proof = _buildSnarkProof(wrongPub);
+
+        vm.expectRevert();
+        connector.submitAckProof(Enums.ProofType.SNARKJS, proof, txId);
+    }
+
+    /// @notice A refund-claim proof built with the wrong sourceChainId must be rejected.
+    function test_crossChainReplay_RefundClaimProofRejectedOnWrongSourceChain() public {
+        bytes32 txId = bytes32(uint256(0xABC));
+        uint64 deadline = uint64(block.timestamp) + ACK_WINDOW;
+        _doLockProof(txId, deadline);
+        vm.warp(deadline + 1);
+
+        ConnectorStorage.CrossChainTx memory t = connector.getTx(txId);
+        // Build refund-claim proof with a spoofed sourceChainId.
+        bytes memory wrongPub =
+            abi.encode(txId, t.srcChainConnector, t.amount, t.sourceChainId + 1, t.destinationChainId);
+        bytes memory proof = _buildSnarkProof(wrongPub);
+
+        vm.expectRevert();
+        connector.submitRefundClaimProof(Enums.ProofType.SNARKJS, proof, txId);
     }
 }

@@ -41,6 +41,8 @@ library Errors {
 
     error DeadlineNotReached(uint64 deadline, uint64 currentTime);
     error AckWindowNotExpired(uint64 ackDeadline, uint64 currentTime);
+    error AckWindowExpired(uint64 ackDeadline, uint64 currentTime);
+    error ZeroAckWindow();
 
     /*//////////////////////////////////////////////////////////////
                              AMOUNTS

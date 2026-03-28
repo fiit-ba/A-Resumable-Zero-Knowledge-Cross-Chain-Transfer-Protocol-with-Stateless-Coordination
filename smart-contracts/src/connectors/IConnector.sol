@@ -21,7 +21,8 @@ interface IConnector {
         address currencyTo,
         address to,
         uint256 amount,
-        address dstChainConnector
+        address dstChainConnector,
+        uint256 destinationChainId
     ) external returns (bytes32 txId);
 
     function submitMintProof(Enums.ProofType proofType, bytes calldata proofPayload, bytes32 txId) external;
@@ -30,12 +31,10 @@ interface IConnector {
 
     function submitBurnProof(Enums.ProofType proofType, bytes calldata proofPayload, bytes32 txId) external;
 
-    function closeTx(bytes32 txId) external;
-
     /*//////////////////////////////////////////////////////////////
                             DESTINATION FUNCTIONS
     //////////////////////////////////////////////////////////////*/
-    
+
     function submitLockProof(
         Enums.ProofType proofType,
         bytes calldata proofPayload,

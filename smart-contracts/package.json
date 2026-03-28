@@ -1,0 +1,11 @@
+{
+  "name": "smart-contracts",
+  "private": true,
+  "scripts": {
+    "lint": "solhint --disc 'src/**/*.sol' 'script/**/*.sol' 'test/**/*.sol'",
+    "lint:fix": "solhint --disc --fix --noPrompt 'src/**/*.sol' 'script/**/*.sol' 'test/**/*.sol'"
+  },
+  "devDependencies": {
+    "solhint": "5.0.3"
+  }
+}

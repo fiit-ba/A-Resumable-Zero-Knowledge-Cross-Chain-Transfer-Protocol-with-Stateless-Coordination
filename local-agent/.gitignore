@@ -4,3 +4,8 @@ coverage
 .env
 .env.*
 !.env.example
+.colibri-cache/
+colibri-cache/
+states_*
+sync_*
+code_*

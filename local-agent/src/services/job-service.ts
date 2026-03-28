@@ -55,12 +55,14 @@ async function runStagePreparation(jobId: string, stage: RelayProofStage): Promi
       ...payload,
       verificationMode: verification.mode,
       verificationDegraded: verification.degraded,
+      verificationDegradeReason: verification.degradeReason,
       verifiedStage: verification.stage
     };
 
     const verificationSummary = {
       mode: verification.mode,
       degraded: verification.degraded,
+      degradeReason: verification.degradeReason,
       verifiedStage: verification.stage
     };
 
@@ -85,7 +87,11 @@ async function runStagePreparation(jobId: string, stage: RelayProofStage): Promi
     if (err instanceof Error && err.stack) {
       console.error(err.stack);
     }
-    updateJob(jobId, { status: "failed", lastError: message });
+    const isRefundPath = /ack window expired|refund path is required/i.test(message);
+    updateJob(jobId, {
+      status: isRefundPath ? "unsupported" : "failed",
+      lastError: message
+    });
   }
 }
 

@@ -24,6 +24,10 @@ abstract contract ConnectorStorage {
         uint64 ackDeadline;
         Enums.TxStatus status;
         uint256 nonce;
+        /// @dev Chain ID of the chain where the origin depositAndLock happened.
+        uint256 sourceChainId;
+        /// @dev Chain ID of the chain where the destination mint happened.
+        uint256 destinationChainId;
     }
 
     /*//////////////////////////////////////////////////////////////
@@ -41,7 +45,8 @@ abstract contract ConnectorStorage {
         address dstChainConnector,
         uint64 timestamp,
         uint256 nonce,
-        uint256 sourceChainId
+        uint256 sourceChainId,
+        uint256 destinationChainId
     );
 
     event AckReady(
@@ -172,8 +177,6 @@ abstract contract ConnectorStorage {
     //////////////////////////////////////////////////////////////*/
 
     uint256 public txNonce;
-
-    uint64 public ackWindowSeconds;
 
     /// @dev Expected RISC Zero image ID per VerifierRoute (index == uint8(VerifierRoute)).
     /// Enforced by Connector before calling the adapter so a single multi-image adapter

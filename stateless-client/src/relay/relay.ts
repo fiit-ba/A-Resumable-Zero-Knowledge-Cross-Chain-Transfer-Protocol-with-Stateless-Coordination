@@ -198,6 +198,33 @@ async function fetchTxSnapshot(
   };
 }
 
+async function assertAckWindowActive(
+  stage: RelayProofStage,
+  txSnapshot: ConnectorTxSnapshot,
+  provider: JsonRpcProvider,
+  side: "source" | "destination"
+): Promise<void> {
+  if (txSnapshot.ackDeadline === 0n) {
+    return;
+  }
+
+  const latestBlock = await provider.getBlock("latest");
+  if (!latestBlock) {
+    throw new Error(
+      `Cannot fetch latest ${side} block for ${stage} stage deadline check.`
+    );
+  }
+
+  const chainNow = BigInt(latestBlock.timestamp);
+  if (chainNow >= txSnapshot.ackDeadline) {
+    throw new Error(
+      `ACK window expired for ${stage} stage on ${side} chain: ` +
+        `deadline=${txSnapshot.ackDeadline.toString()}, current=${chainNow.toString()}. ` +
+        `Refund path is required.`
+    );
+  }
+}
+
 async function waitForSubmission(
   tx: ContractTransactionResponse,
   stageLabel: string
@@ -363,6 +390,28 @@ export async function prepareStageSubmission(
   const sourceReadContract = new Contract(config.connectors.source, CONNECTOR_ABI, sourceProvider);
   const destinationReadContract = new Contract(config.connectors.destination, CONNECTOR_ABI, destinationProvider);
 
+  // Timelock preflight: do not prepare stages that are already expired.
+  if (stage === "mint") {
+    const sourceTx = await fetchTxSnapshot(
+      sourceReadContract,
+      config.txId,
+      config.executionBlocks.sourceDeposit
+    );
+    await assertAckWindowActive(stage, sourceTx, sourceProvider, "source");
+  } else if (stage === "ack") {
+    const destinationTx = await fetchTxSnapshot(
+      destinationReadContract,
+      config.txId,
+      config.executionBlocks.destinationFundsReleased
+    );
+    await assertAckWindowActive(
+      stage,
+      destinationTx,
+      destinationProvider,
+      "destination"
+    );
+  }
+
   // 1. Stage verification
   let verification: StageVerificationResult;
   if (stage === "ack" && config.allowPrunedSourceAck) {
@@ -379,13 +428,25 @@ export async function prepareStageSubmission(
     verification = await verifyStageFromConfig(config, verifyStageKey);
   }
 
-  // Execution block for this stage
+  // Execution block for this stage.
+  //
+  // Lock and ack proof hosts use RISC0 steel's Event::preflight, which calls
+  // eth_getLogs at exactly the execution block — so the execution block must be
+  // the block where the event was emitted.  We therefore keep eventBlockNumber
+  // as the fallback for lock and ack (Sepolia source chain, which has sufficient
+  // RPC state history).
+  //
+  // Mint proof host does NOT use Event::preflight; it only calls Contract::preflight
+  // for getTx().  We intentionally skip eventBlockNumber for mint because the
+  // destination chain (Chiado) uses a pruned public RPC that lacks state trie data
+  // for historical blocks.  Using "latest" is safe: getTx() status only changes
+  // when the ack is submitted on-chain, which hasn't happened yet.
   const executionBlock: BlockTagInput =
     stage === "lock"
-      ? (config.executionBlocks.sourceDeposit ?? "latest")
+      ? (config.executionBlocks.sourceDeposit ?? verification.eventBlockNumber ?? "latest")
       : stage === "mint"
         ? (config.executionBlocks.destinationFundsReleased ?? "latest")
-        : (config.executionBlocks.sourceAckReady ?? "latest");
+        : (config.executionBlocks.sourceAckReady ?? verification.eventBlockNumber ?? "latest");
 
   // 2. Proof generation
   const proof = await runProof({
