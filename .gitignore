@@ -1,6 +1,8 @@
 .DS_Store
 .idea
 .vscode
+.claude
+.codex
 
 .generated_files/
 build/
@@ -21,6 +23,9 @@ node_modules/
 # Keep npm lockfiles trackable (Package-* matches package-lock.json on case-insensitive FS).
 !package-lock.json
 !**/package-lock.json
+
+CLAUDE.md
+AGENTS.md
 
 # Colibri local state/cache artifacts
 .colibri-cache/

@@ -6,8 +6,8 @@ This package contains the operator-facing React application for starting a trans
 
 - collects the transfer input and selected source/destination network profiles
 - sends `depositAndLock` through the connected wallet
-- registers the resulting `txId` with the local agent
-- polls the local agent for the next prepared stage
+- registers the resulting `txId` with the local stateless-client agent
+- polls the local stateless-client agent for the next prepared stage
 - asks the wallet to submit the stage transaction on the correct chain
 - records relay receipts back to the agent so the job can advance
 
@@ -18,7 +18,7 @@ The app has two primary routes:
 
 ## Prerequisites
 
-- the local agent running on `http://localhost:7549`, or `VITE_AGENT_URL` pointing elsewhere
+- the local stateless-client agent running on `http://localhost:7549`, or `VITE_AGENT_URL` pointing elsewhere
 - a browser wallet that supports EIP-1193, such as MetaMask
 - access to the configured source and destination networks
 
@@ -28,7 +28,6 @@ From the repository root:
 
 ```bash
 npm install
-npm run build -w shared
 npm run dev -w web-app
 ```
 
@@ -87,5 +86,4 @@ npm run test -w web-app
 ## Related Docs
 
 - [`../README.md`](../README.md)
-- [`../local-agent/README.md`](../local-agent/README.md)
-- [`../shared/README.md`](../shared/README.md)
+- [`../stateless-client/README.md`](../stateless-client/README.md)

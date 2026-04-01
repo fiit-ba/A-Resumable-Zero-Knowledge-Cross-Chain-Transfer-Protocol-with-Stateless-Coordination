@@ -1,10 +1,13 @@
 import { planRelayResume } from "./planner.js";
-import { runRelayAck, runRelayLock, runRelayMint } from "./relay.js";
+import {
+  runRelayAck,
+  runRelayLock,
+  runRelayMint,
+  shouldUsePrunedAckVerification,
+} from "./relay.js";
 import type { RelayConfig, ResumeResult } from "../core/types.js";
 
-export async function runRelayResume(
-  config: RelayConfig
-): Promise<ResumeResult> {
+export async function runRelayResume(config: RelayConfig): Promise<ResumeResult> {
   const decision = await planRelayResume(config);
 
   if (decision.action === "lock") {
@@ -19,8 +22,14 @@ export async function runRelayResume(
 
   if (decision.action === "ack") {
     const ackConfig: RelayConfig =
-      decision.sourceStatus === 0 && decision.destinationStatus === 4
-        ? { ...config, allowPrunedSourceAck: true }
+      shouldUsePrunedAckVerification(decision.sourceStatus, decision.destinationStatus)
+        ? {
+            ...config,
+            verificationHints: {
+              ...config.verificationHints,
+              ackVariant: "pruned-source-origin",
+            },
+          }
         : config;
     const executed = await runRelayAck(ackConfig);
     return { decision, executed };

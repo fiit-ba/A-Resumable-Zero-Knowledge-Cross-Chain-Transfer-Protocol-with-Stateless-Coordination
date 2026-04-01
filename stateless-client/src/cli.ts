@@ -1,24 +1,18 @@
 #!/usr/bin/env node
 
-import {
-  resolveRelayConfig,
-  resolveVerificationConfig,
-  type CliOptions
-} from "./config/config.js";
+import { realpathSync } from "node:fs";
+import { fileURLToPath } from "node:url";
+import { resolveRelayConfig, resolveVerificationConfig, type CliOptions } from "./config/config.js";
+import type { HappyPathResult, RelayStageResult, ResumeResult, Stage } from "./core/types.js";
+import { runAgentMain } from "./agent/main.js";
 import {
   runRelayAck,
   runRelayHappyPath,
   runRelayLock,
   runRelayMint,
-  runVerifyStageCommand
+  runVerifyStageCommand,
 } from "./relay/relay.js";
 import { runRelayResume } from "./relay/resume.js";
-import type {
-  HappyPathResult,
-  RelayStageResult,
-  ResumeResult,
-  Stage
-} from "./core/types.js";
 
 const SUPPORTED_COMMANDS = new Set([
   "verify-stage",
@@ -26,7 +20,8 @@ const SUPPORTED_COMMANDS = new Set([
   "relay-mint",
   "relay-ack",
   "relay-happy-path",
-  "relay-resume"
+  "relay-resume",
+  "agent",
 ]);
 
 function usage(): string {
@@ -38,6 +33,7 @@ function usage(): string {
     "  stateless-client relay-ack --tx-id <bytes32> --private-key <hex> --proof-backend <local|docker> --source-connector <address> --destination-connector <address> [network and proof options]",
     "  stateless-client relay-happy-path --tx-id <bytes32> --private-key <hex> --proof-backend <local|docker> --source-connector <address> --destination-connector <address> [network and proof options]",
     "  stateless-client relay-resume --tx-id <bytes32> --private-key <hex> --proof-backend <local|docker> --source-connector <address> --destination-connector <address> [network and proof options]",
+    "  stateless-client agent <command>",
     "",
     "Common network options:",
     "  --source-profile <local-anvil|local-hardhat|mainnet|sepolia|holesky|hoodi|gnosis|chiado>",
@@ -64,18 +60,54 @@ function usage(): string {
     "",
     "Examples:",
     "  stateless-client verify-stage --stage source-deposit --tx-id 0x... --source-connector 0x... --destination-connector 0x... --source-profile local-anvil --destination-profile local-hardhat",
-    "  stateless-client relay-lock --tx-id 0x... --private-key 0x... --proof-backend local --source-connector 0x... --destination-connector 0x... --source-profile local-anvil --destination-profile local-hardhat"
+    "  stateless-client relay-lock --tx-id 0x... --private-key 0x... --proof-backend local --source-connector 0x... --destination-connector 0x... --source-profile local-anvil --destination-profile local-hardhat",
+    "  stateless-client agent start",
+  ].join("\n");
+}
+
+function agentUsage(): string {
+  return [
+    "Usage:",
+    "  stateless-client agent start",
+    "",
+    "Environment:",
+    "  AGENT_PORT: override the listening port (default: 7549)",
+    "  AGENT_ALLOWED_ORIGINS: comma-separated list of additional allowed origins",
   ].join("\n");
 }
 
 interface ParsedCli {
-  command?: string;
   options: CliOptions;
+  positionals: string[];
 }
 
-function parseCliArgs(argv: string[]): ParsedCli {
+export interface CliIo {
+  error(message: string): void;
+  log(message: string): void;
+}
+
+export interface CliDeps {
+  startAgentServer(): Promise<void>;
+}
+
+const defaultIo: CliIo = {
+  error(message) {
+    console.error(message);
+  },
+  log(message) {
+    console.log(message);
+  },
+};
+
+const defaultDeps: CliDeps = {
+  async startAgentServer() {
+    await runAgentMain();
+  },
+};
+
+export function parseCliArgs(argv: string[]): ParsedCli {
   const options: CliOptions = {};
-  let command: string | undefined;
+  const positionals: string[] = [];
 
   for (let i = 0; i < argv.length; i += 1) {
     const token = argv[i];
@@ -86,11 +118,8 @@ function parseCliArgs(argv: string[]): ParsedCli {
     }
 
     if (!token.startsWith("--")) {
-      if (!command) {
-        command = token;
-        continue;
-      }
-      throw new Error(`Unexpected positional argument: ${token}`);
+      positionals.push(token);
+      continue;
     }
 
     const withoutPrefix = token.slice(2);
@@ -116,7 +145,7 @@ function parseCliArgs(argv: string[]): ParsedCli {
     i += 1;
   }
 
-  return { command, options };
+  return { options, positionals };
 }
 
 function parseStage(value: string): Stage {
@@ -129,55 +158,90 @@ function parseStage(value: string): Stage {
   }
 
   throw new Error(
-    `Unsupported stage '${value}'. Expected source-deposit, destination-funds-released, or source-ack-ready.`
+    `Unsupported stage '${value}'. Expected source-deposit, destination-funds-released, or source-ack-ready.`,
   );
 }
 
-function printRelayResult(result: RelayStageResult): void {
-  console.log(`verificationMode: ${result.verification.mode}`);
-  console.log(`verificationDegraded: ${result.verification.degraded}`);
-  console.log(`proofBackend: ${result.proof.backend}`);
-  console.log(`proofTxId: ${result.proof.txId}`);
-  console.log(`proofMetadata: ${JSON.stringify(result.proof.metadata)}`);
-  console.log(`submissionTxHash: ${result.submission.txHash}`);
-  console.log(`submissionBlock: ${result.submission.receiptBlock}`);
-  console.log(`resultingStatus: ${result.submission.resultingStatus}`);
+function printRelayResult(result: RelayStageResult, io: CliIo): void {
+  io.log(`verificationMode: ${result.verification.mode}`);
+  io.log(`verificationDegraded: ${result.verification.degraded}`);
+  io.log(`proofBackend: ${result.proof.backend}`);
+  io.log(`proofTxId: ${result.proof.txId}`);
+  io.log(`proofMetadata: ${JSON.stringify(result.proof.metadata)}`);
+  io.log(`submissionTxHash: ${result.submission.txHash}`);
+  io.log(`submissionBlock: ${result.submission.receiptBlock}`);
+  io.log(`resultingStatus: ${result.submission.resultingStatus}`);
 }
 
-function printResumeResult(result: ResumeResult): void {
-  console.log(`plannedAction: ${result.decision.action}`);
-  console.log(`sourceStatus: ${result.decision.sourceStatus}`);
-  console.log(`destinationStatus: ${result.decision.destinationStatus}`);
-  console.log(`decisionReason: ${result.decision.reason}`);
+function printResumeResult(result: ResumeResult, io: CliIo): void {
+  io.log(`plannedAction: ${result.decision.action}`);
+  io.log(`sourceStatus: ${result.decision.sourceStatus}`);
+  io.log(`destinationStatus: ${result.decision.destinationStatus}`);
+  io.log(`decisionReason: ${result.decision.reason}`);
   if (result.executed) {
-    printRelayResult(result.executed);
+    printRelayResult(result.executed, io);
   }
 }
 
-function printHappyPathResult(result: HappyPathResult): void {
-  console.log("lock:");
-  printRelayResult(result.lock);
-  console.log("mint:");
-  printRelayResult(result.mint);
-  console.log("ack:");
-  printRelayResult(result.ack);
+function printHappyPathResult(result: HappyPathResult, io: CliIo): void {
+  io.log("lock:");
+  printRelayResult(result.lock, io);
+  io.log("mint:");
+  printRelayResult(result.mint, io);
+  io.log("ack:");
+  printRelayResult(result.ack, io);
 }
 
-async function main(): Promise<void> {
-  const parsed = parseCliArgs(process.argv.slice(2));
-
-  if (parsed.options.help || !parsed.command) {
-    console.log(usage());
+async function handleAgentCommand(
+  subcommand: string | undefined,
+  extraPositionals: string[],
+  parsed: ParsedCli,
+  deps: CliDeps,
+  io: CliIo,
+): Promise<void> {
+  if (parsed.options.help || !subcommand) {
+    io.log(agentUsage());
     return;
   }
 
-  if (!SUPPORTED_COMMANDS.has(parsed.command)) {
-    throw new Error(
-      `Unsupported command '${parsed.command}'. Run with --help for usage.`
-    );
+  if (subcommand !== "start") {
+    throw new Error(`Unsupported agent command '${subcommand}'. Run 'stateless-client agent --help'.`);
   }
 
-  switch (parsed.command) {
+  if (extraPositionals.length > 0) {
+    throw new Error(`Unexpected positional argument: ${extraPositionals[0]}`);
+  }
+
+  await deps.startAgentServer();
+}
+
+export async function runCli(
+  argv: string[],
+  deps: CliDeps = defaultDeps,
+  io: CliIo = defaultIo,
+): Promise<void> {
+  const parsed = parseCliArgs(argv);
+  const [command, subcommand, ...extraPositionals] = parsed.positionals;
+
+  if (parsed.options.help || !command) {
+    io.log(usage());
+    return;
+  }
+
+  if (!SUPPORTED_COMMANDS.has(command)) {
+    throw new Error(`Unsupported command '${command}'. Run with --help for usage.`);
+  }
+
+  if (command === "agent") {
+    await handleAgentCommand(subcommand, extraPositionals, parsed, deps, io);
+    return;
+  }
+
+  if (subcommand) {
+    throw new Error(`Unexpected positional argument: ${subcommand}`);
+  }
+
+  switch (command) {
     case "verify-stage": {
       const stageValue = parsed.options["stage"];
       if (typeof stageValue !== "string") {
@@ -186,56 +250,77 @@ async function main(): Promise<void> {
       const stage = parseStage(stageValue);
       const config = resolveVerificationConfig(parsed.options);
       const result = await runVerifyStageCommand(config, stage);
-      console.log(`stage: ${result.stage}`);
-      console.log(`verificationMode: ${result.mode}`);
-      console.log(`verificationDegraded: ${result.degraded}`);
-      console.log(`txId: ${result.txId}`);
-      console.log(`status: ${result.status}`);
+      io.log(`stage: ${result.stage}`);
+      io.log(`verificationMode: ${result.mode}`);
+      io.log(`verificationDegraded: ${result.degraded}`);
+      io.log(`txId: ${result.txId}`);
+      io.log(`status: ${result.status}`);
       return;
     }
 
     case "relay-lock": {
       const config = resolveRelayConfig(parsed.options);
       const result = await runRelayLock(config);
-      printRelayResult(result);
+      printRelayResult(result, io);
       return;
     }
 
     case "relay-mint": {
       const config = resolveRelayConfig(parsed.options);
       const result = await runRelayMint(config);
-      printRelayResult(result);
+      printRelayResult(result, io);
       return;
     }
 
     case "relay-ack": {
       const config = resolveRelayConfig(parsed.options);
       const result = await runRelayAck(config);
-      printRelayResult(result);
+      printRelayResult(result, io);
       return;
     }
 
     case "relay-happy-path": {
       const config = resolveRelayConfig(parsed.options);
       const result = await runRelayHappyPath(config);
-      printHappyPathResult(result);
+      printHappyPathResult(result, io);
       return;
     }
 
     case "relay-resume": {
       const config = resolveRelayConfig(parsed.options);
       const result = await runRelayResume(config);
-      printResumeResult(result);
+      printResumeResult(result, io);
       return;
     }
 
     default:
-      throw new Error(`Unhandled command: ${parsed.command}`);
+      throw new Error(`Unhandled command: ${command}`);
   }
 }
 
-main().catch((error: unknown) => {
-  const message = error instanceof Error ? error.message : String(error);
-  console.error(`stateless-client failed: ${message}`);
-  process.exitCode = 1;
-});
+async function main(): Promise<void> {
+  await runCli(process.argv.slice(2));
+}
+
+export function isCliEntrypoint(
+  argvPath: string | undefined,
+  moduleUrl: string = import.meta.url,
+): boolean {
+  if (!argvPath) {
+    return false;
+  }
+
+  try {
+    return realpathSync(argvPath) === realpathSync(fileURLToPath(moduleUrl));
+  } catch {
+    return false;
+  }
+}
+
+if (isCliEntrypoint(process.argv[1])) {
+  main().catch((error: unknown) => {
+    const message = error instanceof Error ? error.message : String(error);
+    console.error(`stateless-client failed: ${message}`);
+    process.exitCode = 1;
+  });
+}

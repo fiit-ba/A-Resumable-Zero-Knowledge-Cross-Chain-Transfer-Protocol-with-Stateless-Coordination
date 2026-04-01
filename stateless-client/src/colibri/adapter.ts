@@ -10,7 +10,7 @@ export const ColibriMethodType = {
   PROOFABLE: 1 as typeof MethodType.PROOFABLE,
   UNPROOFABLE: 2 as typeof MethodType.UNPROOFABLE,
   NOT_SUPPORTED: 3 as typeof MethodType.NOT_SUPPORTED,
-  LOCAL: 4 as typeof MethodType.LOCAL
+  LOCAL: 4 as typeof MethodType.LOCAL,
 } as const;
 
 export type ColibriMethodTypeValue = (typeof ColibriMethodType)[keyof typeof ColibriMethodType];
@@ -66,12 +66,12 @@ function buildCurrentBackend(): ColibriBackend {
         prover: config.prover,
         beacon_apis: config.beacon_apis,
         checkpointz: config.checkpointz,
-        debug: config.debug
+        debug: config.debug,
       }) as unknown as ColibriClient;
     },
     async registerStorage(storage: ColibriStorage): Promise<void> {
       await Colibri.register_storage(storage);
-    }
+    },
   };
 }
 
@@ -86,7 +86,7 @@ async function buildDevBackend(): Promise<ColibriBackend> {
     throw new Error(
       "STATELESS_CLIENT_COLIBRI_IMPL=dev requires the optional package " +
         "@corpus-core/colibri-stateless-dev to be installed. " +
-        "Run: npm install --save-optional @corpus-core/colibri-stateless-dev"
+        "Run: npm install --save-optional @corpus-core/colibri-stateless-dev",
     );
   }
   // Support both default export and named export shapes
@@ -99,12 +99,12 @@ async function buildDevBackend(): Promise<ColibriBackend> {
         prover: config.prover,
         beacon_apis: config.beacon_apis,
         checkpointz: config.checkpointz,
-        debug: config.debug
+        debug: config.debug,
       }) as unknown as ColibriClient;
     },
     async registerStorage(storage: ColibriStorage): Promise<void> {
       await DevColibri.register_storage(storage);
-    }
+    },
   };
 }
 

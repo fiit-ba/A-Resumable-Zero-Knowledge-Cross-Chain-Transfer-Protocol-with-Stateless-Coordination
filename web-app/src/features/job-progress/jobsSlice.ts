@@ -1,4 +1,4 @@
-import { createSlice, type PayloadAction } from '@reduxjs/toolkit';
+import { createSlice, type PayloadAction } from "@reduxjs/toolkit";
 
 /** Active job session stored after deposit succeeds */
 export interface ActiveJobSession {
@@ -23,7 +23,7 @@ const initialState: JobsState = {
 };
 
 export const jobsSlice = createSlice({
-  name: 'jobs',
+  name: "jobs",
   initialState,
   reducers: {
     setActiveJob(state, action: PayloadAction<ActiveJobSession>) {
@@ -44,5 +44,4 @@ export const jobsSlice = createSlice({
   },
 });
 
-export const { setActiveJob, clearActiveJob, setSubmitting, setSubmitError } =
-  jobsSlice.actions;
+export const { setActiveJob, clearActiveJob, setSubmitting, setSubmitError } = jobsSlice.actions;

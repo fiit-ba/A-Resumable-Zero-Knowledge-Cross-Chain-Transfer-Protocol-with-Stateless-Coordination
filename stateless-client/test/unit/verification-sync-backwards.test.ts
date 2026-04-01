@@ -6,20 +6,20 @@ import {
   isChiadoSyncBackwardsFallbackAllowed,
   isParentBeaconSuccessorBlockMissingError,
   isTransientSszBootstrapError,
-  isSyncBackwardsError
+  isSyncBackwardsError,
 } from "../../src/relay/verification.js";
 
 describe("isSyncBackwardsError", () => {
   it("returns true for the canonical sync-backwards message", () => {
     const err = new Error(
-      "last sync state is higher than the required period: cannot sync backwards"
+      "last sync state is higher than the required period: cannot sync backwards",
     );
     expect(isSyncBackwardsError(err)).toBe(true);
   });
 
   it("returns true when both substrings appear anywhere in the message", () => {
     const err = new Error(
-      "Colibri error: last sync state is higher than period 42, cannot sync backwards to period 40"
+      "Colibri error: last sync state is higher than period 42, cannot sync backwards to period 40",
     );
     expect(isSyncBackwardsError(err)).toBe(true);
   });
@@ -103,7 +103,7 @@ describe("isChiadoSyncBackwardsFallbackAllowed", () => {
 describe("isFinalizedCheckpointBootstrapError", () => {
   it("returns true for finalized-checkpoint bootstrap NOT_FOUND error", () => {
     const err = new Error(
-      '(404)  : {"code":404,"message":"NOT_FOUND: Sync committee branch for block root 0xabc not found. This typically occurs when the block is not a finalized checkpoint. Light client bootstrap is only supported for finalized checkpoint block roots."}'
+      '(404)  : {"code":404,"message":"NOT_FOUND: Sync committee branch for block root 0xabc not found. This typically occurs when the block is not a finalized checkpoint. Light client bootstrap is only supported for finalized checkpoint block roots."}',
     );
     expect(isFinalizedCheckpointBootstrapError(err)).toBe(true);
   });
@@ -122,7 +122,7 @@ describe("isFinalizedCheckpointBootstrapError", () => {
 describe("isParentBeaconSuccessorBlockMissingError", () => {
   it("returns true for parentBeaconBlockRoot successor-missing error", () => {
     const err = new Error(
-      "The Block after 10520082, which should contain the parentBeaconBlockRoot for the data block can not be found in the execution layer!"
+      "The Block after 10520082, which should contain the parentBeaconBlockRoot for the data block can not be found in the execution layer!",
     );
     expect(isParentBeaconSuccessorBlockMissingError(err)).toBe(true);
   });
@@ -185,7 +185,7 @@ describe("isTransientSszBootstrapError", () => {
 describe("isExceedMaximumBlockRangeError", () => {
   it("returns true for eth_getLogs maximum-range errors", () => {
     const err = new Error(
-      'Error when calling eth-rpc for eth_getLogs (params: [...]) : exceed maximum block range: 50000'
+      "Error when calling eth-rpc for eth_getLogs (params: [...]) : exceed maximum block range: 50000",
     );
     expect(isExceedMaximumBlockRangeError(err)).toBe(true);
   });

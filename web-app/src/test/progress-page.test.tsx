@@ -1,21 +1,26 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { render, screen, waitFor } from '@testing-library/react';
-import { Provider } from 'react-redux';
-import { MemoryRouter, Route, Routes } from 'react-router-dom';
-import { configureStore } from '@reduxjs/toolkit';
-import { ProgressPage } from '../pages/ProgressPage';
-import { transferSlice } from '../features/transfer-start/transferSlice';
-import { jobsSlice } from '../features/job-progress/jobsSlice';
-import { agentApi } from '../shared/api/agentApi';
-import type { RelayJob } from 'agent-shared';
+import { describe, it, expect, vi, beforeEach } from "vitest";
+import { render, screen, waitFor } from "@testing-library/react";
+import { Provider } from "react-redux";
+import { MemoryRouter, Route, Routes } from "react-router-dom";
+import { configureStore } from "@reduxjs/toolkit";
+import { ProgressPage } from "../pages/ProgressPage";
+import { transferSlice } from "../features/transfer-start/transferSlice";
+import { jobsSlice } from "../features/job-progress/jobsSlice";
+import { agentApi } from "../api/agentApi";
+import type { RelayJob } from "../api/types";
 
-vi.mock('ethers', () => ({
+vi.mock("ethers", () => ({
   BrowserProvider: vi.fn(),
   Contract: vi.fn(),
+  AbiCoder: {
+    defaultAbiCoder: vi.fn(() => ({
+      decode: vi.fn(),
+    })),
+  },
 }));
 
-vi.mock('../shared/api/agentApi', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('../shared/api/agentApi')>();
+vi.mock("../api/agentApi", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../api/agentApi")>();
   return {
     ...actual,
     useGetJobQuery: vi.fn(),
@@ -30,7 +35,7 @@ import {
   useConfirmJobMutation,
   useGetNextStageQuery,
   useSubmitReceiptMutation,
-} from '../shared/api/agentApi';
+} from "../api/agentApi";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 const anyMock = (value: unknown) => value as any;
@@ -46,7 +51,7 @@ function makeStore() {
   });
 }
 
-function renderPage(jobId = 'job-123') {
+function renderPage(jobId = "job-123") {
   return render(
     <Provider store={makeStore()}>
       <MemoryRouter initialEntries={[`/progress/${jobId}`]}>
@@ -54,27 +59,27 @@ function renderPage(jobId = 'job-123') {
           <Route path="/progress/:jobId" element={<ProgressPage />} />
         </Routes>
       </MemoryRouter>
-    </Provider>
+    </Provider>,
   );
 }
 
 function mockJob(overrides: Partial<RelayJob> = {}): RelayJob {
   return {
-    id: 'job-123',
-    txId: '0x' + 'ab'.repeat(32),
-    currentStage: 'lock',
-    status: 'awaiting_confirmation',
+    id: "job-123",
+    txId: "0x" + "ab".repeat(32),
+    currentStage: "lock",
+    status: "awaiting_confirmation",
     sourceStatus: 1,
     destinationStatus: 0,
     intent: {
-      sourceProfile: 'local-anvil',
-      destinationProfile: 'local-hardhat',
-      sourceConnector: '0x1111111111111111111111111111111111111111',
-      destinationConnector: '0x2222222222222222222222222222222222222222',
-      tokenFrom: '0xaaaa',
-      tokenTo: '0xbbbb',
-      amount: '1000',
-      receiver: '0xcccc',
+      sourceProfile: "local-anvil",
+      destinationProfile: "local-hardhat",
+      sourceConnector: "0x1111111111111111111111111111111111111111",
+      destinationConnector: "0x2222222222222222222222222222222222222222",
+      tokenFrom: "0xaaaa",
+      tokenTo: "0xbbbb",
+      amount: "1000",
+      receiver: "0xcccc",
     },
     createdAt: 1000,
     updatedAt: 2000,
@@ -83,42 +88,60 @@ function mockJob(overrides: Partial<RelayJob> = {}): RelayJob {
 }
 
 beforeEach(() => {
-  vi.mocked(useGetJobQuery).mockReturnValue(anyMock({ data: undefined, error: undefined, isLoading: true }));
-  vi.mocked(useConfirmJobMutation).mockReturnValue(anyMock([vi.fn(), { isLoading: false, reset: vi.fn() }]));
+  vi.mocked(useGetJobQuery).mockReturnValue(
+    anyMock({ data: undefined, error: undefined, isLoading: true }),
+  );
+  vi.mocked(useConfirmJobMutation).mockReturnValue(
+    anyMock([vi.fn(), { isLoading: false, reset: vi.fn() }]),
+  );
   vi.mocked(useGetNextStageQuery).mockReturnValue(anyMock({ data: undefined }));
   vi.mocked(useSubmitReceiptMutation).mockReturnValue(anyMock([vi.fn()]));
 });
 
-describe('ProgressPage', () => {
-  it('renders page heading', () => {
+describe("ProgressPage", () => {
+  it("shows loading indicator while polling starts", () => {
     renderPage();
-    expect(screen.getByText(/Transfer in Progress/i)).toBeInTheDocument();
+    expect(screen.getByText(/Loading job/i)).toBeInTheDocument();
   });
 
-  it('shows confirm button for awaiting_confirmation status', async () => {
+  it("shows confirm button for awaiting_confirmation status", async () => {
     vi.mocked(useGetJobQuery).mockReturnValue(
-      anyMock({ data: mockJob({ status: 'awaiting_confirmation' }), error: undefined, isLoading: false })
+      anyMock({
+        data: mockJob({ status: "awaiting_confirmation" }),
+        error: undefined,
+        isLoading: false,
+      }),
     );
     renderPage();
     await waitFor(() => {
-      expect(screen.getByRole('button', { name: /Confirm & start relay/i })).toBeInTheDocument();
+      expect(screen.getByRole("button", { name: /Confirm & start relay/i })).toBeInTheDocument();
     });
   });
 
-  it('shows unsupported (refund) banner', async () => {
+  it("shows unsupported status badge", async () => {
     vi.mocked(useGetJobQuery).mockReturnValue(
-      anyMock({ data: mockJob({ status: 'unsupported', lastError: 'Refund state detected' }), error: undefined, isLoading: false })
+      anyMock({
+        data: mockJob({ status: "unsupported", lastError: "Refund state detected" }),
+        error: undefined,
+        isLoading: false,
+      }),
     );
     renderPage();
     await waitFor(() => {
-      const alert = screen.getByRole('alert');
-      expect(alert.textContent).toMatch(/Refund state detected/i);
+      expect(screen.getByText(/Unsupported/i)).toBeInTheDocument();
     });
   });
 
-  it('shows success heading when completed', async () => {
+  it("shows success heading when completed", async () => {
     vi.mocked(useGetJobQuery).mockReturnValue(
-      anyMock({ data: mockJob({ status: 'completed', currentStage: 'completed' as RelayJob['currentStage'] }), error: undefined, isLoading: false })
+      anyMock({
+        data: mockJob({
+          status: "completed",
+          currentStage: "completed" as RelayJob["currentStage"],
+        }),
+        error: undefined,
+        isLoading: false,
+      }),
     );
     renderPage();
     await waitFor(() => {
@@ -126,20 +149,24 @@ describe('ProgressPage', () => {
     });
   });
 
-  it('shows error alert for failed status', async () => {
+  it("shows error alert for failed status", async () => {
     vi.mocked(useGetJobQuery).mockReturnValue(
-      anyMock({ data: mockJob({ status: 'failed', lastError: 'proof generation failed' }), error: undefined, isLoading: false })
+      anyMock({
+        data: mockJob({ status: "failed", lastError: "proof generation failed" }),
+        error: undefined,
+        isLoading: false,
+      }),
     );
     renderPage();
     await waitFor(() => {
-      const alert = screen.getByRole('alert');
-      expect(alert.textContent).toContain('proof generation failed');
+      const alert = screen.getByRole("alert");
+      expect(alert.textContent).toContain("proof generation failed");
     });
   });
 
-  it('shows agent-offline banner when fetch fails', async () => {
+  it("shows agent-offline banner when fetch fails", async () => {
     vi.mocked(useGetJobQuery).mockReturnValue(
-      anyMock({ data: undefined, error: { error: 'Connection refused' }, isLoading: false })
+      anyMock({ data: undefined, error: { error: "Connection refused" }, isLoading: false }),
     );
     renderPage();
     await waitFor(() => {

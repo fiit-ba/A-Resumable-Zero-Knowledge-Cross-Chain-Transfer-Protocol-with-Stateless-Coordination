@@ -79,7 +79,7 @@ describe("resetLocalColibriStateFiles — Chiado pre-run reset", () => {
   });
 
   it("does not remove state files belonging to another chain", () => {
-    const chiadoState  = resolve(tmpDir, "states_10200");
+    const chiadoState = resolve(tmpDir, "states_10200");
     const sepoliaState = resolve(tmpDir, "states_11155111");
     writeFileSync(chiadoState, "chiado");
     writeFileSync(sepoliaState, "sepolia");

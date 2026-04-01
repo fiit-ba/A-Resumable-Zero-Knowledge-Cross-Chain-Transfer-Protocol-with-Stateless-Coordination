@@ -5,8 +5,7 @@ This repository contains a cross-chain transfer prototype built around stateless
 - Solidity `Connector` contracts for origin and destination chains
 - RISC Zero proof workspaces for event proving
 - an optional Colibri verification step for proofable chains
-- a TypeScript stateless relay CLI
-- a local coordination agent
+- a TypeScript stateless relay CLI with an embedded local coordination agent
 - a React web app for operator-assisted submissions
 
 ## Flow Overview
@@ -29,10 +28,8 @@ This repository contains a cross-chain transfer prototype built around stateless
 
 - [`smart-contracts/README.md`](smart-contracts/README.md): Solidity contracts, Foundry tests, and deployment scripts.
 - [`zk-proofs/README.md`](zk-proofs/README.md): proof workspaces used by the relay flows.
-- [`stateless-client/README.md`](stateless-client/README.md): TypeScript relay CLI and library.
-- [`local-agent/README.md`](local-agent/README.md): local HTTP coordinator with SQLite-backed job persistence.
+- [`stateless-client/README.md`](stateless-client/README.md): TypeScript relay CLI, library, and embedded local HTTP agent.
 - [`web-app/README.md`](web-app/README.md): React UI for starting transfers and signing relay submissions.
-- [`shared/README.md`](shared/README.md): shared DTOs between the agent and the web app.
 - [`colibri/README.md`](colibri/README.md): optional Colibri stage verifier.
 - [`hardhat-local/README.md`](hardhat-local/README.md): local Hardhat destination chain and proxy helpers.
 - `scripts/`: end-to-end orchestration scripts for happy path and refund path.
@@ -93,20 +90,19 @@ export PRIVATE_KEY=0x...
 bash scripts/e2e-refund-anvil-hardhat.sh
 ```
 
-### Run the web app and local agent
+### Run the web app and local agent flow
 
 In separate terminals from the repository root:
 
 ```bash
-npm run build -w shared
-npm run dev -w local-agent
+npm run dev:agent -w stateless-client
 ```
 
 ```bash
 npm run dev -w web-app
 ```
 
-The agent listens on `http://localhost:7549` by default, and the web app targets that same URL unless `VITE_AGENT_URL` is set.
+The agent listens on `http://localhost:7549` by default, and the web app targets that same URL unless `VITE_AGENT_URL` is set. The canonical CLI surface is `stateless-client agent start`.
 
 ## Root Workspace Commands
 
@@ -117,7 +113,7 @@ npm run lint
 npm run typecheck
 ```
 
-These are the scripts exposed by the root `package.json`. Coverage varies by script: `build` includes all four workspaces, while `test`, `lint`, and `typecheck` only run the workspace commands explicitly configured there.
+These are the scripts exposed by the root `package.json`. Coverage varies by script: `build` includes the three active workspaces, while `test`, `lint`, and `typecheck` only run the workspace commands explicitly configured there.
 
 ## Notes
 

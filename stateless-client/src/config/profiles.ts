@@ -31,7 +31,7 @@ export const NETWORK_PROFILES: Record<NetworkProfileName, NetworkProfileDefaults
     rpcUrls: ["http://127.0.0.1:8545"],
     proverUrls: [],
     beaconUrls: [],
-    checkpointzUrls: []
+    checkpointzUrls: [],
   },
   "local-hardhat": {
     name: "local-hardhat",
@@ -40,7 +40,7 @@ export const NETWORK_PROFILES: Record<NetworkProfileName, NetworkProfileDefaults
     rpcUrls: ["http://127.0.0.1:8546"],
     proverUrls: [],
     beaconUrls: [],
-    checkpointzUrls: []
+    checkpointzUrls: [],
   },
   mainnet: {
     name: "mainnet",
@@ -49,7 +49,7 @@ export const NETWORK_PROFILES: Record<NetworkProfileName, NetworkProfileDefaults
     rpcUrls: ["https://mainnet1.colibri-proof.tech/execution"],
     proverUrls: ["https://mainnet1.colibri-proof.tech"],
     beaconUrls: ["https://mainnet1.colibri-proof.tech/consensus/"],
-    checkpointzUrls: []
+    checkpointzUrls: [],
   },
   sepolia: {
     name: "sepolia",
@@ -58,7 +58,7 @@ export const NETWORK_PROFILES: Record<NetworkProfileName, NetworkProfileDefaults
     rpcUrls: ["https://ethereum-sepolia-rpc.publicnode.com"],
     proverUrls: ["https://sepolia.colibri-proof.tech"],
     beaconUrls: ["https://ethereum-sepolia-beacon-api.publicnode.com"],
-    checkpointzUrls: ["https://ethereum-sepolia-beacon-api.publicnode.com"]
+    checkpointzUrls: ["https://ethereum-sepolia-beacon-api.publicnode.com"],
   },
   holesky: {
     name: "holesky",
@@ -67,7 +67,7 @@ export const NETWORK_PROFILES: Record<NetworkProfileName, NetworkProfileDefaults
     rpcUrls: ["https://ethereum-holesky-rpc.publicnode.com"],
     proverUrls: [],
     beaconUrls: ["https://ethereum-holesky-beacon-api.publicnode.com"],
-    checkpointzUrls: []
+    checkpointzUrls: [],
   },
   hoodi: {
     name: "hoodi",
@@ -76,7 +76,7 @@ export const NETWORK_PROFILES: Record<NetworkProfileName, NetworkProfileDefaults
     rpcUrls: ["https://ethereum-hoodi-rpc.publicnode.com"],
     proverUrls: [],
     beaconUrls: ["https://ethereum-hoodi-beacon-api.publicnode.com"],
-    checkpointzUrls: []
+    checkpointzUrls: [],
   },
   gnosis: {
     name: "gnosis",
@@ -85,7 +85,7 @@ export const NETWORK_PROFILES: Record<NetworkProfileName, NetworkProfileDefaults
     rpcUrls: ["https://rpc.ankr.com/gnosis"],
     proverUrls: ["https://gnosis.colibri-proof.tech"],
     beaconUrls: ["https://gnosis.colibri-proof.tech"],
-    checkpointzUrls: []
+    checkpointzUrls: [],
   },
   chiado: {
     name: "chiado",
@@ -101,13 +101,13 @@ export const NETWORK_PROFILES: Record<NetworkProfileName, NetworkProfileDefaults
     beaconUrls: [
       "https://chiado.colibri-proof.tech",
       "https://rpc-gbc.chiadochain.net",
-      "https://gnosis-chiado-beacon-api.publicnode.com"
+      "https://gnosis-chiado-beacon-api.publicnode.com",
     ],
     checkpointzUrls: [
       "https://chiado.colibri-proof.tech",
-      "https://gnosis-chiado-beacon-api.publicnode.com"
-    ]
-  }
+      "https://gnosis-chiado-beacon-api.publicnode.com",
+    ],
+  },
 };
 
 export function listNetworkProfiles(): NetworkProfileDefaults[] {
@@ -118,8 +118,8 @@ export function getNetworkProfile(profileName: string): NetworkProfileDefaults {
   if (!(profileName in NETWORK_PROFILES)) {
     throw new Error(
       `Unsupported network profile '${profileName}'. Supported profiles: ${Object.keys(
-        NETWORK_PROFILES
-      ).join(", ")}`
+        NETWORK_PROFILES,
+      ).join(", ")}`,
     );
   }
   return NETWORK_PROFILES[profileName as NetworkProfileName];
@@ -128,19 +128,20 @@ export function getNetworkProfile(profileName: string): NetworkProfileDefaults {
 export function resolveChainConfig(input: ChainResolveInput): ChainConfig {
   const hasAnyExplicitOverride = Boolean(
     input.chainId ||
-      input.rpcUrl ||
-      input.rpcUrls ||
-      input.proverUrls ||
-      input.beaconUrls ||
-      input.checkpointzUrls
+    input.rpcUrl ||
+    input.rpcUrls ||
+    input.proverUrls ||
+    input.beaconUrls ||
+    input.checkpointzUrls,
   );
 
-  const selectedProfileName = input.profileName ?? (hasAnyExplicitOverride ? undefined : input.defaultProfileName);
+  const selectedProfileName =
+    input.profileName ?? (hasAnyExplicitOverride ? undefined : input.defaultProfileName);
   const baseProfile = selectedProfileName ? getNetworkProfile(selectedProfileName) : undefined;
 
   if (!baseProfile && !hasAnyExplicitOverride) {
     throw new Error(
-      `No ${input.side} profile or explicit ${input.side} chain configuration provided.`
+      `No ${input.side} profile or explicit ${input.side} chain configuration provided.`,
     );
   }
 
@@ -154,15 +155,19 @@ export function resolveChainConfig(input: ChainResolveInput): ChainConfig {
       ? rpcOverrides
       : input.rpcUrl
         ? [input.rpcUrl]
-        : baseProfile?.rpcUrls ?? [];
+        : (baseProfile?.rpcUrls ?? []);
 
   if (rpcUrls.length === 0) {
-    throw new Error(`No ${input.side} RPC URL configured. Use --${input.side}-rpc-url or --${input.side}-rpc-urls.`);
+    throw new Error(
+      `No ${input.side} RPC URL configured. Use --${input.side}-rpc-url or --${input.side}-rpc-urls.`,
+    );
   }
 
   const chainIdText = input.chainId ?? (baseProfile ? String(baseProfile.chainId) : undefined);
   if (!chainIdText) {
-    throw new Error(`No ${input.side} chain id configured. Use --${input.side}-chain-id or --${input.side}-profile.`);
+    throw new Error(
+      `No ${input.side} chain id configured. Use --${input.side}-chain-id or --${input.side}-profile.`,
+    );
   }
 
   const chainId = parseChainId(chainIdText, `${input.side} chain id`);
@@ -170,9 +175,7 @@ export function resolveChainConfig(input: ChainResolveInput): ChainConfig {
   const profileName = baseProfile?.name ?? "custom";
   const isLocal =
     baseProfile?.isLocal ??
-    (chainId === 31337 ||
-      chainId === 31338 ||
-      rpcUrls.some((url) => isLikelyLocalRpcUrl(url)));
+    (chainId === 31337 || chainId === 31338 || rpcUrls.some((url) => isLikelyLocalRpcUrl(url)));
 
   return {
     side: input.side,
@@ -180,11 +183,9 @@ export function resolveChainConfig(input: ChainResolveInput): ChainConfig {
     isLocal,
     chainId,
     rpcUrls,
-    proverUrls: proverOverrides.length > 0 ? proverOverrides : baseProfile?.proverUrls ?? [],
-    beaconUrls: beaconOverrides.length > 0 ? beaconOverrides : baseProfile?.beaconUrls ?? [],
+    proverUrls: proverOverrides.length > 0 ? proverOverrides : (baseProfile?.proverUrls ?? []),
+    beaconUrls: beaconOverrides.length > 0 ? beaconOverrides : (baseProfile?.beaconUrls ?? []),
     checkpointzUrls:
-      checkpointzOverrides.length > 0
-        ? checkpointzOverrides
-        : baseProfile?.checkpointzUrls ?? []
+      checkpointzOverrides.length > 0 ? checkpointzOverrides : (baseProfile?.checkpointzUrls ?? []),
   };
 }

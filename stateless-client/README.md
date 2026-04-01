@@ -1,6 +1,6 @@
 # Stateless Client
 
-This package is the TypeScript relay CLI and library used to verify relay stages, plan the next required action, generate proof payloads, and submit them to the connector contracts.
+This package is the TypeScript relay CLI, library, and embedded local agent used to verify relay stages, plan the next required action, generate proof payloads, submit them to the connector contracts, and expose the local HTTP coordinator consumed by the web app.
 
 ## Core Capabilities
 
@@ -10,6 +10,7 @@ This package is the TypeScript relay CLI and library used to verify relay stages
 - generate and submit an ack proof with `relay-ack`
 - run the full happy path with `relay-happy-path`
 - inspect on-chain state and continue from the correct stage with `relay-resume`
+- run the local HTTP agent with `agent start`
 
 `relay-resume` is the safest default when the current source and destination statuses are not obvious, because it reads both connectors first and chooses the next valid action.
 
@@ -53,6 +54,12 @@ Show the built-in usage text:
 npm run dev -w stateless-client -- --help
 ```
 
+Show the agent-specific usage text:
+
+```bash
+npm run dev -w stateless-client -- agent
+```
+
 Verify a single stage:
 
 ```bash
@@ -89,9 +96,21 @@ npm run dev -w stateless-client -- relay-happy-path \
   --destination-connector 0x...
 ```
 
+Start the embedded agent:
+
+```bash
+npm run dev:agent -w stateless-client
+```
+
+The canonical production CLI entrypoint is:
+
+```bash
+stateless-client agent start
+```
+
 ## Library Usage
 
-This package also exports helpers used by the local agent, including:
+This package also exports relay helpers used internally by the embedded agent, including:
 
 - `prepareStageSubmission(...)`
 - `planRelayResume(...)`
@@ -105,6 +124,7 @@ This package also exports helpers used by the local agent, including:
 npm run test -w stateless-client
 npm run test:integration -w stateless-client
 npm run typecheck -w stateless-client
+npm run lint -w stateless-client
 ```
 
 ## Related Docs

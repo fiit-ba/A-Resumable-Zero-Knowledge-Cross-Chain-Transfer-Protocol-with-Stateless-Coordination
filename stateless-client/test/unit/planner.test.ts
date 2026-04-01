@@ -5,7 +5,7 @@ import type { HistoryFlags } from "../../src/core/types.js";
 const NO_HISTORY: HistoryFlags = {
   depositLocked: false,
   fundsReleased: false,
-  ackReady: false
+  ackReady: false,
 };
 
 describe("computeResumeDecision", () => {
@@ -29,7 +29,7 @@ describe("computeResumeDecision", () => {
   it("0/4 + AckReady history -> ack", () => {
     const d = computeResumeDecision(0, 4, {
       ...NO_HISTORY,
-      ackReady: true
+      ackReady: true,
     });
     expect(d.action).toBe("ack");
     expect(d.reason).toMatch(/pruned/i);
@@ -51,7 +51,7 @@ describe("computeResumeDecision", () => {
   it("0/0 + DepositLocked history -> noop terminal", () => {
     const d = computeResumeDecision(0, 0, {
       ...NO_HISTORY,
-      depositLocked: true
+      depositLocked: true,
     });
     expect(d.action).toBe("noop");
     expect(d.reason).toMatch(/terminal/i);
@@ -60,7 +60,7 @@ describe("computeResumeDecision", () => {
   it("0/0 + FundsReleased history -> noop terminal", () => {
     const d = computeResumeDecision(0, 0, {
       ...NO_HISTORY,
-      fundsReleased: true
+      fundsReleased: true,
     });
     expect(d.action).toBe("noop");
     expect(d.reason).toMatch(/terminal/i);
@@ -69,7 +69,7 @@ describe("computeResumeDecision", () => {
   it("0/0 + AckReady history -> noop terminal", () => {
     const d = computeResumeDecision(0, 0, {
       ...NO_HISTORY,
-      ackReady: true
+      ackReady: true,
     });
     expect(d.action).toBe("noop");
     expect(d.reason).toMatch(/terminal/i);
@@ -81,22 +81,34 @@ describe("computeResumeDecision", () => {
     expect(d.reason).toMatch(/not found/i);
   });
 
-  it("source=3 -> unsupported refund path error", () => {
-    const d = computeResumeDecision(3, 0, NO_HISTORY);
-    expect(d.action).toBe("error");
+  it("1/4 + ackDeadlineExpired -> refund-initiate", () => {
+    const d = computeResumeDecision(1, 4, { ...NO_HISTORY, ackDeadlineExpired: true });
+    expect(d.action).toBe("refund-initiate");
+    expect(d.reason).toMatch(/expired/i);
+  });
+
+  it("3/4 -> refund-claim", () => {
+    const d = computeResumeDecision(3, 4, NO_HISTORY);
+    expect(d.action).toBe("refund-claim");
     expect(d.reason).toMatch(/refund/i);
   });
 
-  it("destination=5 -> unsupported refund path error", () => {
+  it("3/5 -> execute-burn", () => {
+    const d = computeResumeDecision(3, 5, NO_HISTORY);
+    expect(d.action).toBe("execute-burn");
+    expect(d.reason).toMatch(/burn/i);
+  });
+
+  it("3/0 -> burn-proof", () => {
+    const d = computeResumeDecision(3, 0, NO_HISTORY);
+    expect(d.action).toBe("burn-proof");
+    expect(d.reason).toMatch(/burn/i);
+  });
+
+  it("0/5 -> inconsistent error", () => {
     const d = computeResumeDecision(0, 5, NO_HISTORY);
     expect(d.action).toBe("error");
-    expect(d.reason).toMatch(/refund/i);
-  });
-
-  it("source=3 takes priority over destination=5", () => {
-    const d = computeResumeDecision(3, 5, NO_HISTORY);
-    expect(d.action).toBe("error");
-    expect(d.reason).toMatch(/refund/i);
+    expect(d.reason).toMatch(/inconsistent/i);
   });
 
   it("unknown combination 1/1 -> inconsistent error", () => {
@@ -121,7 +133,7 @@ describe("computeResumeDecision", () => {
     const flags: HistoryFlags = {
       depositLocked: true,
       fundsReleased: false,
-      ackReady: false
+      ackReady: false,
     };
     const d = computeResumeDecision(0, 0, flags);
     expect(d.historyFlags).toEqual(flags);

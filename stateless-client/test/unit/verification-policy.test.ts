@@ -7,7 +7,7 @@ describe("decideVerificationMode", () => {
     const mode = decideVerificationMode({
       isLocal: false,
       getLogsSupport: MethodType.PROOFABLE,
-      ethCallSupport: MethodType.PROOFABLE
+      ethCallSupport: MethodType.PROOFABLE,
     });
 
     expect(mode).toBe("colibri");
@@ -17,7 +17,7 @@ describe("decideVerificationMode", () => {
     const proofableMode = decideVerificationMode({
       isLocal: true,
       getLogsSupport: MethodType.PROOFABLE,
-      ethCallSupport: MethodType.PROOFABLE
+      ethCallSupport: MethodType.PROOFABLE,
     });
 
     expect(proofableMode).toBe("rpc-fallback");
@@ -25,7 +25,7 @@ describe("decideVerificationMode", () => {
     const mode = decideVerificationMode({
       isLocal: true,
       getLogsSupport: MethodType.NOT_SUPPORTED,
-      ethCallSupport: MethodType.PROOFABLE
+      ethCallSupport: MethodType.PROOFABLE,
     });
 
     expect(mode).toBe("rpc-fallback");
@@ -36,8 +36,8 @@ describe("decideVerificationMode", () => {
       decideVerificationMode({
         isLocal: false,
         getLogsSupport: MethodType.UNPROOFABLE,
-        ethCallSupport: MethodType.PROOFABLE
-      })
+        ethCallSupport: MethodType.PROOFABLE,
+      }),
     ).toThrow(/non-local chain/i);
   });
 });

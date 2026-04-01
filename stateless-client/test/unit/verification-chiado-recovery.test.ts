@@ -6,7 +6,8 @@ import {
   isParentBeaconSuccessorBlockMissingError,
   isFinalizedCheckpointBootstrapError,
   isBlockNotSignedYetError,
-  isBootstrapEndpointNotFoundError
+  isBootstrapEndpointNotFoundError,
+  isChiadoColibriTransportUnavailableError,
 } from "../../src/relay/verification.js";
 
 // ---------------------------------------------------------------------------
@@ -16,7 +17,7 @@ import {
 describe("degradeReasonFromError", () => {
   it("maps sync-backwards error to chiado_sync_backwards", () => {
     const err = new Error(
-      "last sync state is higher than the required period, but we cannot sync backwards"
+      "last sync state is higher than the required period, but we cannot sync backwards",
     );
     expect(isSyncBackwardsError(err)).toBe(true);
     expect(degradeReasonFromError(err)).toBe("chiado_sync_backwards");
@@ -35,7 +36,7 @@ describe("degradeReasonFromError", () => {
   it("maps parent-beacon-missing error to chiado_parent_beacon_missing", () => {
     const err = new Error(
       "The Block after 10520082, which should contain the parentBeaconBlockRoot " +
-      "for the data block can not be found in the execution layer!"
+        "for the data block can not be found in the execution layer!",
     );
     expect(isParentBeaconSuccessorBlockMissingError(err)).toBe(true);
     expect(degradeReasonFromError(err)).toBe("chiado_parent_beacon_missing");
@@ -44,16 +45,14 @@ describe("degradeReasonFromError", () => {
   it("maps finalized-checkpoint bootstrap error to chiado_finalization", () => {
     const err = new Error(
       '{"code":404,"message":"NOT_FOUND: Sync committee branch for block root 0xabc not found. ' +
-      "Light client bootstrap is only supported for finalized checkpoint block roots.\"}"
+        'Light client bootstrap is only supported for finalized checkpoint block roots."}',
     );
     expect(isFinalizedCheckpointBootstrapError(err)).toBe(true);
     expect(degradeReasonFromError(err)).toBe("chiado_finalization");
   });
 
   it("maps block-not-signed-yet error to chiado_block_not_signed", () => {
-    const err = new Error(
-      "The requested block has not been signed yet and cannot be verified!!"
-    );
+    const err = new Error("The requested block has not been signed yet and cannot be verified!!");
     expect(isBlockNotSignedYetError(err)).toBe(true);
     expect(degradeReasonFromError(err)).toBe("chiado_block_not_signed");
   });
@@ -66,19 +65,74 @@ describe("degradeReasonFromError", () => {
 
   it("maps bootstrap-endpoint-not-found error to chiado_bootstrap_unsupported", () => {
     const javalinErr = new Error(
-      'HTTP error! Status: 404, Details: {' +
-      '"title": "Endpoint GET /eth/v1/beacon/light_client/bootstrap/0xabc not found",' +
-      '"status": 404,' +
-      '"type": "https://javalin.io/documentation#endpointnotfound",' +
-      '"details": {}}'
+      "HTTP error! Status: 404, Details: {" +
+        '"title": "Endpoint GET /eth/v1/beacon/light_client/bootstrap/0xabc not found",' +
+        '"status": 404,' +
+        '"type": "https://javalin.io/documentation#endpointnotfound",' +
+        '"details": {}}',
     );
     expect(isBootstrapEndpointNotFoundError(javalinErr)).toBe(true);
     expect(degradeReasonFromError(javalinErr)).toBe("chiado_bootstrap_unsupported");
   });
 
+  it("returns undefined for generic Chiado Colibri 503 transport error (retry-only, not a degrade reason)", () => {
+    expect(degradeReasonFromError(new Error("HTTP error! Status: 503"))).toBeUndefined();
+    expect(degradeReasonFromError(new Error("HTTP error! Status: 503, Details: "))).toBeUndefined();
+  });
+
   it("returns undefined for non-Error values", () => {
     expect(degradeReasonFromError(42)).toBeUndefined();
     expect(degradeReasonFromError({})).toBeUndefined();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// isChiadoColibriTransportUnavailableError — pure classifier
+// ---------------------------------------------------------------------------
+
+describe("isChiadoColibriTransportUnavailableError", () => {
+  it("matches bare 503 status line", () => {
+    expect(isChiadoColibriTransportUnavailableError(new Error("HTTP error! Status: 503"))).toBe(
+      true,
+    );
+  });
+
+  it("matches 503 with empty Details suffix", () => {
+    expect(
+      isChiadoColibriTransportUnavailableError(new Error("HTTP error! Status: 503, Details: ")),
+    ).toBe(true);
+  });
+
+  it("matches 503 with whitespace-only Details value", () => {
+    expect(
+      isChiadoColibriTransportUnavailableError(new Error("HTTP error! Status: 503, Details:   ")),
+    ).toBe(true);
+  });
+
+  it("does NOT match 503 with non-empty details body", () => {
+    expect(
+      isChiadoColibriTransportUnavailableError(
+        new Error("HTTP error! Status: 503, Details: service overloaded"),
+      ),
+    ).toBe(false);
+  });
+
+  it("does NOT match other HTTP status codes", () => {
+    expect(isChiadoColibriTransportUnavailableError(new Error("HTTP error! Status: 404"))).toBe(
+      false,
+    );
+    expect(isChiadoColibriTransportUnavailableError(new Error("HTTP error! Status: 500"))).toBe(
+      false,
+    );
+    expect(isChiadoColibriTransportUnavailableError(new Error("HTTP error! Status: 502"))).toBe(
+      false,
+    );
+  });
+
+  it("does NOT match non-Error values", () => {
+    expect(isChiadoColibriTransportUnavailableError("HTTP error! Status: 503")).toBe(false);
+    expect(isChiadoColibriTransportUnavailableError(null)).toBe(false);
+    expect(isChiadoColibriTransportUnavailableError(503)).toBe(false);
   });
 });
 
@@ -91,10 +145,8 @@ describe("degradeReasonFromError", () => {
 
 describe("degradeReasonFromError — multi-error sequence regression", () => {
   const errors = [
-    new Error("Invalid Invalid  offset for list"),            // chiado_ssz_parse
-    new Error(
-      "last sync state is higher than the required period, but we cannot sync backwards"
-    )                                                          // chiado_sync_backwards
+    new Error("Invalid Invalid  offset for list"), // chiado_ssz_parse
+    new Error("last sync state is higher than the required period, but we cannot sync backwards"), // chiado_sync_backwards
   ];
 
   it("last error in typical Chiado sequence is sync-backwards", () => {

@@ -1,4 +1,4 @@
-import { createSlice, type PayloadAction } from '@reduxjs/toolkit';
+import { createSlice, type PayloadAction } from "@reduxjs/toolkit";
 
 export interface TransferDraft {
   sourceProfile: string;
@@ -12,39 +12,36 @@ export interface TransferDraft {
 }
 
 const INITIAL_DRAFT: TransferDraft = {
-  sourceProfile: 'local-anvil',
-  destProfile: 'local-hardhat',
-  sourceConnector: '',
-  destConnector: '',
-  tokenFrom: '',
-  tokenTo: '',
-  amount: '',
-  receiver: '',
+  sourceProfile: "local-anvil",
+  destProfile: "local-hardhat",
+  sourceConnector: "",
+  destConnector: "",
+  tokenFrom: "",
+  tokenTo: "",
+  amount: "",
+  receiver: "",
 };
 
 interface TransferStartState {
   draft: TransferDraft;
-  txStatus: 'idle' | 'approving' | 'depositing' | 'registering';
+  txStatus: "idle" | "approving" | "depositing" | "registering";
   error: string | null;
 }
 
 const initialState: TransferStartState = {
   draft: INITIAL_DRAFT,
-  txStatus: 'idle',
+  txStatus: "idle",
   error: null,
 };
 
 export const transferSlice = createSlice({
-  name: 'transferStart',
+  name: "transferStart",
   initialState,
   reducers: {
-    setDraftField(
-      state,
-      action: PayloadAction<{ key: keyof TransferDraft; value: string }>
-    ) {
+    setDraftField(state, action: PayloadAction<{ key: keyof TransferDraft; value: string }>) {
       state.draft[action.payload.key] = action.payload.value;
     },
-    setTxStatus(state, action: PayloadAction<TransferStartState['txStatus']>) {
+    setTxStatus(state, action: PayloadAction<TransferStartState["txStatus"]>) {
       state.txStatus = action.payload;
     },
     setError(state, action: PayloadAction<string | null>) {
@@ -52,11 +49,10 @@ export const transferSlice = createSlice({
     },
     resetTransfer(state) {
       state.draft = INITIAL_DRAFT;
-      state.txStatus = 'idle';
+      state.txStatus = "idle";
       state.error = null;
     },
   },
 });
 
-export const { setDraftField, setTxStatus, setError, resetTransfer } =
-  transferSlice.actions;
+export const { setDraftField, setTxStatus, setError, resetTransfer } = transferSlice.actions;

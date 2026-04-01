@@ -2,37 +2,28 @@ import {
   type ColibriBackend,
   type ColibriClient,
   ColibriMethodType,
-  getColibriBackend
+  getColibriBackend,
 } from "../colibri/adapter.js";
-import {
-  existsSync,
-  mkdirSync,
-  readFileSync,
-  readdirSync,
-  rmSync,
-  writeFileSync
-} from "node:fs";
+import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
-import {
-  JsonRpcProvider,
-  type Log
-} from "ethers";
+import { JsonRpcProvider, type Log } from "ethers";
 import { connectorInterface } from "../contracts/abi.js";
 import { STAGE_DEFINITIONS } from "./stages.js";
 import type {
   BlockTagInput,
   ChainConfig,
   Stage,
+  StageVerificationPolicy,
   StageVerificationResult,
   VerificationDegradeReason,
-  VerificationMode
+  VerificationMode,
 } from "../core/types.js";
 import {
   normalizeAddress,
   normalizeBlockTag,
   normalizeBytes32,
   toNumberStatus,
-  toRpcBlockTag
+  toRpcBlockTag,
 } from "../core/utils.js";
 
 export interface VerificationPolicyInput {
@@ -51,6 +42,7 @@ export interface VerifyStageRequest {
   blockTag?: BlockTagInput;
   debug?: boolean;
   provider?: JsonRpcProvider;
+  verificationPolicy?: StageVerificationPolicy;
 }
 
 interface LogRange {
@@ -158,7 +150,7 @@ function extractLogBlockNumber(log: unknown): number | undefined {
 
 async function resolveBlockNumberForTag(
   provider: JsonRpcProvider,
-  rpcTag: string
+  rpcTag: string,
 ): Promise<number | undefined> {
   try {
     const block = await provider.send("eth_getBlockByNumber", [rpcTag, false]);
@@ -187,7 +179,7 @@ async function resolveBlockNumberForTag(
 
 async function resolveLogRange(
   blockTag: BlockTagInput,
-  provider: JsonRpcProvider
+  provider: JsonRpcProvider,
 ): Promise<LogRange> {
   const normalized = normalizeBlockTag(blockTag, "latest");
   if (typeof normalized === "number") {
@@ -208,17 +200,16 @@ async function resolveLogRange(
   if (toBlock === undefined) {
     return {
       fromBlock: "0x0",
-      toBlock: rpcTag
+      toBlock: rpcTag,
     };
   }
 
   const lookback = resolveDynamicLookbackBlocks();
-  const fromBlock =
-    toBlock + 1 > lookback ? toBlock - lookback + 1 : 0;
+  const fromBlock = toBlock + 1 > lookback ? toBlock - lookback + 1 : 0;
 
   return {
     fromBlock: toHexBlock(fromBlock),
-    toBlock: toHexBlock(toBlock)
+    toBlock: toHexBlock(toBlock),
   };
 }
 
@@ -259,7 +250,7 @@ function createColibriFileStorage(baseDir: string): {
       } catch {
         // ignore delete failures in custom storage
       }
-    }
+    },
   };
 }
 
@@ -274,14 +265,18 @@ async function ensureColibriStorageRegistered(backend: ColibriBackend): Promise<
   registeredColibriBackend = backend;
 }
 
-function getColibriClient(chain: ChainConfig, debug: boolean, backend: ColibriBackend): ColibriClient {
+function getColibriClient(
+  chain: ChainConfig,
+  debug: boolean,
+  backend: ColibriBackend,
+): ColibriClient {
   return backend.createClient({
     chainId: chain.chainId,
     rpcs: chain.rpcUrls,
     prover: chain.proverUrls,
     beacon_apis: chain.beaconUrls,
     checkpointz: chain.checkpointzUrls,
-    debug
+    debug,
   });
 }
 
@@ -289,7 +284,7 @@ function buildFilter(
   connector: string,
   eventTopic: string,
   txId: string,
-  range: LogRange
+  range: LogRange,
 ): {
   address: string;
   topics: [string, string];
@@ -300,7 +295,7 @@ function buildFilter(
     address: connector,
     topics: [eventTopic, txId],
     fromBlock: range.fromBlock,
-    toBlock: range.toBlock
+    toBlock: range.toBlock,
   };
 }
 
@@ -343,12 +338,9 @@ export function resetLocalColibriStateFiles(chainId: number): string[] {
     resolve(cwd, ".."),
     resolve(cwd, "..", "colibri-cache"),
     resolve(cwd, "..", ".colibri-cache"),
-    resolve(cwd, "..", "local-agent"),
-    resolve(cwd, "..", "local-agent", "colibri-cache"),
-    resolve(cwd, "..", "local-agent", ".colibri-cache"),
     resolve(cwd, "..", "stateless-client"),
     resolve(cwd, "..", "stateless-client", "colibri-cache"),
-    resolve(cwd, "..", "stateless-client", ".colibri-cache")
+    resolve(cwd, "..", "stateless-client", ".colibri-cache"),
   ]);
 
   const candidates = new Set<string>();
@@ -388,7 +380,7 @@ export function isFinalizedCheckpointBootstrapError(error: unknown): boolean {
     message.includes("not found") &&
     (message.includes("not a finalized checkpoint") ||
       message.includes(
-        "light client bootstrap is only supported for finalized checkpoint block roots"
+        "light client bootstrap is only supported for finalized checkpoint block roots",
       ))
   );
 }
@@ -430,10 +422,7 @@ export function isExceedMaximumBlockRangeError(error: unknown): boolean {
   if (!(error instanceof Error)) return false;
 
   const message = error.message.toLowerCase();
-  return (
-    message.includes("maximum block range") &&
-    message.includes("eth_getlogs")
-  );
+  return message.includes("maximum block range") && message.includes("eth_getlogs");
 }
 
 /**
@@ -448,8 +437,27 @@ export function isBootstrapEndpointNotFoundError(error: unknown): boolean {
   const message = error.message;
   return (
     (message.includes("Status: 404") || message.includes("status 404")) &&
-    (message.includes("light_client/bootstrap") ||
-      message.includes("endpointnotfound"))
+    (message.includes("light_client/bootstrap") || message.includes("endpointnotfound"))
+  );
+}
+
+/**
+ * Returns true when the Colibri transport responds with a generic HTTP 503
+ * (Service Unavailable) with no significant body — the observed failure form
+ * during Chiado Colibri transient unavailability.
+ *
+ * Matches exactly "HTTP error! Status: 503" or the same with an empty
+ * "Details:" suffix (e.g. "HTTP error! Status: 503, Details: ").
+ * Errors that carry a non-empty details payload are NOT matched — they may
+ * contain actionable information that should surface to the caller.
+ */
+export function isChiadoColibriTransportUnavailableError(error: unknown): boolean {
+  if (!(error instanceof Error)) return false;
+  const message = error.message;
+  if (!message.startsWith("HTTP error! Status: 503")) return false;
+  return (
+    message === "HTTP error! Status: 503" ||
+    /^HTTP error! Status: 503, Details:\s*$/.test(message)
   );
 }
 
@@ -474,10 +482,7 @@ export function isChiadoSyncBackwardsFallbackAllowed(chainId: number): boolean {
   return raw === "1" || raw.toLowerCase() === "true";
 }
 
-function shouldFallbackToRpcForKnownChiadoColibriIssue(
-  error: unknown,
-  chainId: number
-): boolean {
+function shouldFallbackToRpcForKnownChiadoColibriIssue(error: unknown, chainId: number): boolean {
   if (!isChiadoSyncBackwardsFallbackAllowed(chainId)) return false;
   return (
     isSyncBackwardsError(error) ||
@@ -490,14 +495,24 @@ function shouldFallbackToRpcForKnownChiadoColibriIssue(
   );
 }
 
+function shouldRetryPrunedAckColibriError(error: unknown): boolean {
+  return (
+    isSyncBackwardsError(error) ||
+    isFinalizedCheckpointBootstrapError(error) ||
+    isParentBeaconSuccessorBlockMissingError(error) ||
+    isBlockNotSignedYetError(error) ||
+    isTransientSszBootstrapError(error) ||
+    isExceedMaximumBlockRangeError(error) ||
+    isChiadoColibriTransportUnavailableError(error)
+  );
+}
+
 function errorMessage(error: unknown): string {
   if (error instanceof Error) return error.message;
   return String(error);
 }
 
-export function decideVerificationMode(
-  input: VerificationPolicyInput
-): VerificationMode {
+export function decideVerificationMode(input: VerificationPolicyInput): VerificationMode {
   if (input.isLocal) {
     return "rpc-fallback";
   }
@@ -511,7 +526,7 @@ export function decideVerificationMode(
   }
 
   throw new Error(
-    `Colibri does not report both methods as proofable (eth_getLogs=${input.getLogsSupport}, eth_call=${input.ethCallSupport}) for a non-local chain.`
+    `Colibri does not report both methods as proofable (eth_getLogs=${input.getLogsSupport}, eth_call=${input.ethCallSupport}) for a non-local chain.`,
   );
 }
 
@@ -521,57 +536,49 @@ export function validateStageLog(
   connector: string,
   txId: string,
   expectedSrcConnector: string,
-  expectedDstConnector: string
+  expectedDstConnector: string,
 ): void {
   const stageDef = STAGE_DEFINITIONS[stage];
   const normalizedConnector = normalizeAddress(connector, "connector");
   const normalizedTxId = normalizeTopicTxId(txId);
-  const normalizedSrc = normalizeAddress(
-    expectedSrcConnector,
-    "expectedSrcConnector"
-  );
-  const normalizedDst = normalizeAddress(
-    expectedDstConnector,
-    "expectedDstConnector"
-  );
+  const normalizedSrc = normalizeAddress(expectedSrcConnector, "expectedSrcConnector");
+  const normalizedDst = normalizeAddress(expectedDstConnector, "expectedDstConnector");
 
   const logAddress = normalizeAddress(log.address, "log.address");
   if (logAddress.toLowerCase() !== normalizedConnector.toLowerCase()) {
-    throw new Error(
-      `log.address mismatch: expected ${normalizedConnector}, got ${logAddress}`
-    );
+    throw new Error(`log.address mismatch: expected ${normalizedConnector}, got ${logAddress}`);
   }
 
   const decoded = connectorInterface.decodeEventLog(
     stageDef.eventName,
     log.data,
-    Array.from(log.topics)
+    Array.from(log.topics),
   );
 
   const eventTxId = normalizeBytes32(decoded.txId, `${stageDef.eventName}.txId`);
   if (eventTxId !== normalizedTxId) {
     throw new Error(
-      `${stageDef.eventName}.txId mismatch: expected ${normalizedTxId}, got ${eventTxId}`
+      `${stageDef.eventName}.txId mismatch: expected ${normalizedTxId}, got ${eventTxId}`,
     );
   }
 
   const src = normalizeAddress(
     decoded.srcChainConnector,
-    `${stageDef.eventName}.srcChainConnector`
+    `${stageDef.eventName}.srcChainConnector`,
   );
   if (src.toLowerCase() !== normalizedSrc.toLowerCase()) {
     throw new Error(
-      `${stageDef.eventName}.srcChainConnector mismatch: expected ${normalizedSrc}, got ${src}`
+      `${stageDef.eventName}.srcChainConnector mismatch: expected ${normalizedSrc}, got ${src}`,
     );
   }
 
   const dst = normalizeAddress(
     decoded.dstChainConnector,
-    `${stageDef.eventName}.dstChainConnector`
+    `${stageDef.eventName}.dstChainConnector`,
   );
   if (dst.toLowerCase() !== normalizedDst.toLowerCase()) {
     throw new Error(
-      `${stageDef.eventName}.dstChainConnector mismatch: expected ${normalizedDst}, got ${dst}`
+      `${stageDef.eventName}.dstChainConnector mismatch: expected ${normalizedDst}, got ${dst}`,
     );
   }
 }
@@ -586,22 +593,20 @@ function validateGetTxResult(
     srcChainConnector: string;
     dstChainConnector: string;
     status: string | number | bigint;
-  }
+  },
 ): number {
   const stageDef = STAGE_DEFINITIONS[stage];
   const normalizedTxId = normalizeBytes32(txId, "txId");
   const observedTxId = normalizeBytes32(tx.txId, "getTx.txId");
   if (observedTxId !== normalizedTxId) {
-    throw new Error(
-      `getTx.txId mismatch: expected ${normalizedTxId}, got ${observedTxId}`
-    );
+    throw new Error(`getTx.txId mismatch: expected ${normalizedTxId}, got ${observedTxId}`);
   }
 
   const expectedSrc = normalizeAddress(expectedSrcConnector, "expectedSrcConnector");
   const observedSrc = normalizeAddress(tx.srcChainConnector, "getTx.srcChainConnector");
   if (observedSrc.toLowerCase() !== expectedSrc.toLowerCase()) {
     throw new Error(
-      `getTx.srcChainConnector mismatch: expected ${expectedSrc}, got ${observedSrc}`
+      `getTx.srcChainConnector mismatch: expected ${expectedSrc}, got ${observedSrc}`,
     );
   }
 
@@ -609,14 +614,14 @@ function validateGetTxResult(
   const observedDst = normalizeAddress(tx.dstChainConnector, "getTx.dstChainConnector");
   if (observedDst.toLowerCase() !== expectedDst.toLowerCase()) {
     throw new Error(
-      `getTx.dstChainConnector mismatch: expected ${expectedDst}, got ${observedDst}`
+      `getTx.dstChainConnector mismatch: expected ${expectedDst}, got ${observedDst}`,
     );
   }
 
   const status = toNumberStatus(tx.status);
   if (status !== stageDef.expectedStatus) {
     throw new Error(
-      `getTx.status mismatch for stage ${stage}: expected ${stageDef.expectedStatus}, got ${status}`
+      `getTx.status mismatch for stage ${stage}: expected ${stageDef.expectedStatus}, got ${status}`,
     );
   }
 
@@ -624,22 +629,21 @@ function validateGetTxResult(
 }
 
 export async function verifyAckEventOnly(
-  request: VerifyStageRequest
+  request: VerifyStageRequest,
 ): Promise<StageVerificationResult> {
   const connector = normalizeAddress(request.connector, "connector");
   const txId = normalizeBytes32(request.txId, "txId");
   const expectedSrcConnector = normalizeAddress(
     request.expectedSrcConnector,
-    "expectedSrcConnector"
+    "expectedSrcConnector",
   );
   const expectedDstConnector = normalizeAddress(
     request.expectedDstConnector,
-    "expectedDstConnector"
+    "expectedDstConnector",
   );
   const effectiveBlockTag = normalizeBlockTag(request.blockTag, "latest");
   const provider =
-    request.provider ??
-    new JsonRpcProvider(request.chain.rpcUrls[0], request.chain.chainId);
+    request.provider ?? new JsonRpcProvider(request.chain.rpcUrls[0], request.chain.chainId);
 
   const event = connectorInterface.getEvent("AckReady");
   if (!event) {
@@ -647,31 +651,111 @@ export async function verifyAckEventOnly(
   }
   const eventTopic = event.topicHash;
   const logRange = await resolveLogRange(effectiveBlockTag, provider);
+  const rpcFilter = buildFilter(connector, eventTopic, txId, logRange);
+  let mode: VerificationMode = "rpc-fallback";
+  let degradeReason: VerificationDegradeReason | undefined;
+
+  function assertSingleAckLog(logs: unknown): Log {
+    if (!Array.isArray(logs) || logs.length === 0) {
+      throw new Error(`No AckReady event found for txId ${txId} (source origin pruned path)`);
+    }
+    if (logs.length !== 1) {
+      throw new Error(`Expected exactly 1 AckReady event for txId ${txId}, got ${logs.length}`);
+    }
+
+    const firstLog = logs[0];
+    if (!firstLog) {
+      throw new Error(`No AckReady event found for txId ${txId} (source origin pruned path)`);
+    }
+    return firstLog as Log;
+  }
+
+  if (!request.chain.isLocal) {
+    if (request.verificationPolicy?.retryColibriFromScratch) {
+      const removed = resetLocalColibriStateFiles(request.chain.chainId);
+      console.info(
+        `[colibri] retry-from-scratch policy active for ${request.stage}:` +
+          ` removed ${removed.length} cached state file(s) for chain=${request.chain.chainId}`,
+      );
+    }
+
+    const maxColibriRetries = resolveColibriTransientRetryCount();
+    let lastColibriError: unknown;
+
+    for (let attempt = 0; attempt <= maxColibriRetries; attempt += 1) {
+      try {
+        const backend = await getColibriBackend();
+        await ensureColibriStorageRegistered(backend);
+        const colibri = getColibriClient(request.chain, Boolean(request.debug), backend);
+
+        const getLogsSupport = await colibri.getMethodSupport("eth_getLogs", [rpcFilter]);
+        if (getLogsSupport !== ColibriMethodType.PROOFABLE) {
+          throw new Error(
+            `Colibri eth_getLogs is not proofable for pruned ack (support=${getLogsSupport})`,
+          );
+        }
+
+        const logs = await colibri.rpc("eth_getLogs", [rpcFilter], ColibriMethodType.PROOFABLE);
+        const firstLog = assertSingleAckLog(logs);
+        validateStageLog(
+          "source-ack-ready",
+          firstLog,
+          connector,
+          txId,
+          expectedSrcConnector,
+          expectedDstConnector,
+        );
+
+        return {
+          stage: "source-ack-ready",
+          mode: "colibri",
+          degraded: false,
+          eventName: "AckReady",
+          txId,
+          connector,
+          status: 0,
+          eventBlockNumber: extractLogBlockNumber(firstLog),
+        };
+      } catch (error) {
+        lastColibriError = error;
+        const shouldRetry =
+          attempt < maxColibriRetries && shouldRetryPrunedAckColibriError(lastColibriError);
+        if (!shouldRetry) {
+          break;
+        }
+
+        if (isSyncBackwardsError(lastColibriError) && isSyncBackwardsStateResetAllowed()) {
+          const removed = resetLocalColibriStateFiles(request.chain.chainId);
+          console.warn(
+            `[colibri] pruned ack sync-backwards: state reset removed ${removed.length} file(s);` +
+              ` retry ${attempt + 1}/${maxColibriRetries}`,
+          );
+        } else {
+          console.warn(
+            `[colibri] pruned ack transient Colibri issue; retry ${attempt + 1}/${maxColibriRetries}: ` +
+              `${errorMessage(lastColibriError)}`,
+          );
+        }
+      }
+    }
+
+    degradeReason = degradeReasonFromError(lastColibriError);
+    mode = "rpc-fallback";
+    console.warn(
+      `[colibri] pruned ack verification degraded to rpc-fallback` +
+        ` (reason=${degradeReason ?? "unknown"}): ${errorMessage(lastColibriError)}`,
+    );
+  } else {
+    degradeReason = "local_chain";
+  }
 
   const logs = await provider.getLogs({
     address: connector,
     topics: [eventTopic, txId],
-    fromBlock: logRange.fromBlock,
-    toBlock: logRange.toBlock
+    fromBlock: rpcFilter.fromBlock,
+    toBlock: rpcFilter.toBlock,
   });
-
-  if (logs.length === 0) {
-    throw new Error(
-      `No AckReady event found for txId ${txId} (source origin pruned path)`
-    );
-  }
-  if (logs.length !== 1) {
-    throw new Error(
-      `Expected exactly 1 AckReady event for txId ${txId}, got ${logs.length}`
-    );
-  }
-
-  const firstLog = logs[0];
-  if (!firstLog) {
-    throw new Error(
-      `No AckReady event found for txId ${txId} (source origin pruned path)`
-    );
-  }
+  const firstLog = assertSingleAckLog(logs);
 
   validateStageLog(
     "source-ack-ready",
@@ -679,39 +763,37 @@ export async function verifyAckEventOnly(
     connector,
     txId,
     expectedSrcConnector,
-    expectedDstConnector
+    expectedDstConnector,
   );
 
   return {
     stage: "source-ack-ready",
-    mode: "rpc-fallback",
+    mode,
     degraded: true,
+    degradeReason,
     eventName: "AckReady",
     txId,
     connector,
     status: 0,
-    eventBlockNumber: extractLogBlockNumber(firstLog)
+    eventBlockNumber: extractLogBlockNumber(firstLog),
   };
 }
 
-export async function verifyStage(
-  request: VerifyStageRequest
-): Promise<StageVerificationResult> {
+export async function verifyStage(request: VerifyStageRequest): Promise<StageVerificationResult> {
   const stageDef = STAGE_DEFINITIONS[request.stage];
   const connector = normalizeAddress(request.connector, "connector");
   const txId = normalizeBytes32(request.txId, "txId");
   const expectedSrcConnector = normalizeAddress(
     request.expectedSrcConnector,
-    "expectedSrcConnector"
+    "expectedSrcConnector",
   );
   const expectedDstConnector = normalizeAddress(
     request.expectedDstConnector,
-    "expectedDstConnector"
+    "expectedDstConnector",
   );
   const effectiveBlockTag = normalizeBlockTag(request.blockTag, "latest");
   const provider =
-    request.provider ??
-    new JsonRpcProvider(request.chain.rpcUrls[0], request.chain.chainId);
+    request.provider ?? new JsonRpcProvider(request.chain.rpcUrls[0], request.chain.chainId);
 
   const event = connectorInterface.getEvent(stageDef.eventName);
   if (!event) {
@@ -727,8 +809,16 @@ export async function verifyStage(
   let colibriCallBlockTag = callBlockTag;
   let colibriEthCallParams: [{ to: string; data: string }, string] = [
     { to: connector, data: getTxCallData },
-    colibriCallBlockTag
+    colibriCallBlockTag,
   ];
+
+  if (request.verificationPolicy?.retryColibriFromScratch && !request.chain.isLocal) {
+    const removed = resetLocalColibriStateFiles(request.chain.chainId);
+    console.info(
+      `[colibri] retry-from-scratch policy active for ${request.stage}:` +
+        ` removed ${removed.length} cached state file(s) for chain=${request.chain.chainId}`,
+    );
+  }
 
   // Chiado pre-run state reset — unconditionally wipe cached sync state before
   // every verification run.  Colibri bootstraps from the first checkpointz/beacon
@@ -736,13 +826,13 @@ export async function verifyStage(
   // reports the library throws sync-backwards on the very first call.  Starting
   // from a clean slate on each run makes the outcome independent of any stale
   // on-disk state left by a previous (possibly failed) session.
-  // verifyAckEventOnly does not use Colibri and is not affected.
+  // verifyAckEventOnly has its own Colibri-first path and separate policy handling.
   if (request.chain.chainId === 10200) {
     const preRunCacheDir = resolveColibriCacheDir();
     const preRunRemoved = resetLocalColibriStateFiles(request.chain.chainId);
     console.info(
       `[colibri] chain=10200 pre-run state reset: ` +
-      `${preRunRemoved.length} file(s) removed from ${preRunCacheDir}`
+        `${preRunRemoved.length} file(s) removed from ${preRunCacheDir}`,
     );
   }
 
@@ -752,16 +842,17 @@ export async function verifyStage(
   let colibri = getColibriClient(
     {
       ...request.chain,
-      proverUrls: activeProverUrls
+      proverUrls: activeProverUrls,
     },
     Boolean(request.debug),
-    backend
+    backend,
   );
   let stateResetAttemptedForSyncBackwards = false;
   let transientParentRootRetryAttempts = 0;
   let transientFinalizationRetryAttempts = 0;
   let transientSszRetryAttempts = 0;
   let chiadoSyncBackwardsWaitRetryAttempts = 0;
+  let transientColibriTransportRetryAttempts = 0;
   let chiadoSyncBackwardsRangeRelaxed = false;
   let chiadoSyncBackwardsProverFallbackApplied = false;
   const maxTransientParentRootRetries = resolveColibriTransientRetryCount();
@@ -771,26 +862,20 @@ export async function verifyStage(
   let mode: VerificationMode;
   let degradeReason: VerificationDegradeReason | undefined;
 
-  async function runColibriWithRecoveryRetry<T>(
-    op: () => Promise<T>
-  ): Promise<T> {
+  async function runColibriWithRecoveryRetry<T>(operationLabel: string, op: () => Promise<T>): Promise<T> {
     async function clampColibriFilterToLatestWindow(): Promise<void> {
       const latestBlock = await provider.getBlockNumber();
       const lookback = resolveDynamicLookbackBlocks();
-      const fromBlock =
-        latestBlock + 1 > lookback ? latestBlock - lookback + 1 : 0;
+      const fromBlock = latestBlock + 1 > lookback ? latestBlock - lookback + 1 : 0;
       const toBlockHex = toHexBlock(latestBlock);
 
       colibriFilter = {
         ...colibriFilter,
         fromBlock: toHexBlock(fromBlock),
-        toBlock: toBlockHex
+        toBlock: toBlockHex,
       };
       colibriCallBlockTag = toBlockHex;
-      colibriEthCallParams = [
-        { to: connector, data: getTxCallData },
-        colibriCallBlockTag
-      ];
+      colibriEthCallParams = [{ to: connector, data: getTxCallData }, colibriCallBlockTag];
     }
 
     while (true) {
@@ -802,27 +887,24 @@ export async function verifyStage(
             await clampColibriFilterToLatestWindow();
             chiadoSyncBackwardsRangeRelaxed = true;
             console.warn(
-              `[colibri] chain=10200 sync-backwards detected; retrying with refreshed latest log window`
+              `[colibri] chain=10200 sync-backwards detected; retrying with refreshed latest log window`,
             );
             continue;
           }
 
-          if (
-            !chiadoSyncBackwardsProverFallbackApplied &&
-            activeProverUrls.length > 0
-          ) {
+          if (!chiadoSyncBackwardsProverFallbackApplied && activeProverUrls.length > 0) {
             activeProverUrls = [];
             colibri = getColibriClient(
               {
                 ...request.chain,
-                proverUrls: activeProverUrls
+                proverUrls: activeProverUrls,
               },
               Boolean(request.debug),
-              backend
+              backend,
             );
             chiadoSyncBackwardsProverFallbackApplied = true;
             console.warn(
-              `[colibri] chain=10200 sync-backwards persists; retrying without remote prover URLs`
+              `[colibri] chain=10200 sync-backwards persists; retrying without remote prover URLs`,
             );
             continue;
           }
@@ -843,16 +925,16 @@ export async function verifyStage(
           colibri = getColibriClient(
             { ...request.chain, proverUrls: activeProverUrls },
             Boolean(request.debug),
-            backend
+            backend,
           );
           console.warn(
             `[colibri] sync-backwards: state reset done` +
-            ` (${removed.length} file(s) removed from ${cacheDir});` +
-            ` rebuilt Colibri instance with fresh in-memory state` +
-            ` | rpcs=[${request.chain.rpcUrls.join(",")}]` +
-            ` provers=[${activeProverUrls.join(",")}]` +
-            ` beacons=[${request.chain.beaconUrls.join(",")}]` +
-            ` checkpointz=[${request.chain.checkpointzUrls.join(",")}]`
+              ` (${removed.length} file(s) removed from ${cacheDir});` +
+              ` rebuilt Colibri instance with fresh in-memory state` +
+              ` | rpcs=[${request.chain.rpcUrls.join(",")}]` +
+              ` provers=[${activeProverUrls.join(",")}]` +
+              ` beacons=[${request.chain.beaconUrls.join(",")}]` +
+              ` checkpointz=[${request.chain.checkpointzUrls.join(",")}]`,
           );
           continue;
         }
@@ -863,20 +945,19 @@ export async function verifyStage(
         ) {
           transientParentRootRetryAttempts += 1;
           console.warn(
-            `[colibri] parent-beacon successor block unavailable; retry ${transientParentRootRetryAttempts}/${maxTransientParentRootRetries}`
+            `[colibri] parent-beacon successor block unavailable; retry ${transientParentRootRetryAttempts}/${maxTransientParentRootRetries}`,
           );
           await sleep(transientParentRootRetryDelayMs);
           continue;
         }
 
         if (
-          (isFinalizedCheckpointBootstrapError(error) ||
-            isBlockNotSignedYetError(error)) &&
+          (isFinalizedCheckpointBootstrapError(error) || isBlockNotSignedYetError(error)) &&
           transientFinalizationRetryAttempts < maxTransientParentRootRetries
         ) {
           transientFinalizationRetryAttempts += 1;
           console.warn(
-            `[colibri] finalized/signature readiness transient issue; retry ${transientFinalizationRetryAttempts}/${maxTransientParentRootRetries}`
+            `[colibri] finalized/signature readiness transient issue; retry ${transientFinalizationRetryAttempts}/${maxTransientParentRootRetries}`,
           );
           await sleep(transientParentRootRetryDelayMs);
           continue;
@@ -888,19 +969,16 @@ export async function verifyStage(
         ) {
           transientSszRetryAttempts += 1;
           console.warn(
-            `[colibri] transient SSZ/bootstrap parse issue; retry ${transientSszRetryAttempts}/${maxTransientParentRootRetries}`
+            `[colibri] transient SSZ/bootstrap parse issue; retry ${transientSszRetryAttempts}/${maxTransientParentRootRetries}`,
           );
           await sleep(transientParentRootRetryDelayMs);
           continue;
         }
 
-        if (
-          request.chain.chainId === 10200 &&
-          isExceedMaximumBlockRangeError(error)
-        ) {
+        if (request.chain.chainId === 10200 && isExceedMaximumBlockRangeError(error)) {
           await clampColibriFilterToLatestWindow();
           console.warn(
-            `[colibri] chain=10200 eth_getLogs range exceeded provider limit; clamped to latest window and retrying`
+            `[colibri] chain=10200 eth_getLogs range exceeded provider limit; clamped to latest window and retrying`,
           );
           await sleep(transientParentRootRetryDelayMs);
           continue;
@@ -921,10 +999,29 @@ export async function verifyStage(
         ) {
           chiadoSyncBackwardsWaitRetryAttempts += 1;
           console.warn(
-            `[colibri] chain=10200 sync-backwards persists; wait retry ${chiadoSyncBackwardsWaitRetryAttempts}/${maxTransientParentRootRetries}`
+            `[colibri] chain=10200 sync-backwards persists; wait retry ${chiadoSyncBackwardsWaitRetryAttempts}/${maxTransientParentRootRetries}`,
           );
           await sleep(transientParentRootRetryDelayMs);
           continue;
+        }
+
+        if (
+          request.chain.chainId === 10200 &&
+          isChiadoColibriTransportUnavailableError(error) &&
+          transientColibriTransportRetryAttempts < maxTransientParentRootRetries
+        ) {
+          transientColibriTransportRetryAttempts += 1;
+          console.warn(
+            `[colibri] chain=10200 transport unavailable 503 (${operationLabel}); retry ${transientColibriTransportRetryAttempts}/${maxTransientParentRootRetries}`,
+          );
+          await sleep(transientParentRootRetryDelayMs);
+          continue;
+        }
+
+        if (request.chain.chainId === 10200 && isChiadoColibriTransportUnavailableError(error)) {
+          throw new Error(
+            `[colibri] ${operationLabel}: Colibri transport unavailable (503) after ${transientColibriTransportRetryAttempts} retries — ${errorMessage(error)}`,
+          );
         }
 
         throw error;
@@ -933,28 +1030,26 @@ export async function verifyStage(
   }
 
   try {
-    getLogsSupport = await runColibriWithRecoveryRetry(() =>
-      colibri.getMethodSupport("eth_getLogs", [colibriFilter])
+    getLogsSupport = await runColibriWithRecoveryRetry("method-support eth_getLogs", () =>
+      colibri.getMethodSupport("eth_getLogs", [colibriFilter]),
     );
-    ethCallSupport = await runColibriWithRecoveryRetry(() =>
-      colibri.getMethodSupport("eth_call", colibriEthCallParams)
+    ethCallSupport = await runColibriWithRecoveryRetry("method-support eth_call", () =>
+      colibri.getMethodSupport("eth_call", colibriEthCallParams),
     );
     mode = decideVerificationMode({
       isLocal: request.chain.isLocal,
       getLogsSupport,
-      ethCallSupport
+      ethCallSupport,
     });
   } catch (error) {
     if (request.chain.isLocal) {
       mode = "rpc-fallback";
       degradeReason = "local_chain";
-    } else if (
-      shouldFallbackToRpcForKnownChiadoColibriIssue(error, request.chain.chainId)
-    ) {
+    } else if (shouldFallbackToRpcForKnownChiadoColibriIssue(error, request.chain.chainId)) {
       degradeReason = degradeReasonFromError(error);
       console.warn(
         `[colibri] verification mode degraded to rpc-fallback after recovery attempts` +
-        ` (reason=${degradeReason ?? "unknown"}): ${errorMessage(error)}`
+          ` (reason=${degradeReason ?? "unknown"}): ${errorMessage(error)}`,
       );
       mode = "rpc-fallback";
     } else {
@@ -964,12 +1059,8 @@ export async function verifyStage(
 
   if (mode === "colibri") {
     try {
-      const logs = await runColibriWithRecoveryRetry(() =>
-        colibri.rpc(
-          "eth_getLogs",
-          [colibriFilter],
-          ColibriMethodType.PROOFABLE
-        )
+      const logs = await runColibriWithRecoveryRetry("proofable eth_getLogs", () =>
+        colibri.rpc("eth_getLogs", [colibriFilter], ColibriMethodType.PROOFABLE),
       );
 
       if (!Array.isArray(logs) || logs.length === 0) {
@@ -977,7 +1068,7 @@ export async function verifyStage(
       }
       if (logs.length !== 1) {
         throw new Error(
-          `Expected exactly 1 ${stageDef.eventName} event for txId ${txId}, got ${logs.length}`
+          `Expected exactly 1 ${stageDef.eventName} event for txId ${txId}, got ${logs.length}`,
         );
       }
 
@@ -992,15 +1083,11 @@ export async function verifyStage(
         connector,
         txId,
         expectedSrcConnector,
-        expectedDstConnector
+        expectedDstConnector,
       );
 
-      const rawTx = await runColibriWithRecoveryRetry(() =>
-        colibri.rpc(
-          "eth_call",
-          colibriEthCallParams,
-          ColibriMethodType.PROOFABLE
-        )
+      const rawTx = await runColibriWithRecoveryRetry("proofable eth_call", () =>
+        colibri.rpc("eth_call", colibriEthCallParams, ColibriMethodType.PROOFABLE),
       );
 
       if (typeof rawTx !== "string" || !rawTx.startsWith("0x")) {
@@ -1013,7 +1100,7 @@ export async function verifyStage(
         txId,
         expectedSrcConnector,
         expectedDstConnector,
-        tx
+        tx,
       );
 
       return {
@@ -1024,14 +1111,14 @@ export async function verifyStage(
         txId,
         connector,
         status,
-        eventBlockNumber: extractLogBlockNumber(firstLog)
+        eventBlockNumber: extractLogBlockNumber(firstLog),
       };
     } catch (error) {
       if (shouldFallbackToRpcForKnownChiadoColibriIssue(error, request.chain.chainId)) {
         degradeReason = degradeReasonFromError(error);
         console.warn(
           `[colibri] proofable RPC degraded to rpc-fallback after recovery attempts` +
-          ` (reason=${degradeReason ?? "unknown"}): ${errorMessage(error)}`
+            ` (reason=${degradeReason ?? "unknown"}): ${errorMessage(error)}`,
         );
         mode = "rpc-fallback";
         // fall through to RPC fallback path below
@@ -1045,7 +1132,7 @@ export async function verifyStage(
     address: connector,
     topics: [eventTopic, txId],
     fromBlock: rpcFilter.fromBlock,
-    toBlock: rpcFilter.toBlock
+    toBlock: rpcFilter.toBlock,
   });
 
   if (logs.length === 0) {
@@ -1053,7 +1140,7 @@ export async function verifyStage(
   }
   if (logs.length !== 1) {
     throw new Error(
-      `Expected exactly 1 ${stageDef.eventName} event for txId ${txId}, got ${logs.length}`
+      `Expected exactly 1 ${stageDef.eventName} event for txId ${txId}, got ${logs.length}`,
     );
   }
 
@@ -1068,15 +1155,15 @@ export async function verifyStage(
     connector,
     txId,
     expectedSrcConnector,
-    expectedDstConnector
+    expectedDstConnector,
   );
 
   const rawTx = await provider.send("eth_call", [
     {
       to: connector,
-      data: getTxCallData
+      data: getTxCallData,
     },
-    callBlockTag
+    callBlockTag,
   ]);
 
   const [tx] = connectorInterface.decodeFunctionResult("getTx", rawTx);
@@ -1085,7 +1172,7 @@ export async function verifyStage(
     txId,
     expectedSrcConnector,
     expectedDstConnector,
-    tx
+    tx,
   );
 
   return {
@@ -1097,6 +1184,6 @@ export async function verifyStage(
     txId,
     connector,
     status,
-    eventBlockNumber: extractLogBlockNumber(firstLog)
+    eventBlockNumber: extractLogBlockNumber(firstLog),
   };
 }

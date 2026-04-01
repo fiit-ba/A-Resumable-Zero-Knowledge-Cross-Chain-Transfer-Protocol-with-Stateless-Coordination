@@ -5,12 +5,12 @@ describe("resolveChainConfig", () => {
   it("uses default local profiles when no explicit side config is provided", () => {
     const source = resolveChainConfig({
       side: "source",
-      defaultProfileName: "local-anvil"
+      defaultProfileName: "local-anvil",
     });
 
     const destination = resolveChainConfig({
       side: "destination",
-      defaultProfileName: "local-hardhat"
+      defaultProfileName: "local-hardhat",
     });
 
     expect(source.profileName).toBe("local-anvil");
@@ -30,14 +30,14 @@ describe("resolveChainConfig", () => {
       chainId: "11155112",
       rpcUrl: "https://override-single.example",
       rpcUrls: "https://override-csv-1.example,https://override-csv-2.example",
-      proverUrls: "https://override-prover.example"
+      proverUrls: "https://override-prover.example",
     });
 
     expect(chain.profileName).toBe("sepolia");
     expect(chain.chainId).toBe(11155112);
     expect(chain.rpcUrls).toEqual([
       "https://override-csv-1.example",
-      "https://override-csv-2.example"
+      "https://override-csv-2.example",
     ]);
     expect(chain.proverUrls).toEqual(["https://override-prover.example"]);
   });
@@ -47,15 +47,15 @@ describe("resolveChainConfig", () => {
       resolveChainConfig({
         side: "source",
         defaultProfileName: "local-anvil",
-        rpcUrl: "https://rpc.example"
-      })
+        rpcUrl: "https://rpc.example",
+      }),
     ).toThrow(/chain id/i);
   });
 
   it("chiado profile places chiado.colibri-proof.tech first in beacon and checkpointz lists", () => {
     const chain = resolveChainConfig({
       side: "destination",
-      defaultProfileName: "chiado"
+      defaultProfileName: "chiado",
     });
 
     expect(chain.chainId).toBe(10200);

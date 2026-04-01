@@ -3,11 +3,7 @@ import { existsSync, readdirSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { RELAY_STAGE_TO_PROOF_HOST } from "./stages.js";
-import type {
-  ProofArtifact,
-  ProofRunnerInput,
-  RelayProofStage,
-} from "../core/types.js";
+import type { ProofArtifact, ProofRelayStage, ProofRunnerInput } from "../core/types.js";
 import {
   assert,
   normalizeAddress,
@@ -148,31 +144,25 @@ function parseKeyValueOutput(output: string): Record<string, string> {
 function requireMetadataField(
   metadata: Record<string, string>,
   key: string,
-  stage: RelayProofStage,
+  stage: ProofRelayStage,
 ): string {
   const value = metadata[key];
   if (!value) {
-    throw new Error(
-      `Missing required proof field '${key}' in ${stage} proof output.`,
-    );
+    throw new Error(`Missing required proof field '${key}' in ${stage} proof output.`);
   }
   return value;
 }
 
 function ensureHex(value: string, fieldName: string): string {
   if (!/^0x[0-9a-fA-F]+$/.test(value)) {
-    throw new Error(
-      `Invalid ${fieldName}: expected hex string, got '${value}'`,
-    );
+    throw new Error(`Invalid ${fieldName}: expected hex string, got '${value}'`);
   }
   return value;
 }
 
 function parseBigIntField(value: string, fieldName: string): bigint {
   if (!/^\d+$/.test(value)) {
-    throw new Error(
-      `Invalid ${fieldName}: expected unsigned integer, got '${value}'`,
-    );
+    throw new Error(`Invalid ${fieldName}: expected unsigned integer, got '${value}'`);
   }
   return BigInt(value);
 }
@@ -181,15 +171,13 @@ function parseNumberField(value: string, fieldName: string): number {
   const asBigInt = parseBigIntField(value, fieldName);
   const asNumber = Number(asBigInt);
   if (!Number.isSafeInteger(asNumber)) {
-    throw new Error(
-      `Invalid ${fieldName}: value too large for number '${value}'`,
-    );
+    throw new Error(`Invalid ${fieldName}: value too large for number '${value}'`);
   }
   return asNumber;
 }
 
 export function parseProofArtifact(
-  stage: RelayProofStage,
+  stage: ProofRelayStage,
   backend: ProofRunnerInput["backend"],
   output: string,
 ): ProofArtifact {
@@ -199,10 +187,7 @@ export function parseProofArtifact(
     "proofPayload",
   );
 
-  const txId = normalizeBytes32(
-    requireMetadataField(metadata, "txId", stage),
-    "txId",
-  );
+  const txId = normalizeBytes32(requireMetadataField(metadata, "txId", stage), "txId");
 
   const artifact: ProofArtifact = {
     stage,
@@ -214,14 +199,8 @@ export function parseProofArtifact(
   };
 
   if (stage === "lock") {
-    artifact.amount = parseBigIntField(
-      requireMetadataField(metadata, "amount", stage),
-      "amount",
-    );
-    artifact.sender = normalizeAddress(
-      requireMetadataField(metadata, "sender", stage),
-      "sender",
-    );
+    artifact.amount = parseBigIntField(requireMetadataField(metadata, "amount", stage), "amount");
+    artifact.sender = normalizeAddress(requireMetadataField(metadata, "sender", stage), "sender");
     artifact.receiver = normalizeAddress(
       requireMetadataField(metadata, "receiver", stage),
       "receiver",
@@ -246,10 +225,7 @@ export function parseProofArtifact(
       requireMetadataField(metadata, "originAckDeadline", stage),
       "originAckDeadline",
     );
-    artifact.nonce = parseBigIntField(
-      requireMetadataField(metadata, "nonce", stage),
-      "nonce",
-    );
+    artifact.nonce = parseBigIntField(requireMetadataField(metadata, "nonce", stage), "nonce");
     artifact.sourceChainId = parseNumberField(
       requireMetadataField(metadata, "sourceChainId", stage),
       "sourceChainId",
@@ -261,10 +237,7 @@ export function parseProofArtifact(
   }
 
   if (stage === "mint") {
-    artifact.amount = parseBigIntField(
-      requireMetadataField(metadata, "amount", stage),
-      "amount",
-    );
+    artifact.amount = parseBigIntField(requireMetadataField(metadata, "amount", stage), "amount");
     artifact.receiver = normalizeAddress(
       requireMetadataField(metadata, "receiver", stage),
       "receiver",
@@ -291,34 +264,20 @@ export function parseProofArtifact(
 
 function ensureStageChainInputs(input: ProofRunnerInput): void {
   if (input.stage === "lock") {
-    assert(
-      input.sourceChainId !== undefined,
-      "lock proof requires sourceChainId",
-    );
-    assert(
-      input.destinationChainId !== undefined,
-      "lock proof requires destinationChainId",
-    );
+    assert(input.sourceChainId !== undefined, "lock proof requires sourceChainId");
+    assert(input.destinationChainId !== undefined, "lock proof requires destinationChainId");
   }
 
   if (input.stage === "mint") {
-    assert(
-      input.destinationChainId !== undefined,
-      "mint proof requires destinationChainId",
-    );
+    assert(input.destinationChainId !== undefined, "mint proof requires destinationChainId");
   }
 
   if (input.stage === "ack") {
-    assert(
-      input.sourceChainId !== undefined,
-      "ack proof requires sourceChainId",
-    );
+    assert(input.sourceChainId !== undefined, "ack proof requires sourceChainId");
   }
 }
 
-export async function runProof(
-  input: ProofRunnerInput,
-): Promise<ProofArtifact> {
+export async function runProof(input: ProofRunnerInput): Promise<ProofArtifact> {
   ensureStageChainInputs(input);
 
   console.error(
@@ -326,9 +285,7 @@ export async function runProof(
   );
 
   const hostConfig = RELAY_STAGE_TO_PROOF_HOST[input.stage];
-  const executionBlock = toRpcBlockTag(
-    normalizeBlockTag(input.executionBlock, "latest"),
-  );
+  const executionBlock = toRpcBlockTag(normalizeBlockTag(input.executionBlock, "latest"));
   const timeoutMs = resolveProofTimeoutMs();
   const proofStartMs = Date.now();
   const env: NodeJS.ProcessEnv = {
@@ -341,9 +298,7 @@ export async function runProof(
     RISC0_PROVER: input.risc0ProverMode,
   };
   if (env.RISC0_VM && !existsSync(env.RISC0_VM)) {
-    console.warn(
-      `[proof-runner] ignoring non-existent RISC0_VM='${env.RISC0_VM}'`,
-    );
+    console.warn(`[proof-runner] ignoring non-existent RISC0_VM='${env.RISC0_VM}'`);
     delete env.RISC0_VM;
   }
   if (!env.RISC0_VM) {

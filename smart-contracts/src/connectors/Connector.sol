@@ -199,10 +199,6 @@ contract Connector is ConnectorStorage, IConnector, ReentrancyGuard {
             revert Errors.CommitmentMismatch(commitment, expected);
         }
 
-        // Spec (pp. 3 & 8): "The data on the origin connector is removed after the mint proof
-        // is delivered." Once the proof is accepted the dispute mechanism is disabled and the
-        // ACK proof can be derived from the AckReady event by the stateless client without any
-        // on-chain state. Remove storage immediately to prevent permanent ghost records.
         _cleanupTx(_txId);
 
         emit AckReady(
@@ -376,6 +372,9 @@ contract Connector is ConnectorStorage, IConnector, ReentrancyGuard {
         });
         txStatus[_txId] = Enums.TxStatus.MINTED_IN_HOLDING;
 
+        // TODO: Currently, we can mint every token, that allow it. But in our case, we need to have our token
+        //       and that why, we need to grant some roles for this connector, to burn and mint.
+
         // Destination flow is lock-and-mint: mint wrapped tokens into connector
         // custody at lock-proof acceptance, then release to receiver on ACK.
         IMintableERC20(_currencyTo).mint(address(this), _amount);
@@ -493,6 +492,9 @@ contract Connector is ConnectorStorage, IConnector, ReentrancyGuard {
     {
         CrossChainTx memory tx_ = _txs[_txId];
 
+        // TODO: Currently, we can mint every token, that allow it. But in our case, we need to have our token
+        //       and that why, we need to grant some roles for this connector, to burn and mint.
+
         // Burn the held destination wrapped tokens before cleanup.
         IBurnableERC20(tx_.currencyTo).burn(tx_.amount);
 
@@ -537,7 +539,7 @@ contract Connector is ConnectorStorage, IConnector, ReentrancyGuard {
         bytes32 _txId
     ) internal returns (bytes32 commitment, bytes32 proofHash) {
         proofHash = keccak256(_proofPayload);
-        if (txProofUsed[_txId][proofHash]) {
+        if (txProofUsed[_txId][proofHash]) { // TODO: Do we really need to make this if? Ked nie su ten proof v database tak vtedy... ;ked chcu s tym hrat
             revert Errors.ProofAlreadyProcessed(proofHash);
         }
         txProofUsed[_txId][proofHash] = true;

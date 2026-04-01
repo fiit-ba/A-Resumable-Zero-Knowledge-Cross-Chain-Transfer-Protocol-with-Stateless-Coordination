@@ -5,7 +5,7 @@ import {
   getColibriBackend,
   resolveColibriImpl,
   type ColibriBackend,
-  type ColibriClient
+  type ColibriClient,
 } from "../../src/colibri/adapter.js";
 
 // ---------------------------------------------------------------------------
@@ -122,7 +122,7 @@ describe("getColibriBackend — current backend", () => {
       prover: [],
       beacon_apis: [],
       checkpointz: [],
-      debug: false
+      debug: false,
     });
     expect(typeof client.rpc).toBe("function");
     expect(typeof client.getMethodSupport).toBe("function");
