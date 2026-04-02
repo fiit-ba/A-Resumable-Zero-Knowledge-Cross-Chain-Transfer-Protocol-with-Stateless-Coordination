@@ -78,7 +78,15 @@ Then run the orchestrated flow from the repository root:
 
 ```bash
 export PRIVATE_KEY=0x...
-bash scripts/e2e-anvil-hardhat.sh
+bash scripts/e2e-happy-path.sh
+```
+
+To select different networks, pass `--source-profile` and `--destination-profile`:
+
+```bash
+bash scripts/e2e-happy-path.sh \
+  --source-profile local-hardhat \
+  --destination-profile local-anvil
 ```
 
 ### Run the local refund E2E flow
@@ -87,7 +95,15 @@ With the same local chains running:
 
 ```bash
 export PRIVATE_KEY=0x...
-bash scripts/e2e-refund-anvil-hardhat.sh
+bash scripts/e2e-refund-path.sh
+```
+
+Reverse the chain roles:
+
+```bash
+bash scripts/e2e-refund-path.sh \
+  --source-profile local-hardhat \
+  --destination-profile local-anvil
 ```
 
 ### Run the web app and local agent flow

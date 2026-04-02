@@ -162,15 +162,18 @@ export interface ProofArtifact {
 }
 
 export interface SubmissionResult {
-  stage: ProofRelayStage;
+  /** All relay stage types, including direct stages (refund-initiate, execute-burn). */
+  stage: RelayProofStage;
   txHash: string;
   receiptBlock: number;
   resultingStatus: number;
 }
 
 export interface RelayStageResult {
-  verification: StageVerificationResult;
-  proof: ProofArtifact;
+  /** Absent for direct-action stages (refund-initiate, execute-burn). */
+  verification?: StageVerificationResult;
+  /** Absent for direct-action stages (refund-initiate, execute-burn). */
+  proof?: ProofArtifact;
   submission: SubmissionResult;
 }
 

@@ -25,8 +25,8 @@ Each RISC Zero workspace follows the same layout:
 
 The repository-level orchestration scripts use these workspaces directly:
 
-- `scripts/e2e-anvil-hardhat.sh`
-- `scripts/e2e-refund-anvil-hardhat.sh`
+- `scripts/e2e-happy-path.sh` — happy-path flow (lock → mint → ack)
+- `scripts/e2e-refund-path.sh` — refund flow (lock → refund-initiate → refund-claim → execute-burn → burn-proof)
 
 The stateless relay client also resolves these workspaces when it generates stage payloads.
 

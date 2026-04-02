@@ -117,24 +117,25 @@ From the repository root:
 
 ```bash
 export PRIVATE_KEY=0x...
-bash scripts/e2e-anvil-hardhat.sh
+bash scripts/e2e-happy-path.sh
 ```
 
 The script deploys the connectors and adapters, executes `depositAndLock`, generates the required proofs, and submits them in order.
 
-Optional examples:
+Optional flag-based examples:
 
 ```bash
-SOURCE_NETWORK_PROFILE=sepolia \
-DEST_NETWORK_PROFILE=hoodi \
-PRIVATE_KEY=0x... \
-bash scripts/e2e-anvil-hardhat.sh
-```
+# Swap chain roles
+bash scripts/e2e-happy-path.sh \
+  --source-profile local-hardhat \
+  --destination-profile local-anvil \
+  --private-key 0x...
 
-```bash
-COLIBRI_VERIFY=1 \
-PRIVATE_KEY=0x... \
-bash scripts/e2e-anvil-hardhat.sh
+# Testnet pair
+bash scripts/e2e-happy-path.sh \
+  --source-profile sepolia \
+  --destination-profile hoodi \
+  --private-key 0x...
 ```
 
 ## Run the Refund E2E Script
@@ -143,7 +144,7 @@ From the repository root:
 
 ```bash
 export PRIVATE_KEY=0x...
-bash scripts/e2e-refund-anvil-hardhat.sh
+bash scripts/e2e-refund-path.sh
 ```
 
 This script exercises the refund branch, including refund-claim and burn proofs.

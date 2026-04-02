@@ -36,8 +36,8 @@ function usage(): string {
     "  stateless-client agent <command>",
     "",
     "Common network options:",
-    "  --source-profile <local-anvil|local-hardhat|mainnet|sepolia|holesky|hoodi|gnosis|chiado>",
-    "  --destination-profile <local-anvil|local-hardhat|mainnet|sepolia|holesky|hoodi|gnosis|chiado>",
+    "  --source-profile <local-anvil|local-hardhat|mainnet|sepolia|holesky|hoodi|gnosis|chiado>  (--source-network is an alias)",
+    "  --destination-profile <local-anvil|local-hardhat|mainnet|sepolia|holesky|hoodi|gnosis|chiado>  (--destination-network is an alias)",
     "  --source-chain-id <id> --destination-chain-id <id>",
     "  --source-rpc-url <url> --destination-rpc-url <url>",
     "  --source-rpc-urls <csv> --destination-rpc-urls <csv>",
@@ -51,6 +51,8 @@ function usage(): string {
     "  --lock-execution-block <tag|number|hex>",
     "  --mint-execution-block <tag|number|hex>",
     "  --ack-execution-block <tag|number|hex>",
+    "  --refund-claim-execution-block <tag|number|hex>",
+    "  --burn-proof-execution-block <tag|number|hex>",
     "",
     "Proof path/runtime options:",
     "  --repo-root <path>",
@@ -141,7 +143,15 @@ export function parseCliArgs(argv: string[]): ParsedCli {
       continue;
     }
 
-    options[withoutPrefix] = next;
+    // Resolve network aliases before storing so downstream config sees canonical keys.
+    const resolved =
+      withoutPrefix === "source-network"
+        ? "source-profile"
+        : withoutPrefix === "destination-network"
+          ? "destination-profile"
+          : withoutPrefix;
+
+    options[resolved] = next;
     i += 1;
   }
 
@@ -163,11 +173,15 @@ function parseStage(value: string): Stage {
 }
 
 function printRelayResult(result: RelayStageResult, io: CliIo): void {
-  io.log(`verificationMode: ${result.verification.mode}`);
-  io.log(`verificationDegraded: ${result.verification.degraded}`);
-  io.log(`proofBackend: ${result.proof.backend}`);
-  io.log(`proofTxId: ${result.proof.txId}`);
-  io.log(`proofMetadata: ${JSON.stringify(result.proof.metadata)}`);
+  if (result.verification) {
+    io.log(`verificationMode: ${result.verification.mode}`);
+    io.log(`verificationDegraded: ${result.verification.degraded}`);
+  }
+  if (result.proof) {
+    io.log(`proofBackend: ${result.proof.backend}`);
+    io.log(`proofTxId: ${result.proof.txId}`);
+    io.log(`proofMetadata: ${JSON.stringify(result.proof.metadata)}`);
+  }
   io.log(`submissionTxHash: ${result.submission.txHash}`);
   io.log(`submissionBlock: ${result.submission.receiptBlock}`);
   io.log(`resultingStatus: ${result.submission.resultingStatus}`);

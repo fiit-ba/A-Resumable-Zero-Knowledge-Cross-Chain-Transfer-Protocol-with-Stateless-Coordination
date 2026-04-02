@@ -1,8 +1,12 @@
 import { planRelayResume } from "./planner.js";
 import {
   runRelayAck,
+  runRelayBurnProof,
+  runRelayExecuteBurn,
   runRelayLock,
   runRelayMint,
+  runRelayRefundClaim,
+  runRelayRefundInitiate,
   shouldUsePrunedAckVerification,
 } from "./relay.js";
 import type { RelayConfig, ResumeResult } from "../core/types.js";
@@ -32,6 +36,26 @@ export async function runRelayResume(config: RelayConfig): Promise<ResumeResult>
           }
         : config;
     const executed = await runRelayAck(ackConfig);
+    return { decision, executed };
+  }
+
+  if (decision.action === "refund-initiate") {
+    const executed = await runRelayRefundInitiate(config);
+    return { decision, executed };
+  }
+
+  if (decision.action === "refund-claim") {
+    const executed = await runRelayRefundClaim(config);
+    return { decision, executed };
+  }
+
+  if (decision.action === "execute-burn") {
+    const executed = await runRelayExecuteBurn(config);
+    return { decision, executed };
+  }
+
+  if (decision.action === "burn-proof") {
+    const executed = await runRelayBurnProof(config);
     return { decision, executed };
   }
 

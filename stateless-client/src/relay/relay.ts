@@ -17,6 +17,7 @@ import type {
   AckVerificationVariant,
   BlockTagInput,
   HappyPathResult,
+  ProofArtifact,
   ProofRelayStage,
   RelayConfig,
   RelayProofStage,
@@ -261,7 +262,7 @@ async function waitForSubmission(
 function assertLockProofConsistency(
   config: StageSubmissionConfig,
   sourceTx: ConnectorTxSnapshot,
-  artifact: RelayStageResult["proof"],
+  artifact: ProofArtifact,
 ): void {
   const expectedTxId = normalizeBytes32(config.txId, "tx-id");
   if (artifact.txId !== expectedTxId) {
@@ -301,7 +302,7 @@ function assertLockProofConsistency(
 function assertMintProofConsistency(
   config: StageSubmissionConfig,
   destinationTx: ConnectorTxSnapshot,
-  artifact: RelayStageResult["proof"],
+  artifact: ProofArtifact,
 ): void {
   const expectedTxId = normalizeBytes32(config.txId, "tx-id");
   if (artifact.txId !== expectedTxId) {
@@ -322,7 +323,7 @@ function assertMintProofConsistency(
 
 function assertAckProofConsistency(
   config: StageSubmissionConfig,
-  artifact: RelayStageResult["proof"],
+  artifact: ProofArtifact,
 ): void {
   const expectedTxId = normalizeBytes32(config.txId, "tx-id");
   if (artifact.txId !== expectedTxId) {
@@ -665,6 +666,65 @@ export async function runRelayAck(config: RelayConfig): Promise<RelayStageResult
   };
 }
 
+export async function runRelayRefundInitiate(config: RelayConfig): Promise<RelayStageResult> {
+  const handles = await createChainHandles(config);
+  const submitTx = await handles.sourceWriteContract.initiateRefund(config.txId);
+  const receiptBlock = await waitForSubmission(submitTx, "refund-initiate");
+  const resultingStatus = await getStatus(handles.sourceReadContract, config.txId);
+  return {
+    submission: { stage: "refund-initiate", txHash: submitTx.hash, receiptBlock, resultingStatus },
+  };
+}
+
+export async function runRelayRefundClaim(config: RelayConfig): Promise<RelayStageResult> {
+  const { proof, payload, verification } = await prepareStageSubmission(config, "refund-claim");
+  if (!proof || !verification) {
+    throw new Error("prepareStageSubmission(refund-claim) returned an incomplete proof result.");
+  }
+  const handles = await createChainHandles(config);
+  const submitTx = await handles.destinationWriteContract.submitRefundClaimProof(
+    ...payload.contractArgs,
+  );
+  const receiptBlock = await waitForSubmission(submitTx, "refund-claim");
+  const resultingStatus = await getStatus(handles.destinationReadContract, config.txId);
+  return {
+    verification,
+    proof,
+    submission: {
+      stage: "refund-claim",
+      txHash: submitTx.hash,
+      receiptBlock,
+      resultingStatus,
+    },
+  };
+}
+
+export async function runRelayExecuteBurn(config: RelayConfig): Promise<RelayStageResult> {
+  const handles = await createChainHandles(config);
+  const submitTx = await handles.destinationWriteContract.executeBurn(config.txId);
+  const receiptBlock = await waitForSubmission(submitTx, "execute-burn");
+  const resultingStatus = await getStatus(handles.destinationReadContract, config.txId);
+  return {
+    submission: { stage: "execute-burn", txHash: submitTx.hash, receiptBlock, resultingStatus },
+  };
+}
+
+export async function runRelayBurnProof(config: RelayConfig): Promise<RelayStageResult> {
+  const { proof, payload, verification } = await prepareStageSubmission(config, "burn-proof");
+  if (!proof || !verification) {
+    throw new Error("prepareStageSubmission(burn-proof) returned an incomplete proof result.");
+  }
+  const handles = await createChainHandles(config);
+  const submitTx = await handles.sourceWriteContract.submitBurnProof(...payload.contractArgs);
+  const receiptBlock = await waitForSubmission(submitTx, "burn-proof");
+  const resultingStatus = await getStatus(handles.sourceReadContract, config.txId);
+  return {
+    verification,
+    proof,
+    submission: { stage: "burn-proof", txHash: submitTx.hash, receiptBlock, resultingStatus },
+  };
+}
+
 function withExecutionBlockOverrides(
   config: RelayConfig,
   overrides: Partial<StageExecutionBlocks>,
@@ -699,7 +759,7 @@ export async function runRelayHappyPath(config: RelayConfig): Promise<HappyPathR
       destinationFundsReleased:
         config.executionBlocks.destinationFundsReleased ?? lock.submission.receiptBlock,
     }),
-    [toVerificationHistoryEntry(lock.verification)],
+    lock.verification ? [toVerificationHistoryEntry(lock.verification)] : [],
   );
   const mint = await runRelayMint(mintConfig);
 
@@ -707,7 +767,10 @@ export async function runRelayHappyPath(config: RelayConfig): Promise<HappyPathR
     withExecutionBlockOverrides(config, {
       sourceAckReady: config.executionBlocks.sourceAckReady ?? mint.submission.receiptBlock,
     }),
-    [toVerificationHistoryEntry(lock.verification), toVerificationHistoryEntry(mint.verification)],
+    [
+      ...(lock.verification ? [toVerificationHistoryEntry(lock.verification)] : []),
+      ...(mint.verification ? [toVerificationHistoryEntry(mint.verification)] : []),
+    ],
   );
   const ack = await runRelayAck(ackConfig);
 

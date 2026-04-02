@@ -36,6 +36,8 @@ function resolveExecutionBlocks(options: CliOptions): StageExecutionBlocks {
     sourceDeposit: parseBlockOption(options, "lock-execution-block", global),
     destinationFundsReleased: parseBlockOption(options, "mint-execution-block", global),
     sourceAckReady: parseBlockOption(options, "ack-execution-block", global),
+    sourceRefundInitiated: parseBlockOption(options, "refund-claim-execution-block", global),
+    destinationBurnExecuted: parseBlockOption(options, "burn-proof-execution-block", global),
   };
 }
 
