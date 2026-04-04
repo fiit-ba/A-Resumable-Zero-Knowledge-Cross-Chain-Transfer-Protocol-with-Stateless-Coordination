@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { AbiCoder, BrowserProvider, Contract } from "ethers";
 import type { Eip1193Provider } from "ethers";
 import { useParams, useNavigate } from "react-router-dom";
@@ -7,12 +7,21 @@ import type { RootState } from "../app/store";
 import {
   useGetJobQuery,
   useConfirmJobMutation,
+  useGetStageDetailsQuery,
   useGetNextStageQuery,
+  usePrepareJobStageMutation,
+  useRefreshJobMutation,
   useSubmitReceiptMutation,
+  useUpdateJobSettingsMutation,
 } from "../api/agentApi";
 import { CONNECTOR_ABI, ERC20_ABI } from "../lib/abi";
 import { assertContractCodePresent, ensureWalletOnChain } from "../lib/wallet";
-import type { EnrichedStagePayload, RelayProofStage } from "../api/types";
+import type {
+  EnrichedStagePayload,
+  PostSubmitBehavior,
+  RelayMode,
+  RelayProofStage,
+} from "../api/types";
 
 // ---------------------------------------------------------------------------
 // Stage labels
@@ -28,12 +37,24 @@ const STAGE_LABELS: Record<RelayProofStage, string> = {
   "burn-proof": "Refund – Burn proof (source)",
 };
 
+const ALL_STAGES: RelayProofStage[] = [
+  "lock",
+  "mint",
+  "ack",
+  "refund-initiate",
+  "refund-claim",
+  "execute-burn",
+  "burn-proof",
+];
+
 const REFUND_STAGES = new Set<RelayProofStage>([
   "refund-initiate",
   "refund-claim",
   "execute-burn",
   "burn-proof",
 ]);
+
+const DIRECT_ACTION_STAGES = new Set<RelayProofStage>(["refund-initiate", "execute-burn"]);
 
 const REFUND_STAGE_CONTEXT: Record<string, string> = {
   "refund-initiate":
@@ -123,6 +144,7 @@ export function ProgressPage() {
 
   const [submitError, setSubmitError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
+  const [manualStage, setManualStage] = useState<RelayProofStage>("lock");
 
   // ── Job polling ────────────────────────────────────────────────────────────
   const {
@@ -136,11 +158,19 @@ export function ProgressPage() {
 
   // ── Confirmation ───────────────────────────────────────────────────────────
   const [confirmJob, { isLoading: confirming }] = useConfirmJobMutation();
+  const [updateJobSettings, { isLoading: savingSettings }] = useUpdateJobSettingsMutation();
+  const [refreshJobMutation, { isLoading: refreshingStatus }] = useRefreshJobMutation();
+  const [prepareJobStage, { isLoading: preparingManual }] = usePrepareJobStageMutation();
 
   // ── Next stage (only when ready_for_signature) ─────────────────────────────
   const { data: nextStage } = useGetNextStageQuery(jobId ?? "", {
-    skip: !jobId || job?.status !== "ready_for_signature",
+    skip: !jobId || job?.status !== "ready_for_signature" || job?.relayMode !== "auto",
   });
+
+  const { data: stageDetails } = useGetStageDetailsQuery(
+    { jobId: jobId ?? "", stage: manualStage },
+    { skip: !jobId || !job || job.relayMode !== "manual" },
+  );
 
   // ── Receipt ────────────────────────────────────────────────────────────────
   const [submitReceipt] = useSubmitReceiptMutation();
@@ -148,10 +178,56 @@ export function ProgressPage() {
   // ── Helpers ────────────────────────────────────────────────────────────────
   const txId = active?.txId ?? job?.txId ?? "";
   const destConnector = active?.destConnector ?? job?.intent?.destinationConnector ?? "";
+  const isManualMode = job?.relayMode === "manual";
+  const currentStage = job?.currentStage;
+  const plannerMismatch =
+    Boolean(job?.plannerAction) && Boolean(job?.plannerAction && job.plannerAction !== manualStage);
+
+  useEffect(() => {
+    if (!currentStage) return;
+    if (currentStage !== "pending" && currentStage !== "completed") {
+      setManualStage(currentStage);
+    }
+  }, [currentStage]);
 
   async function handleConfirm() {
     if (!jobId) return;
     await confirmJob(jobId);
+  }
+
+  async function handleModeChange(mode: RelayMode) {
+    if (!jobId || !job) return;
+    await updateJobSettings({ jobId, relayMode: mode }).unwrap();
+  }
+
+  async function handlePostSubmitBehaviorChange(behavior: PostSubmitBehavior) {
+    if (!jobId || !job) return;
+    await updateJobSettings({ jobId, postSubmitBehavior: behavior }).unwrap();
+  }
+
+  async function handleRefreshStatus() {
+    if (!jobId) return;
+    await refreshJobMutation(jobId).unwrap();
+  }
+
+  async function handlePrepareSelectedStage() {
+    if (!jobId) return;
+    await prepareJobStage({
+      jobId,
+      stage: manualStage,
+      force: plannerMismatch,
+    }).unwrap();
+  }
+
+  async function handleRegenerateProof(stage: RelayProofStage) {
+    if (!jobId) return;
+    const force = Boolean(job?.plannerAction && job.plannerAction !== stage);
+    await prepareJobStage({
+      jobId,
+      stage,
+      force,
+      regenerate: true,
+    }).unwrap();
   }
 
   async function handleRelaySubmit(stage: EnrichedStagePayload) {
@@ -376,9 +452,11 @@ export function ProgressPage() {
   }
 
   // ── Render: normal progress (happy path + refund) ──────────────────────────
-  const canConfirmJob = job.status === "awaiting_confirmation" || job.status === "failed";
-
+  const canConfirmJob = !isManualMode && (job.status === "awaiting_confirmation" || job.status === "failed");
   const isRefundStage = job.currentStage && REFUND_STAGES.has(job.currentStage as RelayProofStage);
+  const submitPayload = isManualMode ? stageDetails?.preparedPayload : nextStage;
+  const manualCheckpointState = stageDetails?.checkpointState ?? "missing";
+  const selectedManualStageIsProof = !DIRECT_ACTION_STAGES.has(manualStage);
 
   return (
     <div className="max-w-2xl mx-auto mt-10 px-5 space-y-5">
@@ -389,6 +467,40 @@ export function ProgressPage() {
         <p className="text-sm text-gray-500 dark:text-gray-400">
           Job <code className="font-mono text-xs">{jobId}</code>
         </p>
+      </div>
+
+      <div className={`${card} space-y-3`}>
+        <div className={rowCls}>
+          <span className={labelCls}>Relay mode</span>
+          <div className="inline-flex rounded-md border border-gray-300 dark:border-gray-700">
+            <button
+              onClick={() => {
+                void handleModeChange("auto");
+              }}
+              disabled={savingSettings}
+              className={`px-3 py-1.5 text-xs ${
+                job.relayMode === "auto"
+                  ? "bg-violet-600 text-white"
+                  : "bg-white text-gray-700 dark:bg-gray-900 dark:text-gray-300"
+              }`}
+            >
+              Auto
+            </button>
+            <button
+              onClick={() => {
+                void handleModeChange("manual");
+              }}
+              disabled={savingSettings}
+              className={`px-3 py-1.5 text-xs ${
+                job.relayMode === "manual"
+                  ? "bg-violet-600 text-white"
+                  : "bg-white text-gray-700 dark:bg-gray-900 dark:text-gray-300"
+              }`}
+            >
+              Manual
+            </button>
+          </div>
+        </div>
       </div>
 
       {/* Refund path notice */}
@@ -465,6 +577,100 @@ export function ProgressPage() {
         )}
       </div>
 
+      {isManualMode && (
+        <div className={`${card} space-y-3`}>
+          <div className={rowCls}>
+            <span className={labelCls}>Planner recommendation</span>
+            <span className="text-sm text-gray-700 dark:text-gray-300">
+              {job.plannerAction ? STAGE_LABELS[job.plannerAction as RelayProofStage] ?? job.plannerAction : "n/a"}
+            </span>
+          </div>
+          {job.plannerReason && (
+            <p className="text-xs text-gray-500 dark:text-gray-400">{job.plannerReason}</p>
+          )}
+
+          <div className={rowCls}>
+            <span className={labelCls}>Source / Destination status</span>
+            <span className="font-mono text-xs text-gray-700 dark:text-gray-300">
+              {job.sourceStatus} / {job.destinationStatus}
+            </span>
+          </div>
+
+          <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
+            <label className="text-sm text-gray-600 dark:text-gray-400">
+              Stage
+              <select
+                value={manualStage}
+                onChange={(e) => setManualStage(e.target.value as RelayProofStage)}
+                className="mt-1 w-full rounded-md border border-gray-300 bg-white px-3 py-2 text-sm text-gray-900 dark:border-gray-700 dark:bg-gray-900 dark:text-gray-100"
+              >
+                {ALL_STAGES.map((stage) => (
+                  <option key={stage} value={stage}>
+                    {STAGE_LABELS[stage]}
+                  </option>
+                ))}
+              </select>
+            </label>
+
+            <label className="text-sm text-gray-600 dark:text-gray-400">
+              After submit
+              <select
+                value={job.postSubmitBehavior}
+                onChange={(e) => {
+                  void handlePostSubmitBehaviorChange(e.target.value as PostSubmitBehavior);
+                }}
+                className="mt-1 w-full rounded-md border border-gray-300 bg-white px-3 py-2 text-sm text-gray-900 dark:border-gray-700 dark:bg-gray-900 dark:text-gray-100"
+              >
+                <option value="pause">Pause after receipt</option>
+                <option value="auto_prepare">Auto-prepare next planner stage</option>
+              </select>
+            </label>
+          </div>
+
+          {plannerMismatch && (
+            <div
+              role="alert"
+              className="rounded-md border border-amber-300 bg-amber-50 px-3 py-2 text-xs text-amber-800 dark:border-amber-700 dark:bg-amber-950 dark:text-amber-300"
+            >
+              Selected stage differs from planner recommendation ({job.plannerAction ?? "n/a"}).
+              Preparation will use the selected stage.
+            </div>
+          )}
+
+          <div className="flex flex-wrap gap-2">
+            <button
+              onClick={() => {
+                void handleRefreshStatus();
+              }}
+              disabled={refreshingStatus}
+              className="rounded-md border border-gray-300 px-4 py-2 text-sm text-gray-700 hover:bg-gray-100 disabled:opacity-50 dark:border-gray-700 dark:text-gray-300 dark:hover:bg-gray-800"
+            >
+              {refreshingStatus ? "Refreshing…" : "Refresh status"}
+            </button>
+            <button
+              onClick={() => {
+                void handlePrepareSelectedStage();
+              }}
+              disabled={preparingManual}
+              className="rounded-md bg-violet-600 px-4 py-2 text-sm font-medium text-white hover:bg-violet-700 disabled:opacity-50"
+            >
+              {preparingManual ? "Preparing…" : "Prepare selected stage"}
+            </button>
+            {selectedManualStageIsProof && (
+              <button
+                onClick={() => {
+                  void handleRegenerateProof(manualStage);
+                }}
+                disabled={preparingManual}
+                className="rounded-md border border-violet-300 px-4 py-2 text-sm font-medium text-violet-700 hover:bg-violet-50 disabled:opacity-50 dark:border-violet-700 dark:text-violet-300 dark:hover:bg-violet-900/20"
+              >
+                {preparingManual ? "Regenerating proof…" : "Regenerate proof"}
+              </button>
+            )}
+          </div>
+        </div>
+      )}
+
       {/* Error banner */}
       {job.status === "failed" && job.lastError && (
         <div
@@ -472,6 +678,86 @@ export function ProgressPage() {
           className="rounded-md border border-red-300 bg-red-50 px-4 py-3 text-sm text-red-700 dark:border-red-700 dark:bg-red-950 dark:text-red-300"
         >
           {job.lastError}
+        </div>
+      )}
+
+      {isManualMode && (
+        <div className={`${card} space-y-3`}>
+          <h2 className="text-sm font-semibold text-gray-900 dark:text-gray-100">Stage details</h2>
+          <div className={rowCls}>
+            <span className={labelCls}>Selected stage</span>
+            <span className="text-sm text-gray-700 dark:text-gray-300">
+              {STAGE_LABELS[manualStage]}
+            </span>
+          </div>
+          <div className={rowCls}>
+            <span className={labelCls}>Checkpoint</span>
+            <span className="text-xs text-gray-700 dark:text-gray-300">{manualCheckpointState}</span>
+          </div>
+          {stageDetails?.preparedPayload ? (
+            <>
+              <div className={rowCls}>
+                <span className={labelCls}>Action kind</span>
+                <span className="text-xs text-gray-700 dark:text-gray-300">
+                  {stageDetails.preparedPayload.actionKind}
+                </span>
+              </div>
+              <div className={rowCls}>
+                <span className={labelCls}>Target chain</span>
+                <span className="font-mono text-xs text-gray-700 dark:text-gray-300">
+                  {stageDetails.preparedPayload.targetChainId}
+                </span>
+              </div>
+              <div className={rowCls}>
+                <span className={labelCls}>Target connector</span>
+                <span className={valueCls}>{stageDetails.preparedPayload.targetConnector}</span>
+              </div>
+              <div className={rowCls}>
+                <span className={labelCls}>Contract method</span>
+                <span className="font-mono text-xs text-gray-700 dark:text-gray-300">
+                  {stageDetails.preparedPayload.contractMethod}
+                </span>
+              </div>
+              <div className="text-xs text-gray-500 dark:text-gray-400">
+                Contract args:
+                <pre className="mt-1 overflow-auto rounded bg-gray-100 p-2 text-[11px] text-gray-700 dark:bg-gray-800 dark:text-gray-300">
+                  {JSON.stringify(stageDetails.preparedPayload.contractArgs, null, 2)}
+                </pre>
+              </div>
+              {(stageDetails.preparedPayload.verificationMode || stageDetails.verificationSummary) && (
+                <div className={rowCls}>
+                  <span className={labelCls}>Verification</span>
+                  <span className="text-xs text-gray-700 dark:text-gray-300">
+                    {stageDetails.preparedPayload.verificationMode ??
+                      stageDetails.verificationSummary?.mode}
+                    {(stageDetails.preparedPayload.verificationDegraded ??
+                      stageDetails.verificationSummary?.degraded)
+                      ? " (degraded)"
+                      : ""}
+                  </span>
+                </div>
+              )}
+              <details className="text-xs text-gray-500 dark:text-gray-400">
+                <summary className="cursor-pointer select-none">Raw prepared payload</summary>
+                <pre className="mt-2 overflow-auto rounded bg-gray-100 p-2 text-[11px] text-gray-700 dark:bg-gray-800 dark:text-gray-300">
+                  {JSON.stringify(stageDetails.preparedPayload, null, 2)}
+                </pre>
+              </details>
+            </>
+          ) : (
+            <p className="text-xs text-gray-500 dark:text-gray-400">
+              No prepared payload for this stage yet.
+            </p>
+          )}
+          {stageDetails?.submissionTxHash && (
+            <div className="space-y-1 text-xs text-gray-500 dark:text-gray-400">
+              <p>
+                submissionTxHash:{" "}
+                <code className="font-mono break-all">{stageDetails.submissionTxHash}</code>
+              </p>
+              {stageDetails.completedAt && <p>Completed: {new Date(stageDetails.completedAt).toLocaleString()}</p>}
+            </div>
+          )}
         </div>
       )}
 
@@ -496,22 +782,22 @@ export function ProgressPage() {
       )}
 
       {/* Ready – submit relay tx (proof or direct action) */}
-      {job.status === "ready_for_signature" && nextStage && (
+      {job.status === "ready_for_signature" && submitPayload && (
         <div className={`${card} space-y-3`}>
           <p className="text-sm font-medium text-gray-800 dark:text-gray-200">
-            {nextStage.actionKind === "direct"
+            {submitPayload.actionKind === "direct"
               ? "Action ready — submit transaction"
               : "Proof ready — submit relay transaction"}
           </p>
           <p className="text-xs text-gray-500 dark:text-gray-400">
-            Stage: <strong>{STAGE_LABELS[nextStage.stage] ?? nextStage.stage}</strong>
-            {" · "}Chain ID: <strong>{nextStage.targetChainId}</strong>
-            {nextStage.actionKind === "proof" && nextStage.verificationMode && (
+            Stage: <strong>{STAGE_LABELS[submitPayload.stage] ?? submitPayload.stage}</strong>
+            {" · "}Chain ID: <strong>{submitPayload.targetChainId}</strong>
+            {submitPayload.actionKind === "proof" && submitPayload.verificationMode && (
               <>
                 {" · "}Verification:{" "}
                 <strong>
-                  {nextStage.verificationMode}
-                  {nextStage.verificationDegraded ? " (degraded)" : ""}
+                  {submitPayload.verificationMode}
+                  {submitPayload.verificationDegraded ? " (degraded)" : ""}
                 </strong>
               </>
             )}
@@ -528,13 +814,28 @@ export function ProgressPage() {
 
           <button
             onClick={() => {
-              void handleRelaySubmit(nextStage);
+              void handleRelaySubmit(submitPayload);
             }}
             disabled={submitting || !window.ethereum}
             className="rounded-md bg-violet-600 px-5 py-2.5 text-sm font-medium text-white hover:bg-violet-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
           >
-            {submitting ? "Submitting…" : "Submit transaction"}
+            {submitting
+              ? "Submitting…"
+              : isManualMode
+                ? "Submit prepared transaction"
+                : "Submit transaction"}
           </button>
+          {submitPayload.actionKind === "proof" && (
+            <button
+              onClick={() => {
+                void handleRegenerateProof(submitPayload.stage);
+              }}
+              disabled={preparingManual}
+              className="rounded-md border border-violet-300 px-5 py-2.5 text-sm font-medium text-violet-700 hover:bg-violet-50 disabled:opacity-50 disabled:cursor-not-allowed dark:border-violet-700 dark:text-violet-300 dark:hover:bg-violet-900/20"
+            >
+              {preparingManual ? "Regenerating proof…" : "Regenerate proof"}
+            </button>
+          )}
 
           {!window.ethereum && (
             <p className="text-xs text-gray-400">No wallet detected. Install MetaMask to submit.</p>

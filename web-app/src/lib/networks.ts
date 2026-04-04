@@ -83,7 +83,7 @@ const NETWORKS_BY_CHAIN_ID = new Map<number, NetworkInfo>(
   Object.values(NETWORKS).map((network) => [network.chainId, network]),
 );
 
-export const NETWORK_OPTIONS = Object.keys(NETWORKS);
+export const NETWORK_OPTIONS = Object.keys(NETWORKS).filter((profile) => !profile.startsWith("local-"));
 
 export function getChainId(profile: string): number {
   return NETWORKS[profile]?.chainId ?? 0;

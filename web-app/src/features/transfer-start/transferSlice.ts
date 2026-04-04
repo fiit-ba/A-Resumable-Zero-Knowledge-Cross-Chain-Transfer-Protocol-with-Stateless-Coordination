@@ -12,8 +12,8 @@ export interface TransferDraft {
 }
 
 const INITIAL_DRAFT: TransferDraft = {
-  sourceProfile: "local-anvil",
-  destProfile: "local-hardhat",
+  sourceProfile: "sepolia",
+  destProfile: "chiado",
   sourceConnector: "",
   destConnector: "",
   tokenFrom: "",

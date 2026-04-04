@@ -5,13 +5,19 @@ import { useNavigate } from "react-router-dom";
 import { useDispatch, useSelector } from "react-redux";
 import type { RootState, AppDispatch } from "../app/store";
 import {
-  setDraftField,
-  setTxStatus,
-  setError,
   resetTransfer,
+  setDraftField,
+  setError,
+  setTxStatus,
 } from "../features/transfer-start/transferSlice";
 import { setActiveJob } from "../features/job-progress/jobsSlice";
-import { useCreateJobMutation } from "../api/agentApi";
+import {
+  useCreateJobMutation,
+  useGetJobsQuery,
+  useRecoverJobMutation,
+  useUpdateJobSettingsMutation,
+} from "../api/agentApi";
+import type { JobStatus, RelayJob, RelayMode } from "../api/types";
 import { CONNECTOR_ABI, ERC20_ABI } from "../lib/abi";
 import { NETWORK_OPTIONS, NETWORKS, getChainId } from "../lib/networks";
 import { ensureWalletOnChain } from "../lib/wallet";
@@ -22,6 +28,47 @@ const TX_STATUS_LABELS = {
   depositing: "Sending deposit…",
   registering: "Registering job…",
 } as const;
+
+const TERMINAL_JOB_STATUSES: ReadonlySet<JobStatus> = new Set(["completed", "unsupported"]);
+
+const JOB_STATUS_LABELS: Record<JobStatus, string> = {
+  awaiting_confirmation: "Awaiting confirmation",
+  preparing_stage: "Preparing",
+  ready_for_signature: "Ready",
+  waiting_for_receipt: "Waiting for receipt",
+  completed: "Completed",
+  failed: "Failed",
+  unsupported: "Unsupported",
+};
+
+const JOB_STATUS_BADGE_CLASSES: Record<JobStatus, string> = {
+  awaiting_confirmation:
+    "border border-amber-300 bg-amber-100 text-amber-700 dark:border-amber-500/50 dark:bg-amber-500/10 dark:text-amber-300",
+  preparing_stage:
+    "border border-sky-300 bg-sky-100 text-sky-700 dark:border-sky-500/50 dark:bg-sky-500/10 dark:text-sky-300",
+  ready_for_signature:
+    "border border-indigo-300 bg-indigo-100 text-indigo-700 dark:border-indigo-500/50 dark:bg-indigo-500/10 dark:text-indigo-300",
+  waiting_for_receipt:
+    "border border-cyan-300 bg-cyan-100 text-cyan-700 dark:border-cyan-500/50 dark:bg-cyan-500/10 dark:text-cyan-300",
+  completed:
+    "border border-emerald-300 bg-emerald-100 text-emerald-700 dark:border-emerald-500/50 dark:bg-emerald-500/10 dark:text-emerald-300",
+  failed:
+    "border border-rose-300 bg-rose-100 text-rose-700 dark:border-rose-500/50 dark:bg-rose-500/10 dark:text-rose-300",
+  unsupported:
+    "border border-slate-300 bg-slate-100 text-slate-700 dark:border-slate-500/50 dark:bg-slate-500/10 dark:text-slate-300",
+};
+
+const JOB_STAGE_LABELS: Record<RelayJob["currentStage"], string> = {
+  lock: "1/3 - Lock (destination)",
+  mint: "2/3 - Mint (source)",
+  ack: "3/3 - Ack (destination)",
+  "refund-initiate": "Refund - Initiate (source)",
+  "refund-claim": "Refund - Claim proof (destination)",
+  "execute-burn": "Refund - Execute burn (destination)",
+  "burn-proof": "Refund - Burn proof (source)",
+  pending: "Pending",
+  completed: "Completed",
+};
 
 type AmountMode = "wei" | "tokens";
 type NetworkKind = "local" | "testnet" | "mainnet";
@@ -315,15 +362,73 @@ export function TransferForm() {
   const navigate = useNavigate();
   const { draft, txStatus, error } = useSelector((s: RootState) => s.transferStart);
   const [createJob] = useCreateJobMutation();
+  const [recoverJob, { isLoading: recoveringJob }] = useRecoverJobMutation();
+  const [updateJobSettings] = useUpdateJobSettingsMutation();
+  const { data: jobsData, isError: jobsListError } = useGetJobsQuery(undefined, {
+    pollingInterval: 10_000,
+  });
   const [amountMode, setAmountMode] = useState<AmountMode>("wei");
   const [pendingTx, setPendingTx] = useState<PendingTxInfo | null>(null);
+  const [recoverTxId, setRecoverTxId] = useState("");
+  const [recoverMode, setRecoverMode] = useState<RelayMode>("auto");
+  const [recoverError, setRecoverError] = useState<string | null>(null);
 
   const busy = txStatus !== "idle";
   const pendingTxUrl = pendingTx ? getTxExplorerUrl(draft.sourceProfile, pendingTx.hash) : null;
+  const activeJobs = [...(jobsData ?? [])]
+    .filter((job) => !TERMINAL_JOB_STATUSES.has(job.status))
+    .sort((a, b) => b.updatedAt - a.updatedAt);
 
   function field(key: keyof typeof draft) {
     return (e: ChangeEvent<HTMLInputElement | HTMLSelectElement>) =>
       dispatch(setDraftField({ key, value: e.target.value.trim() }));
+  }
+
+  function handleOpenJob(job: RelayJob) {
+    dispatch(
+      setActiveJob({
+        jobId: job.id,
+        txId: job.txId,
+        sourceProfile: job.intent.sourceProfile,
+        destProfile: job.intent.destinationProfile,
+        sourceConnector: job.intent.sourceConnector,
+        destConnector: job.intent.destinationConnector,
+      }),
+    );
+    navigate(`/progress/${job.id}`);
+  }
+
+  async function handleRecoverSubmit(e: FormEvent) {
+    e.preventDefault();
+    setRecoverError(null);
+
+    const txId = recoverTxId.trim();
+    if (!txId) {
+      setRecoverError("txId is required for recovery.");
+      return;
+    }
+
+    try {
+      const recovered = await recoverJob({ txId }).unwrap();
+      if (recovered.relayMode !== recoverMode) {
+        await updateJobSettings({ jobId: recovered.id, relayMode: recoverMode }).unwrap();
+      }
+
+      dispatch(
+        setActiveJob({
+          jobId: recovered.id,
+          txId: recovered.txId,
+          sourceProfile: recovered.intent.sourceProfile,
+          destProfile: recovered.intent.destinationProfile,
+          sourceConnector: recovered.intent.sourceConnector,
+          destConnector: recovered.intent.destinationConnector,
+        }),
+      );
+      navigate(`/progress/${recovered.id}`);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      setRecoverError(message);
+    }
   }
 
   async function handleSubmit(e: FormEvent) {
@@ -496,6 +601,91 @@ export function TransferForm() {
       <p className="text-sm text-gray-500 dark:text-gray-400 mb-6">
         Fill in the details below, then deposit to start the trustless relay.
       </p>
+
+      <div className="mb-6 rounded-md border border-gray-200 bg-gray-50 p-4 dark:border-gray-700 dark:bg-gray-900">
+        <h2 className="text-sm font-semibold text-gray-900 dark:text-gray-100">Developer recovery</h2>
+        <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">
+          Recover an existing relay job by txId and jump directly to Progress.
+        </p>
+        <form onSubmit={handleRecoverSubmit} className="mt-3 grid grid-cols-1 gap-3 md:grid-cols-4">
+          <input
+            type="text"
+            placeholder="0x txId"
+            value={recoverTxId}
+            onChange={(e) => setRecoverTxId(e.target.value.trim())}
+            className="md:col-span-2 rounded-md border border-gray-300 bg-white px-3 py-2 font-mono text-sm text-gray-900 focus:outline-none focus:ring-2 focus:ring-violet-500 dark:border-gray-700 dark:bg-gray-950 dark:text-gray-100"
+          />
+          <select
+            value={recoverMode}
+            onChange={(e) => setRecoverMode(e.target.value as RelayMode)}
+            className="rounded-md border border-gray-300 bg-white px-3 py-2 text-sm text-gray-900 focus:outline-none focus:ring-2 focus:ring-violet-500 dark:border-gray-700 dark:bg-gray-950 dark:text-gray-100"
+          >
+            <option value="auto">Auto</option>
+            <option value="manual">Manual</option>
+          </select>
+          <button
+            type="submit"
+            disabled={recoveringJob}
+            className="rounded-md border border-violet-600 bg-violet-600 px-3 py-2 text-sm font-medium text-white hover:bg-violet-700 disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            {recoveringJob ? "Recovering…" : "Recover job"}
+          </button>
+        </form>
+        {recoverError && (
+          <p className="mt-2 text-xs text-red-600 dark:text-red-300">{recoverError}</p>
+        )}
+      </div>
+
+      {activeJobs.length > 0 && (
+        <section className="mb-6 rounded-md border border-gray-200 bg-white p-4 dark:border-gray-700 dark:bg-gray-900">
+          <h2 className="text-sm font-semibold text-gray-900 dark:text-gray-100">Active Jobs</h2>
+          <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">
+            Reopen any in-progress or retryable relay job.
+          </p>
+          <div className="mt-3 space-y-2">
+            {activeJobs.map((job) => (
+              <button
+                key={job.id}
+                type="button"
+                onClick={() => handleOpenJob(job)}
+                className="w-full rounded-md border border-gray-200 bg-gray-50 px-3 py-2.5 text-left transition hover:border-violet-400 hover:bg-violet-50/70 focus:outline-none focus:ring-2 focus:ring-violet-500 dark:border-gray-700 dark:bg-gray-950 dark:hover:border-violet-500"
+              >
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <span className="font-mono text-sm font-semibold text-gray-900 dark:text-gray-100">
+                    {job.id}
+                  </span>
+                  <span
+                    className={`rounded-full px-2 py-0.5 text-[10px] font-semibold uppercase tracking-[0.04em] ${JOB_STATUS_BADGE_CLASSES[job.status]}`}
+                  >
+                    {JOB_STATUS_LABELS[job.status]}
+                  </span>
+                </div>
+                <p className="mt-1 text-xs text-gray-600 dark:text-gray-300">
+                  Stage: {JOB_STAGE_LABELS[job.currentStage] ?? job.currentStage}
+                </p>
+                <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">
+                  {job.intent.sourceProfile} -&gt; {job.intent.destinationProfile}
+                </p>
+                {job.txId && (
+                  <p
+                    className="mt-1 truncate font-mono text-[11px] text-gray-500 dark:text-gray-400"
+                    title={job.txId}
+                  >
+                    {job.txId}
+                  </p>
+                )}
+              </button>
+            ))}
+          </div>
+        </section>
+      )}
+
+      {jobsListError && (
+        <p className="mb-6 text-xs text-amber-700 dark:text-amber-300">
+          Could not refresh active jobs right now. You can still start a new transfer or recover by
+          txId.
+        </p>
+      )}
 
       {error && (
         <div

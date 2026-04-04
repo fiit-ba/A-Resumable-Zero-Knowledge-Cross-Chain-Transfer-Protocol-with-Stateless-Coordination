@@ -1,9 +1,23 @@
 import express, { type Request, type Response, type NextFunction } from "express";
 import { createJob, getJob, getJobByTxId, listJobs, getCheckpoint } from "./db.js";
-import { confirmJob, recordReceipt, recoverJob } from "./services/job-service.js";
+import {
+  confirmJob,
+  getStageDetails,
+  prepareJobStage,
+  recordReceipt,
+  recoverJob,
+  refreshJob,
+  updateJobSettings,
+} from "./services/job-service.js";
 import { parseSchemeUrl } from "./scheme.js";
 import type { RelayProofStage } from "./contracts.js";
-import type { CreateJobBody, ReceiptBody, RecoverJobBody } from "./types.js";
+import type {
+  CreateJobBody,
+  PrepareStageBody,
+  ReceiptBody,
+  RecoverJobBody,
+  UpdateSettingsBody,
+} from "./types.js";
 
 const AGENT_VERSION = "0.1.0";
 
@@ -15,6 +29,22 @@ const DEFAULT_ALLOWED_ORIGINS = [
   "http://localhost:5173", // Vite dev
   "http://localhost:4173", // Vite preview
 ];
+
+const VALID_STAGES: RelayProofStage[] = [
+  "lock",
+  "mint",
+  "ack",
+  "refund-initiate",
+  "refund-claim",
+  "execute-burn",
+  "burn-proof",
+];
+
+const VALID_STAGE_SET = new Set<RelayProofStage>(VALID_STAGES);
+
+function parseRelayStage(value: string): RelayProofStage | null {
+  return VALID_STAGE_SET.has(value as RelayProofStage) ? (value as RelayProofStage) : null;
+}
 
 function buildCorsMiddleware(allowedOriginsEnv?: string) {
   const allowed = new Set<string>([
@@ -30,7 +60,7 @@ function buildCorsMiddleware(allowedOriginsEnv?: string) {
     if (origin && allowed.has(origin)) {
       res.setHeader("Access-Control-Allow-Origin", origin);
       res.setHeader("Vary", "Origin");
-      res.setHeader("Access-Control-Allow-Methods", "GET,POST,OPTIONS");
+      res.setHeader("Access-Control-Allow-Methods", "GET,POST,PATCH,OPTIONS");
       res.setHeader("Access-Control-Allow-Headers", "Content-Type,Authorization");
     } else if (origin && !allowed.has(origin)) {
       res.status(403).json({ error: "Origin not allowed" });
@@ -127,6 +157,92 @@ export function createApp(opts?: { allowedOrigins?: string }): express.Express {
   });
 
   /**
+   * PATCH /jobs/:id/settings — update relay mode and post-submit behavior.
+   */
+  app.patch("/jobs/:id/settings", (req: Request, res: Response): void => {
+    const job = getJob(req.params.id);
+    if (!job) {
+      res.status(404).json({ error: "Job not found" });
+      return;
+    }
+
+    const body = req.body as UpdateSettingsBody;
+    if (body.relayMode !== undefined && body.relayMode !== "auto" && body.relayMode !== "manual") {
+      res.status(400).json({ error: "relayMode must be 'auto' or 'manual'" });
+      return;
+    }
+    if (
+      body.postSubmitBehavior !== undefined &&
+      body.postSubmitBehavior !== "pause" &&
+      body.postSubmitBehavior !== "auto_prepare"
+    ) {
+      res.status(400).json({ error: "postSubmitBehavior must be 'pause' or 'auto_prepare'" });
+      return;
+    }
+    if (body.relayMode === undefined && body.postSubmitBehavior === undefined) {
+      res.status(400).json({ error: "At least one settings field is required." });
+      return;
+    }
+
+    try {
+      const updated = updateJobSettings(job.id, body);
+      res.json(updated);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      res.status(409).json({ error: message });
+    }
+  });
+
+  /**
+   * POST /jobs/:id/refresh — refresh planner/source/destination status only.
+   */
+  app.post("/jobs/:id/refresh", (req: Request, res: Response): void => {
+    const job = getJob(req.params.id);
+    if (!job) {
+      res.status(404).json({ error: "Job not found" });
+      return;
+    }
+
+    refreshJob(job.id)
+      .then((updated) => {
+        res.json(updated);
+      })
+      .catch((err: unknown) => {
+        const message = err instanceof Error ? err.message : String(err);
+        res.status(409).json({ error: message });
+      });
+  });
+
+  /**
+   * POST /jobs/:id/prepare — prepare selected or planner stage.
+   * Returns 202 immediately; poll GET /jobs/:id for status updates.
+   */
+  app.post("/jobs/:id/prepare", (req: Request, res: Response): void => {
+    const job = getJob(req.params.id);
+    if (!job) {
+      res.status(404).json({ error: "Job not found" });
+      return;
+    }
+
+    const body = req.body as PrepareStageBody;
+    if (body.stage !== undefined && !VALID_STAGE_SET.has(body.stage)) {
+      res
+        .status(400)
+        .json({ error: `Invalid stage. Expected one of: ${VALID_STAGES.join(", ")}.` });
+      return;
+    }
+
+    prepareJobStage(job.id, body)
+      .then(() => {
+        res.status(202).json(getJob(job.id));
+      })
+      .catch((err: unknown) => {
+        const message = err instanceof Error ? err.message : String(err);
+        res.status(409).json({ error: message });
+      });
+  });
+
+  /**
    * GET /jobs/:id/next-stage — return enriched stage payload when ready.
    * Returns the EnrichedStagePayload (with verificationMode, verificationDegraded).
    */
@@ -169,20 +285,11 @@ export function createApp(opts?: { allowedOrigins?: string }): express.Express {
       return;
     }
 
-    const stage = req.params.stage as RelayProofStage;
-    const VALID_STAGES = new Set([
-      "lock",
-      "mint",
-      "ack",
-      "refund-initiate",
-      "refund-claim",
-      "execute-burn",
-      "burn-proof",
-    ]);
-    if (!VALID_STAGES.has(stage)) {
+    const stage = parseRelayStage(req.params.stage);
+    if (!stage) {
       res
         .status(400)
-        .json({ error: `Invalid stage. Expected one of: ${[...VALID_STAGES].join(", ")}.` });
+        .json({ error: `Invalid stage. Expected one of: ${VALID_STAGES.join(", ")}.` });
       return;
     }
 
@@ -193,6 +300,33 @@ export function createApp(opts?: { allowedOrigins?: string }): express.Express {
     }
 
     res.json(JSON.parse(checkpoint.payloadJson));
+  });
+
+  /**
+   * GET /jobs/:id/stages/:stage — structured stage details for manual flow.
+   */
+  app.get("/jobs/:id/stages/:stage", (req: Request, res: Response): void => {
+    const job = getJob(req.params.id);
+    if (!job) {
+      res.status(404).json({ error: "Job not found" });
+      return;
+    }
+
+    const stage = parseRelayStage(req.params.stage);
+    if (!stage) {
+      res
+        .status(400)
+        .json({ error: `Invalid stage. Expected one of: ${VALID_STAGES.join(", ")}.` });
+      return;
+    }
+
+    try {
+      const details = getStageDetails(job.id, stage);
+      res.json(details);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      res.status(409).json({ error: message });
+    }
   });
 
   /**
@@ -214,19 +348,10 @@ export function createApp(opts?: { allowedOrigins?: string }): express.Express {
       return;
     }
 
-    const VALID_STAGES = new Set([
-      "lock",
-      "mint",
-      "ack",
-      "refund-initiate",
-      "refund-claim",
-      "execute-burn",
-      "burn-proof",
-    ]);
-    if (!VALID_STAGES.has(stage)) {
+    if (!VALID_STAGE_SET.has(stage)) {
       res
         .status(400)
-        .json({ error: `Invalid stage. Expected one of: ${[...VALID_STAGES].join(", ")}.` });
+        .json({ error: `Invalid stage. Expected one of: ${VALID_STAGES.join(", ")}.` });
       return;
     }
 

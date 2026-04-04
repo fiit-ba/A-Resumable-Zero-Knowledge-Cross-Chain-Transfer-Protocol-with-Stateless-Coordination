@@ -1,5 +1,10 @@
 import type { StageExecutionBlocks } from "../core/types.js";
-import type { RelayProofStage, TransferIntent } from "./contracts.js";
+import type {
+  PostSubmitBehavior,
+  RelayMode,
+  RelayProofStage,
+  TransferIntent,
+} from "./contracts.js";
 export type { StageExecutionBlocks };
 
 // ---------------------------------------------------------------------------
@@ -30,6 +35,19 @@ export type ConfirmJobBody = Record<string, never>;
 export interface ReceiptBody {
   stage: RelayProofStage;
   txHash: string;
+}
+
+/** Body sent to PATCH /jobs/:id/settings */
+export interface UpdateSettingsBody {
+  relayMode?: RelayMode;
+  postSubmitBehavior?: PostSubmitBehavior;
+}
+
+/** Body sent to POST /jobs/:id/prepare */
+export interface PrepareStageBody {
+  stage?: RelayProofStage;
+  force?: boolean;
+  regenerate?: boolean;
 }
 
 // ---------------------------------------------------------------------------

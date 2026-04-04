@@ -2,8 +2,11 @@ import { createApi, fetchBaseQuery } from "@reduxjs/toolkit/query/react";
 import type {
   AgentHealth,
   EnrichedStagePayload,
+  PostSubmitBehavior,
   RelayJob,
+  RelayMode,
   RelayProofStage,
+  StageDetails,
   TransferIntent,
 } from "./types";
 
@@ -28,6 +31,10 @@ export const agentApi = createApi({
       }),
       invalidatesTags: ["Job"],
     }),
+    getJobs: builder.query<RelayJob[], void>({
+      query: () => "/jobs",
+      providesTags: ["Job"],
+    }),
     getJob: builder.query<RelayJob, string>({
       query: (id) => `/jobs/${id}`,
       providesTags: (_result, _err, id) => [{ type: "Job", id }],
@@ -40,9 +47,43 @@ export const agentApi = createApi({
       }),
       invalidatesTags: (_result, _err, id) => [{ type: "Job", id }],
     }),
+    updateJobSettings: builder.mutation<
+      RelayJob,
+      { jobId: string; relayMode?: RelayMode; postSubmitBehavior?: PostSubmitBehavior }
+    >({
+      query: ({ jobId, ...body }) => ({
+        url: `/jobs/${jobId}/settings`,
+        method: "PATCH",
+        body,
+      }),
+      invalidatesTags: (_result, _err, { jobId }) => [{ type: "Job", id: jobId }],
+    }),
+    refreshJob: builder.mutation<RelayJob, string>({
+      query: (jobId) => ({
+        url: `/jobs/${jobId}/refresh`,
+        method: "POST",
+        body: {},
+      }),
+      invalidatesTags: (_result, _err, jobId) => [{ type: "Job", id: jobId }],
+    }),
+    prepareJobStage: builder.mutation<
+      RelayJob,
+      { jobId: string; stage?: RelayProofStage; force?: boolean; regenerate?: boolean }
+    >({
+      query: ({ jobId, ...body }) => ({
+        url: `/jobs/${jobId}/prepare`,
+        method: "POST",
+        body,
+      }),
+      invalidatesTags: (_result, _err, { jobId }) => [{ type: "Job", id: jobId }],
+    }),
     getNextStage: builder.query<EnrichedStagePayload, string>({
       query: (id) => `/jobs/${id}/next-stage`,
       providesTags: (_result, _err, id) => [{ type: "Job", id }],
+    }),
+    getStageDetails: builder.query<StageDetails, { jobId: string; stage: RelayProofStage }>({
+      query: ({ jobId, stage }) => `/jobs/${jobId}/stages/${stage}`,
+      providesTags: (_result, _err, { jobId }) => [{ type: "Job", id: jobId }],
     }),
     submitReceipt: builder.mutation<RelayJob, { jobId: string; stage: RelayProofStage; txHash: string }>({
       query: ({ jobId, stage, txHash }) => ({
@@ -69,9 +110,14 @@ export const agentApi = createApi({
 export const {
   useGetHealthQuery,
   useCreateJobMutation,
+  useGetJobsQuery,
   useGetJobQuery,
   useConfirmJobMutation,
+  useUpdateJobSettingsMutation,
+  useRefreshJobMutation,
+  usePrepareJobStageMutation,
   useGetNextStageQuery,
+  useGetStageDetailsQuery,
   useSubmitReceiptMutation,
   useRecoverJobMutation,
 } = agentApi;

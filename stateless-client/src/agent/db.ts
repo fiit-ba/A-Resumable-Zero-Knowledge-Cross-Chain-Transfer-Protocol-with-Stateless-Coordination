@@ -3,7 +3,15 @@ import { randomUUID } from "node:crypto";
 import { mkdirSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import type { JobStatus, RelayJob, TransferIntent, VerificationSummary } from "./contracts.js";
+import type {
+  JobStatus,
+  PlannerAction,
+  PostSubmitBehavior,
+  RelayJob,
+  RelayMode,
+  TransferIntent,
+  VerificationSummary,
+} from "./contracts.js";
 import type { JobRecoveryMetadata, StageCheckpoint } from "./types.js";
 
 type AgentDatabase = Database.Database;
@@ -47,6 +55,10 @@ function migrate(db: AgentDatabase): void {
       tx_id                  TEXT NOT NULL,
       current_stage          TEXT NOT NULL DEFAULT 'pending',
       status                 TEXT NOT NULL DEFAULT 'awaiting_confirmation',
+      relay_mode             TEXT NOT NULL DEFAULT 'auto',
+      post_submit_behavior   TEXT NOT NULL DEFAULT 'auto_prepare',
+      planner_action         TEXT,
+      planner_reason         TEXT,
       source_status          INTEGER NOT NULL DEFAULT 0,
       destination_status     INTEGER NOT NULL DEFAULT 0,
       last_error             TEXT,
@@ -87,6 +99,18 @@ function migrate(db: AgentDatabase): void {
   if (!jobCols.includes("verification_summary_json")) {
     db.exec(`ALTER TABLE jobs ADD COLUMN verification_summary_json TEXT`);
   }
+  if (!jobCols.includes("relay_mode")) {
+    db.exec(`ALTER TABLE jobs ADD COLUMN relay_mode TEXT NOT NULL DEFAULT 'auto'`);
+  }
+  if (!jobCols.includes("post_submit_behavior")) {
+    db.exec(`ALTER TABLE jobs ADD COLUMN post_submit_behavior TEXT NOT NULL DEFAULT 'auto_prepare'`);
+  }
+  if (!jobCols.includes("planner_action")) {
+    db.exec(`ALTER TABLE jobs ADD COLUMN planner_action TEXT`);
+  }
+  if (!jobCols.includes("planner_reason")) {
+    db.exec(`ALTER TABLE jobs ADD COLUMN planner_reason TEXT`);
+  }
 
   const cpCols = (
     db.prepare(`PRAGMA table_info(stage_checkpoints)`).all() as Array<{ name: string }>
@@ -110,6 +134,11 @@ function rowToJob(row: Record<string, unknown>): RelayJob {
     txId: row.tx_id as string,
     currentStage: row.current_stage as RelayJob["currentStage"],
     status: row.status as JobStatus,
+    relayMode: row.relay_mode as RelayMode,
+    postSubmitBehavior: row.post_submit_behavior as PostSubmitBehavior,
+    plannerAction:
+      typeof row.planner_action === "string" ? (row.planner_action as PlannerAction) : undefined,
+    plannerReason: typeof row.planner_reason === "string" ? row.planner_reason : undefined,
     sourceStatus: row.source_status as number,
     destinationStatus: row.destination_status as number,
     lastError: typeof row.last_error === "string" ? row.last_error : undefined,
@@ -167,6 +196,10 @@ export function listJobs(db: AgentDatabase = openDb()): RelayJob[] {
 export interface JobPatch {
   currentStage?: RelayJob["currentStage"];
   status?: JobStatus;
+  relayMode?: RelayMode;
+  postSubmitBehavior?: PostSubmitBehavior;
+  plannerAction?: PlannerAction | null;
+  plannerReason?: string | null;
   sourceStatus?: number;
   destinationStatus?: number;
   lastError?: string | null;
@@ -185,6 +218,22 @@ export function updateJob(id: string, patch: JobPatch, db: AgentDatabase = openD
   if (patch.status !== undefined) {
     sets.push("status = ?");
     values.push(patch.status);
+  }
+  if (patch.relayMode !== undefined) {
+    sets.push("relay_mode = ?");
+    values.push(patch.relayMode);
+  }
+  if (patch.postSubmitBehavior !== undefined) {
+    sets.push("post_submit_behavior = ?");
+    values.push(patch.postSubmitBehavior);
+  }
+  if (patch.plannerAction !== undefined) {
+    sets.push("planner_action = ?");
+    values.push(patch.plannerAction ?? null);
+  }
+  if (patch.plannerReason !== undefined) {
+    sets.push("planner_reason = ?");
+    values.push(patch.plannerReason ?? null);
   }
   if (patch.sourceStatus !== undefined) {
     sets.push("source_status = ?");

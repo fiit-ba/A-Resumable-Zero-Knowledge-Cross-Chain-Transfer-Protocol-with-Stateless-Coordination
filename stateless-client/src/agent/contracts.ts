@@ -21,6 +21,10 @@ export type VerificationDegradeReason =
   | "chiado_bootstrap_unsupported"
   | "local_chain";
 
+export type RelayMode = "auto" | "manual";
+export type PostSubmitBehavior = "pause" | "auto_prepare";
+export type PlannerAction = RelayProofStage | "noop" | "error";
+
 export type JobStatus =
   | "awaiting_confirmation"
   | "preparing_stage"
@@ -56,6 +60,10 @@ export interface RelayJob {
   txId: string;
   currentStage: RelayProofStage | "pending" | "completed";
   status: JobStatus;
+  relayMode: RelayMode;
+  postSubmitBehavior: PostSubmitBehavior;
+  plannerAction?: PlannerAction;
+  plannerReason?: string;
   sourceStatus: number;
   destinationStatus: number;
   lastError?: string;
@@ -87,6 +95,20 @@ export interface EnrichedStagePayload extends StageReadyPayload {
   verificationDegradeReason?: VerificationDegradeReason;
   /** Only populated for proof stages. */
   verifiedStage?: string;
+}
+
+export type StageCheckpointState = "missing" | "prepared" | "submitted";
+
+export interface StageDetails {
+  stage: RelayProofStage;
+  checkpointState: StageCheckpointState;
+  plannerAction?: PlannerAction;
+  plannerReason?: string;
+  plannerMismatch: boolean;
+  preparedPayload?: EnrichedStagePayload;
+  verificationSummary?: VerificationSummary;
+  submissionTxHash?: string;
+  completedAt?: number;
 }
 
 export interface AgentHealth {

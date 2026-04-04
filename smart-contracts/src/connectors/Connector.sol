@@ -230,7 +230,7 @@ contract Connector is ConnectorStorage, IConnector, ReentrancyGuard {
     }
 
     /// @inheritdoc IConnector
-    function initiateRefund(bytes32 _txId) external nonReentrant {
+    function initiateRefund(bytes32 _txId) external nonReentrant { // TODO: Required status
         Enums.TxStatus current = txStatus[_txId];
         CrossChainTx storage tx_ = _txs[_txId];
 
@@ -315,7 +315,7 @@ contract Connector is ConnectorStorage, IConnector, ReentrancyGuard {
         uint64 _originAckDeadline,
         uint256 _nonce,
         uint256 _sourceChainId
-    ) external nonReentrant {
+    ) external nonReentrant { // TODO: Required status
         _checkRouteImageId(Enums.VerifierRoute.DEST_LOCK, _proofType, _proofPayload);
         if (txStatus[_txId] != Enums.TxStatus.NONE) {
             revert Errors.TxAlreadyExists(_txId);

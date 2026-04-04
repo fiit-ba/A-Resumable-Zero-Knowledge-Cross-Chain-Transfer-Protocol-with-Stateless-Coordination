@@ -22,6 +22,10 @@ const MOCK_JOB: RelayJob = {
   txId: TX_ID,
   currentStage: "lock",
   status: "ready_for_signature",
+  relayMode: "auto",
+  postSubmitBehavior: "auto_prepare",
+  plannerAction: "lock",
+  plannerReason: "source has deposit, destination needs lock proof",
   sourceStatus: 1,
   destinationStatus: 0,
   intent: INTENT,
@@ -117,6 +121,83 @@ describe("agentApi endpoints", () => {
     assertFetchPathContains(`/jobs/${JOB_ID}/next-stage`, "GET");
     expect(data.stage).toBe("lock");
     expect(data.contractMethod).toBe("submitLockProof");
+  });
+
+  it("updateJobSettings patches /jobs/:id/settings", async () => {
+    vi.mocked(fetch).mockResolvedValueOnce(jsonResponse({ ...MOCK_JOB, relayMode: "manual" }));
+
+    const store = makeStore();
+    const request = store.dispatch(
+      agentApi.endpoints.updateJobSettings.initiate({
+        jobId: JOB_ID,
+        relayMode: "manual",
+        postSubmitBehavior: "pause",
+      }),
+    );
+    const data = await request.unwrap();
+
+    assertFetchPathContains(`/jobs/${JOB_ID}/settings`, "PATCH");
+    expect(data.relayMode).toBe("manual");
+  });
+
+  it("refreshJob posts /jobs/:id/refresh", async () => {
+    vi.mocked(fetch).mockResolvedValueOnce(
+      jsonResponse({
+        ...MOCK_JOB,
+        plannerAction: "mint",
+        plannerReason: "destination has funds, source needs mint proof",
+        sourceStatus: 1,
+        destinationStatus: 4,
+      }),
+    );
+
+    const store = makeStore();
+    const request = store.dispatch(agentApi.endpoints.refreshJob.initiate(JOB_ID));
+    const data = await request.unwrap();
+
+    assertFetchPathContains(`/jobs/${JOB_ID}/refresh`, "POST");
+    expect(data.plannerAction).toBe("mint");
+  });
+
+  it("prepareJobStage posts /jobs/:id/prepare", async () => {
+    vi.mocked(fetch).mockResolvedValueOnce(
+      jsonResponse({ ...MOCK_JOB, status: "preparing_stage", currentStage: "refund-claim" }),
+    );
+
+    const store = makeStore();
+    const request = store.dispatch(
+      agentApi.endpoints.prepareJobStage.initiate({
+        jobId: JOB_ID,
+        stage: "refund-claim",
+        force: true,
+      }),
+    );
+    const data = await request.unwrap();
+
+    assertFetchPathContains(`/jobs/${JOB_ID}/prepare`, "POST");
+    expect(data.currentStage).toBe("refund-claim");
+  });
+
+  it("getStageDetails reads /jobs/:id/stages/:stage", async () => {
+    vi.mocked(fetch).mockResolvedValueOnce(
+      jsonResponse({
+        stage: "lock",
+        checkpointState: "prepared",
+        plannerAction: "lock",
+        plannerReason: "source has deposit, destination needs lock proof",
+        plannerMismatch: false,
+        preparedPayload: MOCK_NEXT_STAGE,
+      }),
+    );
+
+    const store = makeStore();
+    const request = store.dispatch(
+      agentApi.endpoints.getStageDetails.initiate({ jobId: JOB_ID, stage: "lock" }),
+    );
+    const data = await request.unwrap();
+
+    assertFetchPathContains(`/jobs/${JOB_ID}/stages/lock`, "GET");
+    expect(data.checkpointState).toBe("prepared");
   });
 
   it("submitReceipt posts to /jobs/:id/receipts", async () => {
