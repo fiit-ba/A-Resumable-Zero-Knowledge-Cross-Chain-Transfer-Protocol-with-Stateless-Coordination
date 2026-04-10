@@ -54,6 +54,11 @@ SNARK_ADAPTER_SOURCE ?=
 RISC0_ADAPTER_DEST   ?=
 SNARK_ADAPTER_DEST   ?=
 
+# Optional: pre-deployed WrappedTokenFactory address per chain.
+# If left empty, deploy-*-connector-prod will deploy a fresh factory automatically.
+WRAPPED_TOKEN_FACTORY_SOURCE ?=
+WRAPPED_TOKEN_FACTORY_DEST   ?=
+
 # Default guest image IDs from current repo builds.
 BYTES32_ZERO                ?= 0x0000000000000000000000000000000000000000000000000000000000000000
 ORIGIN_MINT_IMAGE_ID        ?= 0x5ab55c3e99a94be256acd6f786e7b9ff19b7b3665233a2adf086a6ae7daad736
@@ -134,6 +139,14 @@ test: ## Run the full test suite
 .PHONY: test-verbose
 test-verbose: ## Run tests with full traces
 	$(FORGE) test -vvvv
+
+.PHONY: coverage
+coverage: ## Run test coverage (--ir-minimum bypasses stack-too-deep on functions with many params)
+	$(FORGE) coverage --ir-minimum
+
+.PHONY: coverage-lcov
+coverage-lcov: ## Run test coverage and write lcov.info (for genhtml / IDE plugins)
+	$(FORGE) coverage --ir-minimum --report lcov
 
 .PHONY: clean
 clean: ## Remove build artefacts
@@ -293,7 +306,8 @@ fund-deployer: require-private-key
 # =============================================================================
 
 ## Deploy a production RiscZeroAdapter.
-## Requires: RISC0_VERIFIER in .env (+ optionally *_IMAGE_ID vars).
+## Optional: RISC0_VERIFIER in .env. If unset, DeployRiscZeroAdapter deploys a verifier first.
+## Optionally accepts *_IMAGE_ID vars.
 .PHONY: deploy-risc0-adapter
 deploy-risc0-adapter: require-private-key
 	$(call forge-script,script/DeployRiscZeroAdapter.s.sol:DeployRiscZeroAdapter,$(RPC_URL))
@@ -317,6 +331,7 @@ deploy-source-connector-prod: require-private-key ## Deploy production connector
 	@RISC0_ADAPTER="$(RISC0_ADAPTER_SOURCE)" \
 	SNARK_ADAPTER="$(SNARK_ADAPTER_SOURCE)" \
 	ACK_WINDOW_SECONDS="$(ACK_WINDOW_SECONDS_SOURCE)" \
+	WRAPPED_TOKEN_FACTORY="$(WRAPPED_TOKEN_FACTORY_SOURCE)" \
 	ORIGIN_MINT_IMAGE_ID="$(ORIGIN_MINT_IMAGE_ID_SOURCE)" \
 	ORIGIN_BURN_IMAGE_ID="$(ORIGIN_BURN_IMAGE_ID_SOURCE)" \
 	DEST_LOCK_IMAGE_ID="$(DEST_LOCK_IMAGE_ID_SOURCE)" \
@@ -337,6 +352,7 @@ deploy-dest-connector-prod: require-private-key ## Deploy production connector o
 	@RISC0_ADAPTER="$(RISC0_ADAPTER_DEST)" \
 	SNARK_ADAPTER="$(SNARK_ADAPTER_DEST)" \
 	ACK_WINDOW_SECONDS="$(ACK_WINDOW_SECONDS_DEST)" \
+	WRAPPED_TOKEN_FACTORY="$(WRAPPED_TOKEN_FACTORY_DEST)" \
 	ORIGIN_MINT_IMAGE_ID="$(ORIGIN_MINT_IMAGE_ID_DEST)" \
 	ORIGIN_BURN_IMAGE_ID="$(ORIGIN_BURN_IMAGE_ID_DEST)" \
 	DEST_LOCK_IMAGE_ID="$(DEST_LOCK_IMAGE_ID_DEST)" \
@@ -400,6 +416,7 @@ help: ## Show available targets
 	@echo "  RISC0_ADAPTER_SOURCE / SNARK_ADAPTER_SOURCE"
 	@echo "  RISC0_ADAPTER_DEST   / SNARK_ADAPTER_DEST"
 	@echo "  ACK_WINDOW_SECONDS_SOURCE / ACK_WINDOW_SECONDS_DEST"
+	@echo "  WRAPPED_TOKEN_FACTORY_SOURCE / WRAPPED_TOKEN_FACTORY_DEST  (optional; auto-deployed if empty)"
 	@echo "  TOKEN_NAME_SRC / TOKEN_SYMBOL_SRC"
 	@echo "  TOKEN_NAME_DEST / TOKEN_SYMBOL_DEST"
 	@echo "  MINT_AMOUNT      tokens to mint (wei, default 10 000 × 10^18)"

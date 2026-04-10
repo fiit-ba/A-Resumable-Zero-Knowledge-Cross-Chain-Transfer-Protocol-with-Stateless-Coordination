@@ -1,0 +1,3 @@
+[submodule "smart-contracts/smart-contracts/nemesis-auditor"]
+	path = smart-contracts/smart-contracts/nemesis-auditor
+	url = https://github.com/0xiehnnkta/nemesis-auditor.git

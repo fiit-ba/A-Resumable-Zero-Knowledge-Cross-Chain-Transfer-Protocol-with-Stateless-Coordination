@@ -1,6 +1,9 @@
 // SPDX-License-Identifier: MIT
-pragma solidity ^0.8.28;
+pragma solidity ^0.8.34;
 
+/// @title Enums
+/// @author Trustless Universal Protocol Contributors
+/// @notice Shared enum definitions used by connector contracts and relay integration.
 library Enums {
     enum ProofType {
         RISC0,

@@ -1,7 +1,9 @@
 // SPDX-License-Identifier: MIT
-pragma solidity ^0.8.28;
+pragma solidity ^0.8.34;
 
 /// @title IZKVerifier
+/// @author Trustless Universal Protocol Contributors
+/// @notice Generic verifier interface for supported zero-knowledge proof backends.
 interface IZKVerifier {
     /// @notice Verify a proof and extract the commitment (public outputs digest).
     /// @param proofPayload Backend-specific ABI-encoded proof data.

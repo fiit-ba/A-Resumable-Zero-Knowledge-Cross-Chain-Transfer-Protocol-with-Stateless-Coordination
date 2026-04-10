@@ -2,10 +2,12 @@
   "name": "smart-contracts",
   "private": true,
   "scripts": {
-    "lint": "solhint --disc 'src/**/*.sol' 'script/**/*.sol' 'test/**/*.sol'",
-    "lint:fix": "solhint --disc --fix --noPrompt 'src/**/*.sol' 'script/**/*.sol' 'test/**/*.sol'"
+    "lint": "npx solhint \"script/**/*.sol\" -c .solhint.s.json; npx solhint \"src/**/*.sol\"; npx solhint \"test/**/*.sol\" -c .solhint.t.json",
+    "lint-src": "npx solhint \"script/**/*.sol\"; npx solhint \"src/**/*.sol\"",
+    "lint-all": "npx solhint \"script/**/*.sol\" -c .solhint.s.json; npx solhint \"src/**/*.sol\"; npx solhint \"test/**/*.sol\" -c .solhint.t.json",
+    "slither-debug": "slither . --fail-none --skip-assembly --exclude-informational --exclude-low --no-fail --include-paths 'src/(?!ebsi/)'"
   },
   "devDependencies": {
-    "solhint": "5.0.3"
+    "solhint": "^6.1.0"
   }
 }

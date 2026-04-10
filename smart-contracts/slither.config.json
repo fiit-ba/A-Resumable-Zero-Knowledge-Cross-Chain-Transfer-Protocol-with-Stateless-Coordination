@@ -2,13 +2,6 @@
   "detectors_to_exclude": [
     "pragma",
     "locked-ether",
-    "uninitialized-local",
-    "reentrancy-no-eth",
-    "reentrancy-benign",
-    "timestamp",
-    "assembly",
-    "naming-convention"
-  ],
-  "exclude_dependencies": true,
-  "filter_paths": "(^|/)(test|script|lib)/"
+    "uninitialized-local"
+  ]
 }
