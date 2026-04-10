@@ -1,7 +1,6 @@
 import { createApi, fetchBaseQuery } from "@reduxjs/toolkit/query/react";
 import type {
   AgentHealth,
-  EnrichedStagePayload,
   PostSubmitBehavior,
   RelayJob,
   RelayMode,
@@ -77,8 +76,8 @@ export const agentApi = createApi({
       }),
       invalidatesTags: (_result, _err, { jobId }) => [{ type: "Job", id: jobId }],
     }),
-    getNextStage: builder.query<EnrichedStagePayload, string>({
-      query: (id) => `/jobs/${id}/next-stage`,
+    getCurrentStage: builder.query<StageDetails, string>({
+      query: (id) => `/jobs/${id}/stages/current`,
       providesTags: (_result, _err, id) => [{ type: "Job", id }],
     }),
     getStageDetails: builder.query<StageDetails, { jobId: string; stage: RelayProofStage }>({
@@ -116,7 +115,7 @@ export const {
   useUpdateJobSettingsMutation,
   useRefreshJobMutation,
   usePrepareJobStageMutation,
-  useGetNextStageQuery,
+  useGetCurrentStageQuery,
   useGetStageDetailsQuery,
   useSubmitReceiptMutation,
   useRecoverJobMutation,

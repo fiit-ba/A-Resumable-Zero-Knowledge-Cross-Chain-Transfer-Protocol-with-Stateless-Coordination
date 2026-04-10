@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { configureStore } from "@reduxjs/toolkit";
 import { agentApi } from "../api/agentApi";
-import type { EnrichedStagePayload, RelayJob, TransferIntent } from "../api/types";
+import type { RelayJob, TransferIntent } from "../api/types";
 
 const INTENT: TransferIntent = {
   sourceProfile: "local-anvil",
@@ -33,17 +33,23 @@ const MOCK_JOB: RelayJob = {
   updatedAt: 2000,
 };
 
-const MOCK_NEXT_STAGE: EnrichedStagePayload = {
+const MOCK_CURRENT_STAGE = {
   stage: "lock",
-  actionKind: "proof",
-  proofPayload: "0xdeadbeef",
-  contractMethod: "submitLockProof",
-  contractArgs: [0, "0xdeadbeef", TX_ID],
-  targetChainId: 31338,
-  targetConnector: "0x2222222222222222222222222222222222222222",
-  verificationMode: "colibri",
-  verificationDegraded: false,
-  verifiedStage: "source-deposit",
+  checkpointState: "prepared",
+  plannerAction: "lock",
+  plannerMismatch: false,
+  preparedPayload: {
+    stage: "lock",
+    actionKind: "proof",
+    proofPayload: "0xdeadbeef",
+    contractMethod: "submitLockProof",
+    contractArgs: [0, "0xdeadbeef", TX_ID],
+    targetChainId: 31338,
+    targetConnector: "0x2222222222222222222222222222222222222222",
+    verificationMode: "colibri",
+    verificationDegraded: false,
+    verifiedStage: "source-deposit",
+  },
 };
 
 function makeStore() {
@@ -111,16 +117,17 @@ describe("agentApi endpoints", () => {
     expect(data.status).toBe("ready_for_signature");
   });
 
-  it("getNextStage reads /jobs/:id/next-stage", async () => {
-    vi.mocked(fetch).mockResolvedValueOnce(jsonResponse(MOCK_NEXT_STAGE));
+  it("getCurrentStage reads /jobs/:id/stages/current", async () => {
+    vi.mocked(fetch).mockResolvedValueOnce(jsonResponse(MOCK_CURRENT_STAGE));
 
     const store = makeStore();
-    const request = store.dispatch(agentApi.endpoints.getNextStage.initiate(JOB_ID));
+    const request = store.dispatch(agentApi.endpoints.getCurrentStage.initiate(JOB_ID));
     const data = await request.unwrap();
 
-    assertFetchPathContains(`/jobs/${JOB_ID}/next-stage`, "GET");
+    assertFetchPathContains(`/jobs/${JOB_ID}/stages/current`, "GET");
     expect(data.stage).toBe("lock");
-    expect(data.contractMethod).toBe("submitLockProof");
+    expect(data.checkpointState).toBe("prepared");
+    expect(data.preparedPayload?.contractMethod).toBe("submitLockProof");
   });
 
   it("updateJobSettings patches /jobs/:id/settings", async () => {
@@ -186,7 +193,7 @@ describe("agentApi endpoints", () => {
         plannerAction: "lock",
         plannerReason: "source has deposit, destination needs lock proof",
         plannerMismatch: false,
-        preparedPayload: MOCK_NEXT_STAGE,
+        preparedPayload: MOCK_CURRENT_STAGE.preparedPayload,
       }),
     );
 

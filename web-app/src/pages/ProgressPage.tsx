@@ -7,8 +7,8 @@ import type { RootState } from "../app/store";
 import {
   useGetJobQuery,
   useConfirmJobMutation,
+  useGetCurrentStageQuery,
   useGetStageDetailsQuery,
-  useGetNextStageQuery,
   usePrepareJobStageMutation,
   useRefreshJobMutation,
   useSubmitReceiptMutation,
@@ -162,9 +162,9 @@ export function ProgressPage() {
   const [refreshJobMutation, { isLoading: refreshingStatus }] = useRefreshJobMutation();
   const [prepareJobStage, { isLoading: preparingManual }] = usePrepareJobStageMutation();
 
-  // ── Next stage (only when ready_for_signature) ─────────────────────────────
-  const { data: nextStage } = useGetNextStageQuery(jobId ?? "", {
-    skip: !jobId || job?.status !== "ready_for_signature" || job?.relayMode !== "auto",
+  // ── Current stage details (used by both auto and manual modes) ────────────
+  const { data: currentStageDetails } = useGetCurrentStageQuery(jobId ?? "", {
+    skip: !jobId || job?.status !== "ready_for_signature",
   });
 
   const { data: stageDetails } = useGetStageDetailsQuery(
@@ -454,7 +454,7 @@ export function ProgressPage() {
   // ── Render: normal progress (happy path + refund) ──────────────────────────
   const canConfirmJob = !isManualMode && (job.status === "awaiting_confirmation" || job.status === "failed");
   const isRefundStage = job.currentStage && REFUND_STAGES.has(job.currentStage as RelayProofStage);
-  const submitPayload = isManualMode ? stageDetails?.preparedPayload : nextStage;
+  const submitPayload = isManualMode ? stageDetails?.preparedPayload : currentStageDetails?.preparedPayload;
   const manualCheckpointState = stageDetails?.checkpointState ?? "missing";
   const selectedManualStageIsProof = !DIRECT_ACTION_STAGES.has(manualStage);
 

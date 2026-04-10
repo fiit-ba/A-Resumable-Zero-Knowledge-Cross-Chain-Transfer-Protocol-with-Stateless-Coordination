@@ -26,7 +26,7 @@ vi.mock("../api/agentApi", async (importOriginal) => {
     ...actual,
     useGetJobQuery: vi.fn(),
     useConfirmJobMutation: vi.fn(),
-    useGetNextStageQuery: vi.fn(),
+    useGetCurrentStageQuery: vi.fn(),
     useGetStageDetailsQuery: vi.fn(),
     usePrepareJobStageMutation: vi.fn(),
     useRefreshJobMutation: vi.fn(),
@@ -38,8 +38,8 @@ vi.mock("../api/agentApi", async (importOriginal) => {
 import {
   useGetJobQuery,
   useConfirmJobMutation,
+  useGetCurrentStageQuery,
   useGetStageDetailsQuery,
-  useGetNextStageQuery,
   usePrepareJobStageMutation,
   useRefreshJobMutation,
   useSubmitReceiptMutation,
@@ -110,7 +110,7 @@ beforeEach(() => {
   vi.mocked(useUpdateJobSettingsMutation).mockReturnValue(anyMock([vi.fn(), { isLoading: false }]));
   vi.mocked(useRefreshJobMutation).mockReturnValue(anyMock([vi.fn(), { isLoading: false }]));
   vi.mocked(usePrepareJobStageMutation).mockReturnValue(anyMock([vi.fn(), { isLoading: false }]));
-  vi.mocked(useGetNextStageQuery).mockReturnValue(anyMock({ data: undefined }));
+  vi.mocked(useGetCurrentStageQuery).mockReturnValue(anyMock({ data: undefined }));
   vi.mocked(useGetStageDetailsQuery).mockReturnValue(anyMock({ data: undefined }));
   vi.mocked(useSubmitReceiptMutation).mockReturnValue(anyMock([vi.fn()]));
 });
@@ -238,16 +238,22 @@ describe("ProgressPage", () => {
         isLoading: false,
       }),
     );
-    vi.mocked(useGetNextStageQuery).mockReturnValue(
+    vi.mocked(useGetCurrentStageQuery).mockReturnValue(
       anyMock({
         data: {
           stage: "lock",
-          actionKind: "proof",
-          proofPayload: "0xdeadbeef",
-          contractMethod: "submitLockProof",
-          contractArgs: [0, "0xdeadbeef", "0x" + "ab".repeat(32)],
-          targetChainId: 31338,
-          targetConnector: "0x2222222222222222222222222222222222222222",
+          checkpointState: "prepared",
+          plannerAction: "lock",
+          plannerMismatch: false,
+          preparedPayload: {
+            stage: "lock",
+            actionKind: "proof",
+            proofPayload: "0xdeadbeef",
+            contractMethod: "submitLockProof",
+            contractArgs: [0, "0xdeadbeef", "0x" + "ab".repeat(32)],
+            targetChainId: 31338,
+            targetConnector: "0x2222222222222222222222222222222222222222",
+          },
         },
       }),
     );
