@@ -1,15 +1,20 @@
 // SPDX-License-Identifier: MIT
-pragma solidity ^0.8.28;
+pragma solidity ^0.8.34;
 
 import {Script, console2} from "forge-std/Script.sol";
 import {Connector} from "../src/connectors/Connector.sol";
+import {WrappedTokenFactory} from "../src/tokens/WrappedTokenFactory.sol";
+import {Errors} from "../src/libs/Errors.sol";
 
 /// @notice Deploys Connector with pre-deployed verifier adapters and per-route RISC Zero image IDs.
+/// @title DeployConnectorWithAdapters
+/// @author Trustless Universal Protocol Contributors
 /// @dev Required env vars:
 /// - PRIVATE_KEY: deployer key
 /// - RISC0_ADAPTER: deployed RiscZeroAdapter address
 /// - SNARK_ADAPTER: deployed SnarkAdapter address
 /// - ACK_WINDOW_SECONDS: ack window in seconds (uint64)
+/// - WRAPPED_TOKEN_FACTORY: deployed WrappedTokenFactory address (optional — deploys a new one if unset)
 ///
 /// Per-route RISC Zero image IDs (set to 0x0 for routes unused on this chain):
 /// - ORIGIN_MINT_IMAGE_ID   (VerifierRoute 0 — submitMintProof)
@@ -18,11 +23,14 @@ import {Connector} from "../src/connectors/Connector.sol";
 /// - DEST_ACK_IMAGE_ID      (VerifierRoute 3 — submitAckProof)
 /// - DEST_REFUND_CLAIM_IMAGE_ID (VerifierRoute 4 — submitRefundClaimProof)
 contract DeployConnectorWithAdapters is Script {
+    /// @notice Deploys a Connector using configured verifier adapters and route image IDs.
+    /// @return connector Deployed Connector instance.
     function run() external returns (Connector connector) {
         uint256 privateKey = vm.envUint("PRIVATE_KEY");
         address risc0Adapter = vm.envAddress("RISC0_ADAPTER");
         address snarkAdapter = vm.envAddress("SNARK_ADAPTER");
         uint64 ackWindowSeconds = uint64(vm.envUint("ACK_WINDOW_SECONDS"));
+        if (ackWindowSeconds == 0) revert Errors.ZeroAckWindow();
 
         bytes32[5] memory risc0RouteImageIds;
         risc0RouteImageIds[0] = vm.envOr("ORIGIN_MINT_IMAGE_ID", bytes32(0));
@@ -31,11 +39,18 @@ contract DeployConnectorWithAdapters is Script {
         risc0RouteImageIds[3] = vm.envOr("DEST_ACK_IMAGE_ID", bytes32(0));
         risc0RouteImageIds[4] = vm.envOr("DEST_REFUND_CLAIM_IMAGE_ID", bytes32(0));
 
+        address wrappedTokenFactoryAddr = vm.envOr("WRAPPED_TOKEN_FACTORY", address(0));
+
         vm.startBroadcast(privateKey);
-        connector = new Connector(risc0Adapter, snarkAdapter, ackWindowSeconds, risc0RouteImageIds);
+        if (wrappedTokenFactoryAddr == address(0)) {
+            wrappedTokenFactoryAddr = address(new WrappedTokenFactory());
+        }
+        connector =
+            new Connector(risc0Adapter, snarkAdapter, ackWindowSeconds, risc0RouteImageIds, wrappedTokenFactoryAddr);
         vm.stopBroadcast();
 
         console2.log("Connector:", address(connector));
+        console2.log("WrappedTokenFactory:", wrappedTokenFactoryAddr);
         console2.log("Risc0Adapter:", risc0Adapter);
         console2.log("SnarkAdapter:", snarkAdapter);
         console2.log("AckWindowSeconds:", ackWindowSeconds);

@@ -1,0 +1,16 @@
+{
+  "extends": "solhint:recommended",
+  "rules": {
+    "interface-starts-with-i": "warn",
+    "function-max-lines": ["warn", 75],
+    "func-param-name-mixedcase": "warn",
+    "modifier-name-mixedcase": "warn",
+    "named-parameters-mapping": "warn",
+    "private-vars-leading-underscore": "warn",
+    "ordering": "warn",
+    "func-visibility": ["warn", { "ignoreConstructors": true }],
+    "immutable-vars-naming": "off",
+    "import-path-check": "off",
+    "gas-indexed-events": "warn"
+  }
+}

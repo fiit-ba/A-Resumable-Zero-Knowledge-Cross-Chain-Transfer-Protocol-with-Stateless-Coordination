@@ -21,13 +21,13 @@ function runCli(args: string[]): { status: number; stdout: string; stderr: strin
   const result = spawnSync(tsxBin, ["src/cli.ts", ...args], {
     cwd: packageRoot,
     encoding: "utf8",
-    env: process.env
+    env: process.env,
   });
 
   return {
     status: result.status ?? 1,
     stdout: result.stdout,
-    stderr: result.stderr
+    stderr: result.stderr,
   };
 }
 
@@ -46,7 +46,7 @@ function commonArgs(txId: string): string[] {
     "--private-key",
     requiredEnv("INTEGRATION_PRIVATE_KEY"),
     "--proof-backend",
-    process.env.INTEGRATION_PROOF_BACKEND ?? "local"
+    process.env.INTEGRATION_PROOF_BACKEND ?? "local",
   ];
 }
 

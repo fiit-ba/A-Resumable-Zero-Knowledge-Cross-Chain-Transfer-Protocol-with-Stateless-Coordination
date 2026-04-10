@@ -1,0 +1,13 @@
+{
+  "name": "smart-contracts",
+  "private": true,
+  "scripts": {
+    "lint": "npx solhint \"script/**/*.sol\" -c .solhint.s.json; npx solhint \"src/**/*.sol\"; npx solhint \"test/**/*.sol\" -c .solhint.t.json",
+    "lint-src": "npx solhint \"script/**/*.sol\"; npx solhint \"src/**/*.sol\"",
+    "lint-all": "npx solhint \"script/**/*.sol\" -c .solhint.s.json; npx solhint \"src/**/*.sol\"; npx solhint \"test/**/*.sol\" -c .solhint.t.json",
+    "slither-debug": "slither . --fail-none --skip-assembly --exclude-informational --exclude-low --no-fail --include-paths 'src/(?!ebsi/)'"
+  },
+  "devDependencies": {
+    "solhint": "^6.1.0"
+  }
+}

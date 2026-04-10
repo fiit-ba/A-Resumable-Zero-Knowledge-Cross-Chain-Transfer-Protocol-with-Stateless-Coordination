@@ -1,17 +1,45 @@
 # Compiler files
 cache/
 out/
+dependencies/
 
 # Ignores development broadcast logs
-!/broadcast
+/broadcast/**
 /broadcast/*/31337/
-/broadcast/*/31338/
 /broadcast/**/dry-run/
+/deployments
 
-# Docs
-docs/
-
-# Dotenv file
+# Files
 .env
+lcov.info
+.mypy_cache
+.iml
 
-lib/**
+# Folders
+.vscode/
+.idea/
+
+# Hardhat
+artifacts/
+cache_hardhat/
+node_modules/
+typechain-types/
+coverage/
+coverage.json
+
+# Slither
+myenv/
+slither-output.json
+
+# local gitlab runner
+.github-ci-local
+
+# AI
+.claude
+
+# macOS
+.DS_Store
+**/.DS_Store
+
+lib/
+nemesis-auditor/

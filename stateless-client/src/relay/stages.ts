@@ -1,63 +1,191 @@
-import type { RelayProofStage, Stage, StageDefinition } from "../core/types.js";
+import type { ProofPaths, ProofRelayStage, RelayProofStage, Stage, StageDefinition } from "../core/types.js";
 
 export const STAGE_DEFINITIONS: Record<Stage, StageDefinition> = {
   "source-deposit": {
     stage: "source-deposit",
     eventName: "DepositLocked",
     expectedStatus: 1,
-    side: "source"
+    side: "source",
   },
   "destination-funds-released": {
     stage: "destination-funds-released",
     eventName: "FundsReleased",
     expectedStatus: 4,
-    side: "destination"
+    side: "destination",
   },
   "source-ack-ready": {
     stage: "source-ack-ready",
     eventName: "AckReady",
     expectedStatus: 2,
-    side: "source"
-  }
+    side: "source",
+  },
+  "source-refund-initiated": {
+    stage: "source-refund-initiated",
+    eventName: "RefundClaimed",
+    expectedStatus: 3,
+    side: "source",
+  },
+  "destination-burn-executed": {
+    stage: "destination-burn-executed",
+    eventName: "RefundExecuted",
+    expectedStatus: 5,
+    side: "destination",
+  },
 };
 
-export const RELAY_STAGE_TO_VERIFY_STAGE: Record<RelayProofStage, Stage> = {
-  lock: "source-deposit",
-  mint: "destination-funds-released",
-  ack: "source-ack-ready"
-};
+// ---------------------------------------------------------------------------
+// Canonical stage registry
+// ---------------------------------------------------------------------------
 
-export const RELAY_STAGE_TO_SUBMISSION_METHOD: Record<RelayProofStage, string> = {
-  lock: "submitLockProof",
-  mint: "submitMintProof",
-  ack: "submitAckProof"
-};
+/** Complete per-stage metadata used by relay execution, agent orchestration, and server validation. */
+export interface RelayStageSpec {
+  stage: RelayProofStage;
+  actionKind: "proof" | "direct";
+  submissionSide: "source" | "destination";
+  submissionMethod: string;
+  /** Which on-chain Stage to verify before generating proof. Absent for direct stages. */
+  verifyStage?: Stage;
+  /** Expected on-chain status after successful submission. null = not asserted. */
+  expectedPostSubmitStatus: number | null;
+  /** Proof host configuration. Absent for direct stages. */
+  proofHost?: {
+    workspaceKey: keyof ProofPaths;
+    dockerScriptKey: keyof ProofPaths;
+    localPackage: string;
+    localBin: string;
+  };
+}
 
-export const RELAY_STAGE_TO_PROOF_HOST: Record<
-  RelayProofStage,
-  {
-    workspaceKey: "lockWorkspace" | "mintWorkspace" | "ackWorkspace";
-    dockerScriptKey: "lockDockerScript" | "mintDockerScript" | "ackDockerScript";
-    localPackage: "lock-proof-host" | "mint-proof-host" | "ack-proof-host";
-    localBin: "lock-proof-host" | "mint-proof-host" | "ack-proof-host";
-  }
-> = {
+/** Ordered list of all relay stages (happy path + refund path). */
+export const ALL_RELAY_STAGES: RelayProofStage[] = [
+  "lock",
+  "mint",
+  "ack",
+  "refund-initiate",
+  "refund-claim",
+  "execute-burn",
+  "burn-proof",
+];
+
+/** Single authoritative source for every stage's relay metadata. */
+export const RELAY_STAGE_REGISTRY: Record<RelayProofStage, RelayStageSpec> = {
   lock: {
-    workspaceKey: "lockWorkspace",
-    dockerScriptKey: "lockDockerScript",
-    localPackage: "lock-proof-host",
-    localBin: "lock-proof-host"
+    stage: "lock",
+    actionKind: "proof",
+    submissionSide: "destination",
+    submissionMethod: "submitLockProof",
+    verifyStage: "source-deposit",
+    expectedPostSubmitStatus: 4,
+    proofHost: {
+      workspaceKey: "lockWorkspace",
+      dockerScriptKey: "lockDockerScript",
+      localPackage: "lock-proof-host",
+      localBin: "lock-proof-host",
+    },
   },
   mint: {
-    workspaceKey: "mintWorkspace",
-    dockerScriptKey: "mintDockerScript",
-    localPackage: "mint-proof-host",
-    localBin: "mint-proof-host"
+    stage: "mint",
+    actionKind: "proof",
+    submissionSide: "source",
+    submissionMethod: "submitMintProof",
+    verifyStage: "destination-funds-released",
+    expectedPostSubmitStatus: 2,
+    proofHost: {
+      workspaceKey: "mintWorkspace",
+      dockerScriptKey: "mintDockerScript",
+      localPackage: "mint-proof-host",
+      localBin: "mint-proof-host",
+    },
   },
   ack: {
-    workspaceKey: "ackWorkspace",
-    dockerScriptKey: "ackDockerScript",
-    localPackage: "ack-proof-host",
-    localBin: "ack-proof-host"
-  }
+    stage: "ack",
+    actionKind: "proof",
+    submissionSide: "destination",
+    submissionMethod: "submitAckProof",
+    verifyStage: "source-ack-ready",
+    expectedPostSubmitStatus: 0,
+    proofHost: {
+      workspaceKey: "ackWorkspace",
+      dockerScriptKey: "ackDockerScript",
+      localPackage: "ack-proof-host",
+      localBin: "ack-proof-host",
+    },
+  },
+  "refund-initiate": {
+    stage: "refund-initiate",
+    actionKind: "direct",
+    submissionSide: "source",
+    submissionMethod: "initiateRefund",
+    expectedPostSubmitStatus: null,
+  },
+  "refund-claim": {
+    stage: "refund-claim",
+    actionKind: "proof",
+    submissionSide: "destination",
+    submissionMethod: "submitRefundClaimProof",
+    verifyStage: "source-refund-initiated",
+    expectedPostSubmitStatus: null,
+    proofHost: {
+      workspaceKey: "refundClaimWorkspace",
+      dockerScriptKey: "refundClaimDockerScript",
+      localPackage: "refund-claim-proof-host",
+      localBin: "refund-claim-proof-host",
+    },
+  },
+  "execute-burn": {
+    stage: "execute-burn",
+    actionKind: "direct",
+    submissionSide: "destination",
+    submissionMethod: "executeBurn",
+    expectedPostSubmitStatus: null,
+  },
+  "burn-proof": {
+    stage: "burn-proof",
+    actionKind: "proof",
+    submissionSide: "source",
+    submissionMethod: "submitBurnProof",
+    verifyStage: "destination-burn-executed",
+    expectedPostSubmitStatus: null,
+    proofHost: {
+      workspaceKey: "burnWorkspace",
+      dockerScriptKey: "burnDockerScript",
+      localPackage: "burn-proof-host",
+      localBin: "burn-proof-host",
+    },
+  },
 };
+
+// ---------------------------------------------------------------------------
+// Registry-derived helpers
+// ---------------------------------------------------------------------------
+
+/** Type guard: true if the stage requires RISC Zero proof generation. */
+export function isProofRelayStage(stage: RelayProofStage): stage is ProofRelayStage {
+  return RELAY_STAGE_REGISTRY[stage].actionKind === "proof";
+}
+
+// ---------------------------------------------------------------------------
+// Legacy exports derived from the registry (kept for backward compatibility)
+// ---------------------------------------------------------------------------
+
+/** Which stages require RISC Zero proof generation vs direct contract call. */
+export const ACTION_KIND_BY_STAGE: Record<RelayProofStage, "proof" | "direct"> =
+  Object.fromEntries(
+    ALL_RELAY_STAGES.map((s) => [s, RELAY_STAGE_REGISTRY[s].actionKind]),
+  ) as Record<RelayProofStage, "proof" | "direct">;
+
+export const RELAY_STAGE_TO_VERIFY_STAGE: Record<ProofRelayStage, Stage> = Object.fromEntries(
+  ALL_RELAY_STAGES.filter(isProofRelayStage).map((s) => [s, RELAY_STAGE_REGISTRY[s].verifyStage]),
+) as Record<ProofRelayStage, Stage>;
+
+export const RELAY_STAGE_TO_SUBMISSION_METHOD: Record<RelayProofStage, string> =
+  Object.fromEntries(
+    ALL_RELAY_STAGES.map((s) => [s, RELAY_STAGE_REGISTRY[s].submissionMethod]),
+  ) as Record<RelayProofStage, string>;
+
+export const RELAY_STAGE_TO_PROOF_HOST: Record<
+  ProofRelayStage,
+  NonNullable<RelayStageSpec["proofHost"]>
+> = Object.fromEntries(
+  ALL_RELAY_STAGES.filter(isProofRelayStage).map((s) => [s, RELAY_STAGE_REGISTRY[s].proofHost]),
+) as Record<ProofRelayStage, NonNullable<RelayStageSpec["proofHost"]>>;

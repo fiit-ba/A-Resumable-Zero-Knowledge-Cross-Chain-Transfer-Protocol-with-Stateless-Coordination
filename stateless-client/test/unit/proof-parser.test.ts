@@ -14,7 +14,7 @@ const LOCK_OUTPUT = [
   "originAckDeadline: 999",
   "nonce: 7",
   "sourceChainId: 31337",
-  "destChainId: 31338"
+  "destChainId: 31338",
 ].join("\n");
 
 describe("parseProofArtifact", () => {
@@ -29,16 +29,12 @@ describe("parseProofArtifact", () => {
   });
 
   it("fails when required fields are missing", () => {
-    expect(() => parseProofArtifact("mint", "docker", "txId: 0x1234")).toThrow(
-      /proofPayload/i
-    );
+    expect(() => parseProofArtifact("mint", "docker", "txId: 0x1234")).toThrow(/proofPayload/i);
   });
 
   it("fails when numeric fields are malformed", () => {
     const malformed = LOCK_OUTPUT.replace("amount: 1000", "amount: abc");
-    expect(() => parseProofArtifact("lock", "local", malformed)).toThrow(
-      /amount/i
-    );
+    expect(() => parseProofArtifact("lock", "local", malformed)).toThrow(/amount/i);
   });
 
   it("parses ack proof output", () => {
@@ -46,15 +42,11 @@ describe("parseProofArtifact", () => {
       "proofPayload: 0xabcd",
       "txId: 0x1111111111111111111111111111111111111111111111111111111111111111",
       "srcChainConnector: 0x1000000000000000000000000000000000000001",
-      "dstChainConnector: 0x2000000000000000000000000000000000000002"
+      "dstChainConnector: 0x2000000000000000000000000000000000000002",
     ].join("\n");
 
     const artifact = parseProofArtifact("ack", "docker", output);
-    expect(artifact.srcChainConnector).toBe(
-      "0x1000000000000000000000000000000000000001"
-    );
-    expect(artifact.dstChainConnector).toBe(
-      "0x2000000000000000000000000000000000000002"
-    );
+    expect(artifact.srcChainConnector).toBe("0x1000000000000000000000000000000000000001");
+    expect(artifact.dstChainConnector).toBe("0x2000000000000000000000000000000000000002");
   });
 });

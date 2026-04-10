@@ -1,0 +1,18 @@
+{
+  "extends": "solhint:recommended",
+  "rules": {
+    "function-max-lines": ["warn", 100],
+    "one-contract-per-file": "off",
+    "no-console": "off",
+
+    "modifier-name-mixedcase": "warn",
+    "named-parameters-mapping": "warn",
+    "func-param-name-mixedcase": "warn",
+    "private-vars-leading-underscore": "warn",
+    "ordering": "warn",
+    "func-visibility": ["warn", { "ignoreConstructors": true }],
+    "immutable-vars-naming": "off",
+    "max-states-count": "off",
+    "import-path-check": "off"
+  }
+}

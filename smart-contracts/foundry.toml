@@ -2,9 +2,15 @@
 src = "src"
 out = "out"
 libs = ["lib"]
-via_ir = true
+auto_detect_solc = false
+solc_version = "0.8.34"
+evm_version = "cancun"
 optimizer = true
 optimizer_runs = 200
+bytecode_hash = "none" # deterministic CREATE2 deployment
+cbor_metadata = false # deterministic bytecode for CREATE2
+ignored_error_codes = [8417]
+via-ir = true
 
 remappings = [
     "forge-std/=lib/forge-std/src/",
@@ -12,4 +18,14 @@ remappings = [
     "openzeppelin/contracts/=lib/risc0-ethereum/lib/openzeppelin-contracts/contracts/"
 ]
 
-# See more config options https://github.com/foundry-rs/foundry/blob/master/crates/config/README.md#all-options
+fs_permissions = [
+    { access = "read", path = "./broadcast" },
+    { access = "read-write", path = "./deployments" },
+    { access = "read", path = "./reports" },
+]
+
+
+[dependencies]
+"@openzeppelin-contracts" = "5.5.0"
+"@openzeppelin-contracts-upgradeable" = "5.5.0"
+forge-std = "1.9.6"

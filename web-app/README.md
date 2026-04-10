@@ -1,73 +1,89 @@
-# React + TypeScript + Vite
+# Web App
 
-This template provides a minimal setup to get React working in Vite with HMR and some ESLint rules.
+This package contains the operator-facing React application for starting a transfer, tracking relay progress, and submitting each prepared relay transaction from a browser wallet.
 
-Currently, two official plugins are available:
+## What the App Does
 
-- [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react) uses [Oxc](https://oxc.rs)
-- [@vitejs/plugin-react-swc](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react-swc) uses [SWC](https://swc.rs/)
+- collects the transfer input and selected source/destination network profiles
+- sends `depositAndLock` through the connected wallet
+- registers the resulting `txId` with the local stateless-client agent
+- polls the local stateless-client agent for the next prepared stage
+- asks the wallet to submit the stage transaction on the correct chain
+- records relay receipts back to the agent so the job can advance
 
-## React Compiler
+The app has two primary routes:
 
-The React Compiler is not enabled on this template because of its impact on dev & build performances. To add it, see [this documentation](https://react.dev/learn/react-compiler/installation).
+- `/`: transfer form
+- `/progress/:jobId`: job progress and per-stage submission UI
 
-## Expanding the ESLint configuration
+## Prerequisites
 
-If you are developing a production application, we recommend updating the configuration to enable type-aware lint rules:
+- the local stateless-client agent running on `http://localhost:7549`, or `VITE_AGENT_URL` pointing elsewhere
+- a browser wallet that supports EIP-1193, such as MetaMask
+- access to the configured source and destination networks
 
-```js
-export default defineConfig([
-  globalIgnores(['dist']),
-  {
-    files: ['**/*.{ts,tsx}'],
-    extends: [
-      // Other configs...
+## Install and Run
 
-      // Remove tseslint.configs.recommended and replace with this
-      tseslint.configs.recommendedTypeChecked,
-      // Alternatively, use this for stricter rules
-      tseslint.configs.strictTypeChecked,
-      // Optionally, add this for stylistic rules
-      tseslint.configs.stylisticTypeChecked,
+From the repository root:
 
-      // Other configs...
-    ],
-    languageOptions: {
-      parserOptions: {
-        project: ['./tsconfig.node.json', './tsconfig.app.json'],
-        tsconfigRootDir: import.meta.dirname,
-      },
-      // other options...
-    },
-  },
-])
+```bash
+npm install
+npm run dev -w web-app
 ```
 
-You can also install [eslint-plugin-react-x](https://github.com/Rel1cx/eslint-react/tree/main/packages/plugins/eslint-plugin-react-x) and [eslint-plugin-react-dom](https://github.com/Rel1cx/eslint-react/tree/main/packages/plugins/eslint-plugin-react-dom) for React-specific lint rules:
+Or from this directory:
 
-```js
-// eslint.config.js
-import reactX from 'eslint-plugin-react-x'
-import reactDom from 'eslint-plugin-react-dom'
-
-export default defineConfig([
-  globalIgnores(['dist']),
-  {
-    files: ['**/*.{ts,tsx}'],
-    extends: [
-      // Other configs...
-      // Enable lint rules for React
-      reactX.configs['recommended-typescript'],
-      // Enable lint rules for React DOM
-      reactDom.configs.recommended,
-    ],
-    languageOptions: {
-      parserOptions: {
-        project: ['./tsconfig.node.json', './tsconfig.app.json'],
-        tsconfigRootDir: import.meta.dirname,
-      },
-      // other options...
-    },
-  },
-])
+```bash
+cd web-app
+npm install
+npm run dev
 ```
+
+The Vite dev server starts on its default port unless configured otherwise.
+
+## Environment
+
+Set a custom agent URL when needed:
+
+```bash
+VITE_AGENT_URL=http://localhost:7549 npm run dev -w web-app
+```
+
+By default the app uses `http://localhost:7549`.
+
+## Scripts
+
+```bash
+npm run dev
+npm run build
+npm run lint
+npm run preview
+npm run test
+```
+
+## Network Profiles Exposed in the UI
+
+The app currently exposes these profiles:
+
+- `local-anvil`
+- `local-hardhat`
+- `sepolia`
+- `holesky`
+- `hoodi`
+- `gnosis`
+- `chiado`
+
+The profile metadata lives in `src/lib/networks.ts`.
+
+## Testing
+
+The package uses Vitest and Testing Library for UI and agent-integration tests.
+
+```bash
+npm run test -w web-app
+```
+
+## Related Docs
+
+- [`../README.md`](../README.md)
+- [`../stateless-client/README.md`](../stateless-client/README.md)

@@ -2,14 +2,14 @@ import { describe, expect, it } from "vitest";
 import { connectorInterface } from "../../src/contracts/abi.js";
 import { validateStageLog } from "../../src/relay/verification.js";
 
-const TX_ID =
-  "0x1111111111111111111111111111111111111111111111111111111111111111";
+const TX_ID = "0x1111111111111111111111111111111111111111111111111111111111111111";
 const SOURCE_CONNECTOR = "0x1000000000000000000000000000000000000001";
 const DEST_CONNECTOR = "0x2000000000000000000000000000000000000002";
 const USER = "0x3000000000000000000000000000000000000003";
 const RECEIVER = "0x4000000000000000000000000000000000000004";
 const TOKEN_A = "0x5000000000000000000000000000000000000005";
 const TOKEN_B = "0x6000000000000000000000000000000000000006";
+const DESTINATION_CHAIN_ID = 31338n;
 
 function encodeStageLog(eventName: string, args: unknown[]) {
   const eventFragment = connectorInterface.getEvent(eventName);
@@ -17,7 +17,7 @@ function encodeStageLog(eventName: string, args: unknown[]) {
   return {
     address: eventName === "FundsReleased" ? DEST_CONNECTOR : SOURCE_CONNECTOR,
     topics: encoded.topics,
-    data: encoded.data
+    data: encoded.data,
   };
 }
 
@@ -34,7 +34,8 @@ describe("validateStageLog", () => {
       DEST_CONNECTOR,
       10,
       7n,
-      31337n
+      31337n,
+      DESTINATION_CHAIN_ID,
     ]);
 
     expect(() =>
@@ -44,8 +45,8 @@ describe("validateStageLog", () => {
         SOURCE_CONNECTOR,
         TX_ID,
         SOURCE_CONNECTOR,
-        DEST_CONNECTOR
-      )
+        DEST_CONNECTOR,
+      ),
     ).not.toThrow();
   });
 
@@ -63,7 +64,7 @@ describe("validateStageLog", () => {
       0,
       "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
       "0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
-      "0x1234"
+      "0x1234",
     ]);
 
     expect(() =>
@@ -73,8 +74,8 @@ describe("validateStageLog", () => {
         DEST_CONNECTOR,
         TX_ID,
         SOURCE_CONNECTOR,
-        DEST_CONNECTOR
-      )
+        DEST_CONNECTOR,
+      ),
     ).not.toThrow();
   });
 
@@ -92,7 +93,7 @@ describe("validateStageLog", () => {
       0,
       "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
       "0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
-      "0x1234"
+      "0x1234",
     ]);
 
     expect(() =>
@@ -102,8 +103,8 @@ describe("validateStageLog", () => {
         SOURCE_CONNECTOR,
         TX_ID,
         SOURCE_CONNECTOR,
-        DEST_CONNECTOR
-      )
+        DEST_CONNECTOR,
+      ),
     ).not.toThrow();
   });
 
@@ -119,7 +120,8 @@ describe("validateStageLog", () => {
       DEST_CONNECTOR,
       10,
       7n,
-      31337n
+      31337n,
+      DESTINATION_CHAIN_ID,
     ]);
 
     expect(() =>
@@ -129,8 +131,8 @@ describe("validateStageLog", () => {
         SOURCE_CONNECTOR,
         TX_ID,
         "0x9000000000000000000000000000000000000009",
-        DEST_CONNECTOR
-      )
+        DEST_CONNECTOR,
+      ),
     ).toThrow(/srcChainConnector mismatch/i);
   });
 });

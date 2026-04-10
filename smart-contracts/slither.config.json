@@ -1,0 +1,7 @@
+{
+  "detectors_to_exclude": [
+    "pragma",
+    "locked-ether",
+    "uninitialized-local"
+  ]
+}

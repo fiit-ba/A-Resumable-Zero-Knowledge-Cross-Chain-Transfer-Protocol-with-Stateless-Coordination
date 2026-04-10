@@ -1,0 +1,26 @@
+{
+  "extends": "solhint:recommended",
+  "rules": {
+    "function-max-lines": ["warn", 100],
+    "max-states-count": ["warn", 30],
+    "one-contract-per-file": "off",
+    "no-console": "off",
+    "var-name-mixedcase": "off",
+    "foundry-test-functions": "off",
+    "modifier-name-mixedcase": "warn",
+    "named-parameters-mapping": "warn",
+    "func-param-name-mixedcase": "warn",
+    "private-vars-leading-underscore": "warn",
+    "ordering": "off",
+    "func-visibility": [
+      "warn",
+      {
+        "ignoreConstructors": true
+      }
+    ],
+    "func-name-mixedcase": "off",
+    "immutable-vars-naming": "off",
+    "use-natspec": "off",
+    "import-path-check": "off"
+  }
+}

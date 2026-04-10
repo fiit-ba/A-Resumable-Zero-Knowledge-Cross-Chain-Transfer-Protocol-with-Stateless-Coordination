@@ -7,13 +7,15 @@
     "dev": "vite",
     "build": "tsc -b && vite build",
     "lint": "eslint .",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
     "preview": "vite preview",
     "test": "vitest run",
-    "test:watch": "vitest"
+    "test:watch": "vitest",
+    "format": "prettier --write \"**/*.{ts,tsx}\"",
+    "format:check": "prettier --check \"**/*.{ts,tsx}\""
   },
   "dependencies": {
     "@reduxjs/toolkit": "^2.3.0",
-    "agent-shared": "*",
     "ethers": "^6.16.0",
     "react": "^19.2.4",
     "react-dom": "^19.2.4",

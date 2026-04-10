@@ -54,7 +54,10 @@ export function parseChainId(value: string, fieldName: string): number {
   return id;
 }
 
-export function normalizeBlockTag(value: BlockTagInput | undefined, fallback: BlockTagInput = "latest"): BlockTagInput {
+export function normalizeBlockTag(
+  value: BlockTagInput | undefined,
+  fallback: BlockTagInput = "latest",
+): BlockTagInput {
   if (value === undefined || value === null) {
     return fallback;
   }

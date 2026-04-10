@@ -1,7 +1,9 @@
 // SPDX-License-Identifier: MIT
-pragma solidity ^0.8.28;
+pragma solidity ^0.8.34;
 
 /// @title ProofOutputs
+/// @author Trustless Universal Protocol Contributors
+/// @notice Encoders for proof public inputs consumed by on-chain verifier adapters.
 library ProofOutputs {
     struct LockProofPublicInputs {
         bytes32 txId;
@@ -17,6 +19,7 @@ library ProofOutputs {
         uint256 sourceChainId;
         uint256 destinationChainId;
     }
+
     function encodeLockProof(LockProofPublicInputs memory o) internal pure returns (bytes memory) {
         return abi.encode(
             o.txId,

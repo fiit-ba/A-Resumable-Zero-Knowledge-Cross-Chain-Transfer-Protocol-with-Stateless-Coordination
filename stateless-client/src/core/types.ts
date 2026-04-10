@@ -3,13 +3,52 @@ export type Side = "source" | "destination";
 export type Stage =
   | "source-deposit"
   | "destination-funds-released"
-  | "source-ack-ready";
+  | "source-ack-ready"
+  | "source-refund-initiated"
+  | "destination-burn-executed";
 
-export type RelayProofStage = "lock" | "mint" | "ack";
+export type RelayProofStage =
+  | "lock"
+  | "mint"
+  | "ack"
+  | "refund-initiate"
+  | "refund-claim"
+  | "execute-burn"
+  | "burn-proof";
 
 export type ProofBackend = "local" | "docker";
 
 export type VerificationMode = "colibri" | "rpc-fallback";
+export type AckVerificationVariant = "standard" | "pruned-source-origin";
+
+export interface StageVerificationHistoryEntry {
+  stage: Stage;
+  mode: VerificationMode;
+  degraded: boolean;
+}
+
+export interface StageVerificationHints {
+  ackVariant?: AckVerificationVariant;
+  priorProofStageVerifications?: StageVerificationHistoryEntry[];
+}
+
+export interface StageVerificationPolicy {
+  retryColibriFromScratch: boolean;
+}
+
+/**
+ * Machine-readable reason for why a verification was degraded to rpc-fallback.
+ * Consumers can use this to log or surface chain-specific diagnostics without
+ * parsing human-readable warning messages.
+ */
+export type VerificationDegradeReason =
+  | "chiado_sync_backwards"
+  | "chiado_ssz_parse"
+  | "chiado_parent_beacon_missing"
+  | "chiado_finalization"
+  | "chiado_block_not_signed"
+  | "chiado_bootstrap_unsupported"
+  | "local_chain";
 
 export type NetworkProfileName =
   | "local-anvil"
@@ -43,15 +82,21 @@ export interface StageExecutionBlocks {
   sourceDeposit?: BlockTagInput;
   destinationFundsReleased?: BlockTagInput;
   sourceAckReady?: BlockTagInput;
+  sourceRefundInitiated?: BlockTagInput;
+  destinationBurnExecuted?: BlockTagInput;
 }
 
 export interface ProofPaths {
   lockWorkspace: string;
   mintWorkspace: string;
   ackWorkspace: string;
+  refundClaimWorkspace: string;
+  burnWorkspace: string;
   lockDockerScript: string;
   mintDockerScript: string;
   ackDockerScript: string;
+  refundClaimDockerScript: string;
+  burnDockerScript: string;
 }
 
 /**
@@ -68,7 +113,7 @@ export interface StageSubmissionConfig {
   repoRoot: string;
   proofPaths: ProofPaths;
   risc0ProverMode: "local" | "bonsai";
-  allowPrunedSourceAck?: boolean;
+  verificationHints?: StageVerificationHints;
 }
 
 export interface RelayConfig extends StageSubmissionConfig {
@@ -87,14 +132,17 @@ export interface StageVerificationResult {
   stage: Stage;
   mode: VerificationMode;
   degraded: boolean;
+  /** Present only when degraded is true; identifies the root cause of fallback. */
+  degradeReason?: VerificationDegradeReason;
   eventName: string;
   txId: string;
   connector: string;
   status: number;
+  eventBlockNumber?: number;
 }
 
 export interface ProofArtifact {
-  stage: RelayProofStage;
+  stage: ProofRelayStage;
   backend: ProofBackend;
   proofPayload: string;
   txId: string;
@@ -114,6 +162,7 @@ export interface ProofArtifact {
 }
 
 export interface SubmissionResult {
+  /** All relay stage types, including direct stages (refund-initiate, execute-burn). */
   stage: RelayProofStage;
   txHash: string;
   receiptBlock: number;
@@ -121,8 +170,10 @@ export interface SubmissionResult {
 }
 
 export interface RelayStageResult {
-  verification: StageVerificationResult;
-  proof: ProofArtifact;
+  /** Absent for direct-action stages (refund-initiate, execute-burn). */
+  verification?: StageVerificationResult;
+  /** Absent for direct-action stages (refund-initiate, execute-burn). */
+  proof?: ProofArtifact;
   submission: SubmissionResult;
 }
 
@@ -133,21 +184,34 @@ export interface HappyPathResult {
 }
 
 /**
- * Returned by prepareStageSubmission: proof artifact, the browser-ready
- * unsigned payload, and the verification result (including Colibri/fallback mode).
+ * Returned by prepareStageSubmission: the browser-ready unsigned payload plus
+ * optional proof and verification (absent for direct-action stages).
  */
 export interface StageSubmissionResult {
-  proof: ProofArtifact;
+  /** Absent for direct-action stages (refund-initiate, execute-burn). */
+  proof?: ProofArtifact;
   payload: StageReadyPayload;
-  verification: StageVerificationResult;
+  /** Absent for direct-action stages. */
+  verification?: StageVerificationResult;
 }
 
-export type ResumeAction = "lock" | "mint" | "ack" | "noop" | "error";
+export type ResumeAction =
+  | "lock"
+  | "mint"
+  | "ack"
+  | "refund-initiate"
+  | "refund-claim"
+  | "execute-burn"
+  | "burn-proof"
+  | "noop"
+  | "error";
 
 export interface HistoryFlags {
   depositLocked: boolean;
   fundsReleased: boolean;
   ackReady: boolean;
+  /** Set when source=1, destination=4 and block.timestamp >= ackDeadline. */
+  ackDeadlineExpired?: boolean;
 }
 
 export interface ResumeDecision {
@@ -163,8 +227,10 @@ export interface ResumeResult {
   executed?: RelayStageResult;
 }
 
+export type ProofRelayStage = "lock" | "mint" | "ack" | "refund-claim" | "burn-proof";
+
 export interface ProofRunnerInput {
-  stage: RelayProofStage;
+  stage: ProofRelayStage;
   backend: ProofBackend;
   txId: string;
   rpcUrl: string;
@@ -179,7 +245,7 @@ export interface ProofRunnerInput {
 
 export interface StageDefinition {
   stage: Stage;
-  eventName: "DepositLocked" | "FundsReleased" | "AckReady";
+  eventName: "DepositLocked" | "FundsReleased" | "AckReady" | "RefundClaimed" | "RefundExecuted";
   expectedStatus: number;
   side: Side;
 }
@@ -201,15 +267,17 @@ export interface TransferIntent {
   receiver: string;
 }
 
-export type JobStatus =
-  | "pending"
-  | "running"
-  | "proof-ready"
-  | "done"
-  | "error"
-  | "unsupported";
+/**
+ * @deprecated Use `JobStatus` from `agent/contracts.ts` instead.
+ * This old definition uses legacy status strings ("pending", "running", etc.)
+ * that were replaced by the agent's richer state machine.
+ */
+export type JobStatus = "pending" | "running" | "proof-ready" | "done" | "error" | "unsupported";
 
-/** Persisted per-job state stored in the local agent SQLite database. */
+/**
+ * @deprecated Use `RelayJob` from `agent/contracts.ts` instead.
+ * This definition is kept as a compatibility shim during the refactor.
+ */
 export interface RelayJob {
   id: string;
   txId: string;
@@ -231,7 +299,10 @@ export interface RelayJob {
  */
 export interface StageReadyPayload {
   stage: RelayProofStage;
-  proofPayload: string;
+  /** "proof" stages require RISC Zero proof generation; "direct" stages call the contract immediately. */
+  actionKind: "proof" | "direct";
+  /** null for direct actions (refund-initiate, execute-burn). */
+  proofPayload?: string | null;
   contractMethod: string;
   contractArgs: unknown[];
   targetChainId: number;

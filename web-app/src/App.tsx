@@ -1,7 +1,7 @@
-import { Routes, Route, Navigate } from 'react-router-dom';
-import { TransferForm } from './pages/TransferForm';
-import { ProgressPage } from './pages/ProgressPage';
-import './App.css';
+import { Routes, Route, Navigate } from "react-router-dom";
+import { TransferForm } from "./pages/TransferForm";
+import { ProgressPage } from "./pages/ProgressPage";
+import "./App.css";
 
 export default function App() {
   return (

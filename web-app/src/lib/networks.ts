@@ -29,14 +29,14 @@ export const NETWORKS: Record<string, NetworkInfo> = {
     name: "Local Anvil",
     chainId: 31337,
     rpcUrls: ["http://127.0.0.1:8545"],
-    nativeCurrency: { name: "Ether", symbol: "ETH", decimals: 18 }
+    nativeCurrency: { name: "Ether", symbol: "ETH", decimals: 18 },
   },
   "local-hardhat": {
     profile: "local-hardhat",
     name: "Local Hardhat",
     chainId: 31338,
     rpcUrls: ["http://127.0.0.1:8546"],
-    nativeCurrency: { name: "Ether", symbol: "ETH", decimals: 18 }
+    nativeCurrency: { name: "Ether", symbol: "ETH", decimals: 18 },
   },
   sepolia: {
     profile: "sepolia",
@@ -44,7 +44,7 @@ export const NETWORKS: Record<string, NetworkInfo> = {
     chainId: 11155111,
     rpcUrls: ["https://ethereum-sepolia-rpc.publicnode.com"],
     blockExplorerUrls: ["https://sepolia.etherscan.io"],
-    nativeCurrency: { name: "Sepolia Ether", symbol: "SEP", decimals: 18 }
+    nativeCurrency: { name: "Sepolia Ether", symbol: "SEP", decimals: 18 },
   },
   holesky: {
     profile: "holesky",
@@ -52,14 +52,14 @@ export const NETWORKS: Record<string, NetworkInfo> = {
     chainId: 17000,
     rpcUrls: ["https://ethereum-holesky-rpc.publicnode.com"],
     blockExplorerUrls: ["https://holesky.etherscan.io"],
-    nativeCurrency: { name: "Holesky Ether", symbol: "ETH", decimals: 18 }
+    nativeCurrency: { name: "Holesky Ether", symbol: "ETH", decimals: 18 },
   },
   hoodi: {
     profile: "hoodi",
     name: "Hoodi",
     chainId: 560048,
     rpcUrls: ["https://ethereum-hoodi-rpc.publicnode.com"],
-    nativeCurrency: { name: "Ether", symbol: "ETH", decimals: 18 }
+    nativeCurrency: { name: "Ether", symbol: "ETH", decimals: 18 },
   },
   gnosis: {
     profile: "gnosis",
@@ -67,7 +67,7 @@ export const NETWORKS: Record<string, NetworkInfo> = {
     chainId: 100,
     rpcUrls: ["https://rpc.ankr.com/gnosis"],
     blockExplorerUrls: ["https://gnosisscan.io"],
-    nativeCurrency: { name: "xDAI", symbol: "xDAI", decimals: 18 }
+    nativeCurrency: { name: "xDAI", symbol: "xDAI", decimals: 18 },
   },
   chiado: {
     profile: "chiado",
@@ -75,15 +75,15 @@ export const NETWORKS: Record<string, NetworkInfo> = {
     chainId: 10200,
     rpcUrls: ["https://gnosis-chiado-rpc.publicnode.com"],
     blockExplorerUrls: ["https://gnosis-chiado.blockscout.com"],
-    nativeCurrency: { name: "Chiado xDAI", symbol: "xDAI", decimals: 18 }
-  }
+    nativeCurrency: { name: "Chiado xDAI", symbol: "xDAI", decimals: 18 },
+  },
 };
 
 const NETWORKS_BY_CHAIN_ID = new Map<number, NetworkInfo>(
-  Object.values(NETWORKS).map((network) => [network.chainId, network])
+  Object.values(NETWORKS).map((network) => [network.chainId, network]),
 );
 
-export const NETWORK_OPTIONS = Object.keys(NETWORKS);
+export const NETWORK_OPTIONS = Object.keys(NETWORKS).filter((profile) => !profile.startsWith("local-"));
 
 export function getChainId(profile: string): number {
   return NETWORKS[profile]?.chainId ?? 0;
@@ -97,9 +97,7 @@ export function getNetworkByChainId(chainId: number): NetworkInfo | undefined {
   return NETWORKS_BY_CHAIN_ID.get(chainId);
 }
 
-export function getAddChainParams(
-  chainId: number
-): WalletAddEthereumChainParameter | undefined {
+export function getAddChainParams(chainId: number): WalletAddEthereumChainParameter | undefined {
   const network = getNetworkByChainId(chainId);
   if (!network) return undefined;
   return {
@@ -107,6 +105,6 @@ export function getAddChainParams(
     chainName: network.name,
     rpcUrls: network.rpcUrls,
     blockExplorerUrls: network.blockExplorerUrls,
-    nativeCurrency: network.nativeCurrency
+    nativeCurrency: network.nativeCurrency,
   };
 }

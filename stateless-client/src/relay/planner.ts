@@ -18,7 +18,7 @@ async function hasEventInRange(
   connectorAddress: string,
   eventTopic: string,
   txId: string,
-  lookback: number
+  lookback: number,
 ): Promise<boolean> {
   const latestBlock = await provider.getBlockNumber();
   const fromBlock = Math.max(0, latestBlock - lookback + 1);
@@ -26,7 +26,7 @@ async function hasEventInRange(
     address: connectorAddress,
     topics: [eventTopic, txId],
     fromBlock,
-    toBlock: latestBlock
+    toBlock: latestBlock,
   });
   return logs.length > 0;
 }
@@ -35,7 +35,7 @@ async function checkHistoryFlags(
   sourceProvider: JsonRpcProvider,
   destinationProvider: JsonRpcProvider,
   config: RelayConfig,
-  txId: string
+  txId: string,
 ): Promise<HistoryFlags> {
   const depositLockedTopic = getEventTopic("DepositLocked");
   const fundsReleasedTopic = getEventTopic("FundsReleased");
@@ -47,22 +47,22 @@ async function checkHistoryFlags(
       config.connectors.source,
       depositLockedTopic,
       txId,
-      PLANNER_LOG_LOOKBACK_BLOCKS
+      PLANNER_LOG_LOOKBACK_BLOCKS,
     ),
     hasEventInRange(
       destinationProvider,
       config.connectors.destination,
       fundsReleasedTopic,
       txId,
-      PLANNER_LOG_LOOKBACK_BLOCKS
+      PLANNER_LOG_LOOKBACK_BLOCKS,
     ),
     hasEventInRange(
       sourceProvider,
       config.connectors.source,
       ackReadyTopic,
       txId,
-      PLANNER_LOG_LOOKBACK_BLOCKS
-    )
+      PLANNER_LOG_LOOKBACK_BLOCKS,
+    ),
   ]);
 
   return { depositLocked, fundsReleased, ackReady };
@@ -71,42 +71,40 @@ async function checkHistoryFlags(
 const EMPTY_HISTORY: HistoryFlags = {
   depositLocked: false,
   fundsReleased: false,
-  ackReady: false
+  ackReady: false,
 };
 
 export function computeResumeDecision(
   sourceStatus: number,
   destinationStatus: number,
-  historyFlags: HistoryFlags
+  historyFlags: HistoryFlags,
 ): ResumeDecision {
-  // Refund path takes priority over all other checks
-  if (sourceStatus === 3 || destinationStatus === 5) {
-    return {
-      action: "error",
-      reason: "unsupported refund path",
-      sourceStatus,
-      destinationStatus,
-      historyFlags
-    };
-  }
-
   if (sourceStatus === 1 && destinationStatus === 0) {
     return {
       action: "lock",
       reason: "source has deposit, destination needs lock proof",
       sourceStatus,
       destinationStatus,
-      historyFlags
+      historyFlags,
     };
   }
 
   if (sourceStatus === 1 && destinationStatus === 4) {
+    if (historyFlags.ackDeadlineExpired) {
+      return {
+        action: "refund-initiate",
+        reason: "ACK window expired; source must initiate refund",
+        sourceStatus,
+        destinationStatus,
+        historyFlags,
+      };
+    }
     return {
       action: "mint",
       reason: "destination has funds, source needs mint proof",
       sourceStatus,
       destinationStatus,
-      historyFlags
+      historyFlags,
     };
   }
 
@@ -116,7 +114,7 @@ export function computeResumeDecision(
       reason: "source is ack-ready, destination has funds",
       sourceStatus,
       destinationStatus,
-      historyFlags
+      historyFlags,
     };
   }
 
@@ -124,11 +122,10 @@ export function computeResumeDecision(
     if (historyFlags.ackReady) {
       return {
         action: "ack",
-        reason:
-          "source origin pruned but AckReady event found; destination needs ack proof",
+        reason: "source origin pruned but AckReady event found; destination needs ack proof",
         sourceStatus,
         destinationStatus,
-        historyFlags
+        historyFlags,
       };
     }
     return {
@@ -136,7 +133,38 @@ export function computeResumeDecision(
       reason: "inconsistent cross-chain state",
       sourceStatus,
       destinationStatus,
-      historyFlags
+      historyFlags,
+    };
+  }
+
+  // Refund path: source has REFUND_INITIATED (3)
+  if (sourceStatus === 3 && destinationStatus === 4) {
+    return {
+      action: "refund-claim",
+      reason: "refund initiated on source; destination needs refund-claim proof",
+      sourceStatus,
+      destinationStatus,
+      historyFlags,
+    };
+  }
+
+  if (sourceStatus === 3 && destinationStatus === 5) {
+    return {
+      action: "execute-burn",
+      reason: "refund claim accepted on destination; execute burn",
+      sourceStatus,
+      destinationStatus,
+      historyFlags,
+    };
+  }
+
+  if (sourceStatus === 3 && destinationStatus === 0) {
+    return {
+      action: "burn-proof",
+      reason: "burn executed on destination; source needs burn proof",
+      sourceStatus,
+      destinationStatus,
+      historyFlags,
     };
   }
 
@@ -146,22 +174,18 @@ export function computeResumeDecision(
       reason: "destination finished, origin cleanup is manual",
       sourceStatus,
       destinationStatus,
-      historyFlags
+      historyFlags,
     };
   }
 
   if (sourceStatus === 0 && destinationStatus === 0) {
-    if (
-      historyFlags.depositLocked ||
-      historyFlags.fundsReleased ||
-      historyFlags.ackReady
-    ) {
+    if (historyFlags.depositLocked || historyFlags.fundsReleased || historyFlags.ackReady) {
       return {
         action: "noop",
         reason: "transaction already terminal",
         sourceStatus,
         destinationStatus,
-        historyFlags
+        historyFlags,
       };
     }
     return {
@@ -169,7 +193,7 @@ export function computeResumeDecision(
       reason: "tx not found",
       sourceStatus,
       destinationStatus,
-      historyFlags
+      historyFlags,
     };
   }
 
@@ -178,59 +202,63 @@ export function computeResumeDecision(
     reason: "inconsistent cross-chain state",
     sourceStatus,
     destinationStatus,
-    historyFlags
+    historyFlags,
   };
 }
 
-export async function planRelayResume(
-  config: RelayConfig
-): Promise<ResumeDecision> {
+export async function planRelayResume(config: RelayConfig): Promise<ResumeDecision> {
   const txId = normalizeBytes32(config.txId, "txId");
 
-  const sourceProvider = new JsonRpcProvider(
-    config.source.rpcUrls[0],
-    config.source.chainId
-  );
+  const sourceProvider = new JsonRpcProvider(config.source.rpcUrls[0], config.source.chainId);
   const destinationProvider = new JsonRpcProvider(
     config.destination.rpcUrls[0],
-    config.destination.chainId
+    config.destination.chainId,
   );
 
-  const sourceContract = new Contract(
-    config.connectors.source,
-    CONNECTOR_ABI,
-    sourceProvider
-  );
+  const sourceContract = new Contract(config.connectors.source, CONNECTOR_ABI, sourceProvider);
   const destinationContract = new Contract(
     config.connectors.destination,
     CONNECTOR_ABI,
-    destinationProvider
+    destinationProvider,
   );
 
   const [sourceStatus, destinationStatus] = await Promise.all([
     sourceContract.txStatus(txId).then(Number),
-    destinationContract.txStatus(txId).then(Number)
+    destinationContract.txStatus(txId).then(Number),
   ]);
 
   let historyFlags: HistoryFlags = EMPTY_HISTORY;
 
-  if (sourceStatus === 0 && destinationStatus === 4) {
+  if (sourceStatus === 1 && destinationStatus === 4) {
+    // Check whether the ACK deadline has expired to decide mint vs refund-initiate.
+    const sourceTx = await sourceContract.getTx(txId);
+    const ackDeadline = BigInt(sourceTx.ackDeadline);
+    let ackDeadlineExpired = false;
+    if (ackDeadline > 0n) {
+      const latestBlock = await sourceProvider.getBlock("latest");
+      if (latestBlock) {
+        const chainNow = BigInt(latestBlock.timestamp);
+        ackDeadlineExpired = chainNow >= ackDeadline;
+      }
+    }
+    historyFlags = {
+      depositLocked: false,
+      fundsReleased: false,
+      ackReady: false,
+      ackDeadlineExpired,
+    };
+  } else if (sourceStatus === 0 && destinationStatus === 4) {
     const ackReadyTopic = getEventTopic("AckReady");
     const ackReady = await hasEventInRange(
       sourceProvider,
       config.connectors.source,
       ackReadyTopic,
       txId,
-      PLANNER_LOG_LOOKBACK_BLOCKS
+      PLANNER_LOG_LOOKBACK_BLOCKS,
     );
     historyFlags = { depositLocked: false, fundsReleased: false, ackReady };
   } else if (sourceStatus === 0 && destinationStatus === 0) {
-    historyFlags = await checkHistoryFlags(
-      sourceProvider,
-      destinationProvider,
-      config,
-      txId
-    );
+    historyFlags = await checkHistoryFlags(sourceProvider, destinationProvider, config, txId);
   }
 
   return computeResumeDecision(sourceStatus, destinationStatus, historyFlags);

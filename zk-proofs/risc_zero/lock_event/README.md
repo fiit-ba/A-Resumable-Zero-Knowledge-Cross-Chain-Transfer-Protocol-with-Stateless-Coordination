@@ -18,10 +18,10 @@ Note: first build can take several minutes because dependencies and zkVM tooling
 
 ## Quick Start
 
-From the project root:
+From this workspace:
 
 ```bash
-cd zk-proofs/risc_zero
+cd zk-proofs/risc_zero/lock_event
 cargo run -p lock-proof-host -- \
   --rpc-url https://YOUR_RPC_URL \
   --connector 0xYourConnectorAddress \
@@ -33,7 +33,7 @@ cargo run -p lock-proof-host -- \
 Or use environment variables for frequently reused values:
 
 ```bash
-cd zk-proofs/risc_zero
+cd zk-proofs/risc_zero/lock_event
 RPC_URL=https://YOUR_RPC_URL \
 EXECUTION_BLOCK=latest \
 cargo run -p lock-proof-host -- \
@@ -91,7 +91,7 @@ then use different chain IDs, for example:
 Example prove command:
 
 ```bash
-cd zk-proofs/risc_zero
+cd zk-proofs/risc_zero/lock_event
 RPC_URL=http://127.0.0.1:8545 \
 EXECUTION_BLOCK=latest \
 cargo run -p lock-proof-host -- \
@@ -115,7 +115,7 @@ CONNECTOR=0xSourceConnectorOnAnvil \
 TX_ID=0xDepositLockedTxId \
 SOURCE_CHAIN_ID=31337 \
 DEST_CHAIN_ID=31338 \
-bash zk-proofs/risc_zero/scripts/prove-lock-docker.sh
+bash zk-proofs/risc_zero/lock_event/scripts/prove-lock-docker.sh
 ```
 
 Notes:
@@ -131,7 +131,7 @@ Print image id from Docker:
 
 ```bash
 cd /path/to/repo
-PROVER_ACTION=print-image-id bash zk-proofs/risc_zero/scripts/prove-lock-docker.sh
+PROVER_ACTION=print-image-id bash zk-proofs/risc_zero/lock_event/scripts/prove-lock-docker.sh
 ```
 
 First run can still take several minutes (image build + dependency compilation).
@@ -151,7 +151,7 @@ This uses RISC Zero's own guest-builder container (`risczero/risc0-guest-builder
 ## Development Commands
 
 ```bash
-cd zk-proofs/risc_zero
+cd zk-proofs/risc_zero/lock_event
 cargo run -p lock-proof-host -- --help
 cargo run -p lock-proof-host --bin print_image_id
 cargo test

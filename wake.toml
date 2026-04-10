@@ -1,6 +1,3 @@
-# Wake compiler config so the Solidity extension can resolve imports
-# when the workspace root is "Dusan Paper" and Foundry project is in smart-contracts/
-
 [compiler.solc]
 remappings = [
   "openzeppelin/contracts/=smart-contracts/lib/risc0-ethereum/lib/openzeppelin-contracts/contracts/",
