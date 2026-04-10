@@ -37,6 +37,8 @@ const DST_CONNECTOR = getAddress("0x3333333333333333333333333333333333333333");
 const FROM_ADDR = getAddress("0x4444444444444444444444444444444444444444");
 const ZERO_ADDR = getAddress("0x0000000000000000000000000000000000000000");
 const TX_ID = "0x" + "ab".repeat(32);
+const SOURCE_CHAIN_ID = 10200n;
+const DESTINATION_CHAIN_ID = 31337n;
 
 /** Encodes a minimal DepositLocked log whose fields match the given connectors. */
 function makeDepositLockedLog(
@@ -57,7 +59,8 @@ function makeDepositLockedLog(
     dstConnector, // dstChainConnector
     0n, // timestamp (uint64)
     0n, // nonce
-    10200n, // sourceChainId
+    SOURCE_CHAIN_ID, // sourceChainId
+    DESTINATION_CHAIN_ID, // destinationChainId
   ]);
   return { address: connector, topics, data, blockNumber: 12345 };
 }
@@ -80,6 +83,8 @@ function makeGetTxResult(txId: string, srcConnector: string, dstConnector: strin
       0n, // ackDeadline
       1, // status — expectedStatus for source-deposit
       0n, // nonce
+      SOURCE_CHAIN_ID, // sourceChainId
+      DESTINATION_CHAIN_ID, // destinationChainId
     ],
   ]);
 }

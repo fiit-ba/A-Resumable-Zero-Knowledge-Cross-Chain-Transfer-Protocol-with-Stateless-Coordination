@@ -1,5 +1,5 @@
 import express, { type Request, type Response, type NextFunction } from "express";
-import { createJob, getJob, getJobByTxId, listJobs, getCheckpoint } from "./db.js";
+import { createJob, getJob, getJobByTxId, listJobs } from "./db.js";
 import {
   confirmJob,
   getStageDetails,
@@ -243,20 +243,17 @@ export function createApp(opts?: { allowedOrigins?: string }): express.Express {
   });
 
   /**
-   * GET /jobs/:id/next-stage — return enriched stage payload when ready.
-   * Returns the EnrichedStagePayload (with verificationMode, verificationDegraded).
+   * GET /jobs/:id/stages/current — structured details for the job's current active stage.
+   *
+   * Returns `StageDetails` for `job.currentStage`.  Works for both auto and manual
+   * relay modes; the web app uses this instead of the retired legacy endpoint.
+   *
+   * Responds 409 when there is no active stage (pending / completed job).
    */
-  app.get("/jobs/:id/next-stage", (req: Request, res: Response): void => {
+  app.get("/jobs/:id/stages/current", (req: Request, res: Response): void => {
     const job = getJob(req.params.id);
     if (!job) {
       res.status(404).json({ error: "Job not found" });
-      return;
-    }
-
-    if (job.status !== "ready_for_signature") {
-      res.status(409).json({
-        error: `Stage payload not ready. Current status: ${job.status}`,
-      });
       return;
     }
 
@@ -266,40 +263,13 @@ export function createApp(opts?: { allowedOrigins?: string }): express.Express {
       return;
     }
 
-    const checkpoint = getCheckpoint(job.id, stage);
-    if (!checkpoint) {
-      res.status(404).json({ error: "Stage checkpoint not found" });
-      return;
+    try {
+      const details = getStageDetails(job.id, stage as RelayProofStage);
+      res.json(details);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      res.status(409).json({ error: message });
     }
-
-    res.json(JSON.parse(checkpoint.payloadJson));
-  });
-
-  /**
-   * GET /jobs/:id/stages/:stage/proof — legacy endpoint; returns plain payload.
-   */
-  app.get("/jobs/:id/stages/:stage/proof", (req: Request, res: Response): void => {
-    const job = getJob(req.params.id);
-    if (!job) {
-      res.status(404).json({ error: "Job not found" });
-      return;
-    }
-
-    const stage = parseRelayStage(req.params.stage);
-    if (!stage) {
-      res
-        .status(400)
-        .json({ error: `Invalid stage. Expected one of: ${VALID_STAGES.join(", ")}.` });
-      return;
-    }
-
-    const checkpoint = getCheckpoint(job.id, stage);
-    if (!checkpoint) {
-      res.status(404).json({ error: "No proof checkpoint for this stage yet" });
-      return;
-    }
-
-    res.json(JSON.parse(checkpoint.payloadJson));
   });
 
   /**

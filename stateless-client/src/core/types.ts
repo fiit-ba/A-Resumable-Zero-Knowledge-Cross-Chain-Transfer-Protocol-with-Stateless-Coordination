@@ -245,7 +245,7 @@ export interface ProofRunnerInput {
 
 export interface StageDefinition {
   stage: Stage;
-  eventName: "DepositLocked" | "FundsReleased" | "AckReady" | "RefundInitiated" | "BurnExecuted";
+  eventName: "DepositLocked" | "FundsReleased" | "AckReady" | "RefundClaimed" | "RefundExecuted";
   expectedStatus: number;
   side: Side;
 }
@@ -267,9 +267,17 @@ export interface TransferIntent {
   receiver: string;
 }
 
+/**
+ * @deprecated Use `JobStatus` from `agent/contracts.ts` instead.
+ * This old definition uses legacy status strings ("pending", "running", etc.)
+ * that were replaced by the agent's richer state machine.
+ */
 export type JobStatus = "pending" | "running" | "proof-ready" | "done" | "error" | "unsupported";
 
-/** Persisted per-job state stored in the local agent SQLite database. */
+/**
+ * @deprecated Use `RelayJob` from `agent/contracts.ts` instead.
+ * This definition is kept as a compatibility shim during the refactor.
+ */
 export interface RelayJob {
   id: string;
   txId: string;

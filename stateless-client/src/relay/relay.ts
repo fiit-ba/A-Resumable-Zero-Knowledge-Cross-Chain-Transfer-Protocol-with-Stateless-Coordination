@@ -8,11 +8,7 @@ import {
 } from "ethers";
 import { CONNECTOR_ABI } from "../contracts/abi.js";
 import { runProof } from "./proof-runner.js";
-import {
-  RELAY_STAGE_TO_SUBMISSION_METHOD,
-  RELAY_STAGE_TO_VERIFY_STAGE,
-  STAGE_DEFINITIONS,
-} from "./stages.js";
+import { RELAY_STAGE_REGISTRY, STAGE_DEFINITIONS, isProofRelayStage } from "./stages.js";
 import type {
   AckVerificationVariant,
   BlockTagInput,
@@ -364,19 +360,111 @@ export async function runVerifyStageCommand(
 }
 
 // ---------------------------------------------------------------------------
-// Core shared preparation API (no private key / signing required)
+// Handler maps — replace per-stage if/else chains in prepareStageSubmission
 // ---------------------------------------------------------------------------
 
-/** Target chain side for each relay stage. */
-const SUBMISSION_SIDE: Record<RelayProofStage, "source" | "destination"> = {
-  lock: "destination",
-  mint: "source",
-  ack: "destination",
-  "refund-initiate": "source",
-  "refund-claim": "destination",
-  "execute-burn": "destination",
-  "burn-proof": "source",
+type TimelockPreflightHandler = (
+  config: StageSubmissionConfig,
+  sourceReadContract: Contract,
+  destinationReadContract: Contract,
+  sourceProvider: JsonRpcProvider,
+  destinationProvider: JsonRpcProvider,
+) => Promise<void>;
+
+/** Stages that require an ACK-window check before proof preparation. */
+const TIMELOCK_PREFLIGHT: Partial<Record<ProofRelayStage, TimelockPreflightHandler>> = {
+  mint: async (config, sourceReadContract, _destRC, sourceProvider) => {
+    const sourceTx = await fetchTxSnapshot(
+      sourceReadContract,
+      config.txId,
+      config.executionBlocks.sourceDeposit,
+    );
+    await assertAckWindowActive("mint", sourceTx, sourceProvider, "source");
+  },
+  ack: async (config, _srcRC, destinationReadContract, _srcP, destinationProvider) => {
+    const destinationTx = await fetchTxSnapshot(
+      destinationReadContract,
+      config.txId,
+      config.executionBlocks.destinationFundsReleased,
+    );
+    await assertAckWindowActive("ack", destinationTx, destinationProvider, "destination");
+  },
 };
+
+type ExecutionBlockResolver = (
+  executionBlocks: StageExecutionBlocks,
+  eventBlockNumber: number | undefined,
+) => BlockTagInput;
+
+/** Maps each proof stage to a function that resolves the execution block for the proof host. */
+const EXECUTION_BLOCK_RESOLVER: Record<ProofRelayStage, ExecutionBlockResolver> = {
+  lock: (eb, ev) => eb.sourceDeposit ?? ev ?? "latest",
+  // Mint deliberately skips eventBlockNumber — the destination (Chiado) pruned RPC lacks
+  // historical state trie data, so "latest" is the safe choice.
+  mint: (eb) => eb.destinationFundsReleased ?? "latest",
+  ack: (eb, ev) => eb.sourceAckReady ?? ev ?? "latest",
+  "refund-claim": (eb, ev) => eb.sourceRefundInitiated ?? ev ?? "latest",
+  "burn-proof": (eb, ev) => eb.destinationBurnExecuted ?? ev ?? "latest",
+};
+
+type ContractArgsBuilder = (config: StageSubmissionConfig, proof: ProofArtifact) => unknown[];
+
+/** Maps each proof stage to a function that builds the unsigned contract-call argument list. */
+const CONTRACT_ARGS_BUILDER: Record<ProofRelayStage, ContractArgsBuilder> = {
+  lock: (config, proof) => [
+    0,
+    proof.proofPayload,
+    config.txId,
+    String(proof.amount),
+    proof.currencyFrom,
+    proof.currencyTo,
+    proof.sender,
+    proof.receiver,
+    proof.srcChainConnector,
+    String(proof.originAckDeadline),
+    String(proof.nonce),
+    proof.sourceChainId,
+  ],
+  mint: (config, proof) => [0, proof.proofPayload, config.txId],
+  ack: (config, proof) => [0, proof.proofPayload, config.txId],
+  "refund-claim": (config, proof) => [0, proof.proofPayload, config.txId],
+  "burn-proof": (config, proof) => [0, proof.proofPayload, config.txId],
+};
+
+type ProofConsistencyChecker = (
+  config: StageSubmissionConfig,
+  proof: ProofArtifact,
+  sourceReadContract: Contract,
+  destinationReadContract: Contract,
+) => Promise<void>;
+
+/** Stages that have extra on-chain consistency checks after proof generation. */
+const PROOF_CONSISTENCY_CHECKER: Partial<Record<ProofRelayStage, ProofConsistencyChecker>> = {
+  lock: async (config, proof, sourceReadContract) => {
+    const sourceTx = await fetchTxSnapshot(
+      sourceReadContract,
+      config.txId,
+      config.executionBlocks.sourceDeposit,
+    );
+    assertLockProofConsistency(config, sourceTx, proof);
+  },
+  mint: async (config, proof, _srcRC, destinationReadContract) => {
+    const destinationTx = await fetchTxSnapshot(
+      destinationReadContract,
+      config.txId,
+      config.executionBlocks.destinationFundsReleased,
+    );
+    assertMintProofConsistency(config, destinationTx, proof);
+  },
+  ack: async (config, proof) => {
+    assertAckProofConsistency(config, proof);
+  },
+  // refund-claim and burn-proof: no additional consistency checks beyond proof host output.
+};
+
+// ---------------------------------------------------------------------------
+// Core shared preparation API (no private key / signing required)
+// ---------------------------------------------------------------------------
 
 /**
  * Builds a wallet-ready payload for a direct-action stage (no proof required).
@@ -386,17 +474,17 @@ export function buildDirectActionPayload(
   config: Pick<StageSubmissionConfig, "source" | "destination" | "connectors" | "txId">,
   stage: "refund-initiate" | "execute-burn",
 ): StageReadyPayload {
-  const targetSide = SUBMISSION_SIDE[stage];
+  const spec = RELAY_STAGE_REGISTRY[stage];
   const targetChainId =
-    targetSide === "source" ? config.source.chainId : config.destination.chainId;
+    spec.submissionSide === "source" ? config.source.chainId : config.destination.chainId;
   const targetConnector =
-    targetSide === "source" ? config.connectors.source : config.connectors.destination;
+    spec.submissionSide === "source" ? config.connectors.source : config.connectors.destination;
 
   return {
     stage,
     actionKind: "direct",
     proofPayload: null,
-    contractMethod: RELAY_STAGE_TO_SUBMISSION_METHOD[stage],
+    contractMethod: spec.submissionMethod,
     contractArgs: [config.txId],
     targetChainId,
     targetConnector,
@@ -422,15 +510,20 @@ export async function prepareStageSubmission(
   config: StageSubmissionConfig,
   stage: RelayProofStage,
 ): Promise<StageSubmissionResult> {
+  const spec = RELAY_STAGE_REGISTRY[stage];
+
   // Direct-action stages: no proof generation needed.
-  if (stage === "refund-initiate" || stage === "execute-burn") {
-    const payload = buildDirectActionPayload(config, stage);
+  if (spec.actionKind === "direct") {
+    const payload = buildDirectActionPayload(
+      config,
+      stage as "refund-initiate" | "execute-burn",
+    );
     return { payload };
   }
 
   // All remaining stages are proof stages.
   const proofStage = stage as ProofRelayStage;
-  const verifyStageKey = RELAY_STAGE_TO_VERIFY_STAGE[proofStage];
+  const verifyStageKey = spec.verifyStage as Stage;
   const stageDef = STAGE_DEFINITIONS[verifyStageKey];
 
   // Read-only providers for verification and tx-snapshot fetches
@@ -447,21 +540,13 @@ export async function prepareStageSubmission(
   );
 
   // Timelock preflight: do not prepare stages that are already expired.
-  if (proofStage === "mint") {
-    const sourceTx = await fetchTxSnapshot(
-      sourceReadContract,
-      config.txId,
-      config.executionBlocks.sourceDeposit,
-    );
-    await assertAckWindowActive(proofStage, sourceTx, sourceProvider, "source");
-  } else if (proofStage === "ack") {
-    const destinationTx = await fetchTxSnapshot(
-      destinationReadContract,
-      config.txId,
-      config.executionBlocks.destinationFundsReleased,
-    );
-    await assertAckWindowActive(proofStage, destinationTx, destinationProvider, "destination");
-  }
+  await TIMELOCK_PREFLIGHT[proofStage]?.(
+    config,
+    sourceReadContract,
+    destinationReadContract,
+    sourceProvider,
+    destinationProvider,
+  );
 
   // 1. Stage verification
   const verificationPolicy = deriveVerificationPolicyForStage(config, verifyStageKey);
@@ -482,38 +567,13 @@ export async function prepareStageSubmission(
     verification = await verifyStageFromConfig(config, verifyStageKey, verificationPolicy);
   }
 
-  // Execution block for this stage.
-  //
-  // Lock and ack proof hosts use RISC0 steel's Event::preflight, which calls
-  // eth_getLogs at exactly the execution block — so the execution block must be
-  // the block where the event was emitted.  We therefore keep eventBlockNumber
-  // as the fallback for lock and ack (Sepolia source chain, which has sufficient
-  // RPC state history).
-  //
-  // Mint proof host does NOT use Event::preflight; it only calls Contract::preflight
-  // for getTx().  We intentionally skip eventBlockNumber for mint because the
-  // destination chain (Chiado) uses a pruned public RPC that lacks state trie data
-  // for historical blocks.  Using "latest" is safe: getTx() status only changes
-  // when the ack is submitted on-chain, which hasn't happened yet.
-  let executionBlock: BlockTagInput;
-  if (proofStage === "lock") {
-    executionBlock =
-      config.executionBlocks.sourceDeposit ?? verification.eventBlockNumber ?? "latest";
-  } else if (proofStage === "mint") {
-    executionBlock = config.executionBlocks.destinationFundsReleased ?? "latest";
-  } else if (proofStage === "refund-claim") {
-    executionBlock =
-      config.executionBlocks.sourceRefundInitiated ?? verification.eventBlockNumber ?? "latest";
-  } else if (proofStage === "burn-proof") {
-    executionBlock =
-      config.executionBlocks.destinationBurnExecuted ?? verification.eventBlockNumber ?? "latest";
-  } else {
-    // ack
-    executionBlock =
-      config.executionBlocks.sourceAckReady ?? verification.eventBlockNumber ?? "latest";
-  }
+  // 2. Resolve execution block for the proof host via the per-stage resolver map.
+  const executionBlock = EXECUTION_BLOCK_RESOLVER[proofStage](
+    config.executionBlocks,
+    verification.eventBlockNumber,
+  );
 
-  // 2. Proof generation
+  // 3. Proof generation
   const proof = await runProof({
     stage: proofStage,
     backend: config.proofBackend,
@@ -529,58 +589,27 @@ export async function prepareStageSubmission(
     risc0ProverMode: config.risc0ProverMode,
   });
 
-  // 3. Proof consistency checks
-  if (proofStage === "lock") {
-    const sourceTx = await fetchTxSnapshot(
-      sourceReadContract,
-      config.txId,
-      config.executionBlocks.sourceDeposit,
-    );
-    assertLockProofConsistency(config, sourceTx, proof);
-  } else if (proofStage === "mint") {
-    const destinationTx = await fetchTxSnapshot(
-      destinationReadContract,
-      config.txId,
-      config.executionBlocks.destinationFundsReleased,
-    );
-    assertMintProofConsistency(config, destinationTx, proof);
-  } else if (proofStage === "ack") {
-    assertAckProofConsistency(config, proof);
-  }
-  // refund-claim and burn-proof: no additional consistency checks beyond proof host output.
+  // 4. Proof consistency checks (per-stage, optional)
+  await PROOF_CONSISTENCY_CHECKER[proofStage]?.(
+    config,
+    proof,
+    sourceReadContract,
+    destinationReadContract,
+  );
 
-  // 4. Build unsigned payload
-  const targetSide = SUBMISSION_SIDE[proofStage];
+  // 5. Build unsigned payload
   const targetChainId =
-    targetSide === "source" ? config.source.chainId : config.destination.chainId;
+    spec.submissionSide === "source" ? config.source.chainId : config.destination.chainId;
   const targetConnector =
-    targetSide === "source" ? config.connectors.source : config.connectors.destination;
+    spec.submissionSide === "source" ? config.connectors.source : config.connectors.destination;
 
-  let contractArgs: unknown[];
-  if (proofStage === "lock") {
-    contractArgs = [
-      0,
-      proof.proofPayload,
-      config.txId,
-      String(proof.amount),
-      proof.currencyFrom,
-      proof.currencyTo,
-      proof.sender,
-      proof.receiver,
-      proof.srcChainConnector,
-      String(proof.originAckDeadline),
-      String(proof.nonce),
-      proof.sourceChainId,
-    ];
-  } else {
-    contractArgs = [0, proof.proofPayload, config.txId];
-  }
+  const contractArgs = CONTRACT_ARGS_BUILDER[proofStage](config, proof);
 
   const payload: StageReadyPayload = {
     stage: proofStage,
     actionKind: "proof",
     proofPayload: proof.proofPayload,
-    contractMethod: RELAY_STAGE_TO_SUBMISSION_METHOD[proofStage],
+    contractMethod: spec.submissionMethod,
     contractArgs,
     targetChainId,
     targetConnector,
@@ -590,139 +619,71 @@ export async function prepareStageSubmission(
 }
 
 // ---------------------------------------------------------------------------
-// CLI relay commands — thin wrappers over prepareStageSubmission + submission
+// CLI relay commands — generic helper + thin public wrappers
 // ---------------------------------------------------------------------------
 
-export async function runRelayLock(config: RelayConfig): Promise<RelayStageResult> {
-  const { proof, payload, verification } = await prepareStageSubmission(config, "lock");
-  if (!proof || !verification) {
-    throw new Error("prepareStageSubmission(lock) returned an incomplete proof result.");
+async function runRelayStage(config: RelayConfig, stage: RelayProofStage): Promise<RelayStageResult> {
+  const spec = RELAY_STAGE_REGISTRY[stage];
+
+  const { proof, payload, verification } = await prepareStageSubmission(config, stage);
+
+  if (isProofRelayStage(stage) && (!proof || !verification)) {
+    throw new Error(`prepareStageSubmission(${stage}) returned an incomplete proof result.`);
   }
+
   const handles = await createChainHandles(config);
+  const writeContract =
+    spec.submissionSide === "source" ? handles.sourceWriteContract : handles.destinationWriteContract;
+  const readContract =
+    spec.submissionSide === "source" ? handles.sourceReadContract : handles.destinationReadContract;
 
-  const submitTx = await handles.destinationWriteContract.submitLockProof(...payload.contractArgs);
+  const fn = writeContract[spec.submissionMethod] as (
+    ...args: unknown[]
+  ) => Promise<ContractTransactionResponse>;
+  const submitTx = await fn(...payload.contractArgs);
 
-  const receiptBlock = await waitForSubmission(submitTx, "lock");
-  const resultingStatus = await getStatus(handles.destinationReadContract, config.txId);
+  const receiptBlock = await waitForSubmission(submitTx, stage);
+  const resultingStatus = await getStatus(readContract, config.txId);
 
-  if (resultingStatus !== 4) {
+  if (spec.expectedPostSubmitStatus !== null && resultingStatus !== spec.expectedPostSubmitStatus) {
     throw new Error(
-      `Destination status mismatch after relay-lock: expected 4, got ${resultingStatus}`,
+      `Status mismatch after relay-${stage}: expected ${spec.expectedPostSubmitStatus}, got ${resultingStatus}`,
     );
   }
 
   return {
     verification,
     proof,
-    submission: { stage: "lock", txHash: submitTx.hash, receiptBlock, resultingStatus },
+    submission: { stage, txHash: submitTx.hash, receiptBlock, resultingStatus },
   };
+}
+
+export async function runRelayLock(config: RelayConfig): Promise<RelayStageResult> {
+  return runRelayStage(config, "lock");
 }
 
 export async function runRelayMint(config: RelayConfig): Promise<RelayStageResult> {
-  const { proof, payload, verification } = await prepareStageSubmission(config, "mint");
-  if (!proof || !verification) {
-    throw new Error("prepareStageSubmission(mint) returned an incomplete proof result.");
-  }
-  const handles = await createChainHandles(config);
-
-  const submitTx = await handles.sourceWriteContract.submitMintProof(...payload.contractArgs);
-
-  const receiptBlock = await waitForSubmission(submitTx, "mint");
-  const resultingStatus = await getStatus(handles.sourceReadContract, config.txId);
-
-  if (resultingStatus !== 2) {
-    throw new Error(`Source status mismatch after relay-mint: expected 2, got ${resultingStatus}`);
-  }
-
-  return {
-    verification,
-    proof,
-    submission: { stage: "mint", txHash: submitTx.hash, receiptBlock, resultingStatus },
-  };
+  return runRelayStage(config, "mint");
 }
 
 export async function runRelayAck(config: RelayConfig): Promise<RelayStageResult> {
-  const { proof, payload, verification } = await prepareStageSubmission(config, "ack");
-  if (!proof || !verification) {
-    throw new Error("prepareStageSubmission(ack) returned an incomplete proof result.");
-  }
-  const handles = await createChainHandles(config);
-
-  const submitTx = await handles.destinationWriteContract.submitAckProof(...payload.contractArgs);
-
-  const receiptBlock = await waitForSubmission(submitTx, "ack");
-  const resultingStatus = await getStatus(handles.destinationReadContract, config.txId);
-
-  if (resultingStatus !== 0) {
-    throw new Error(
-      `Destination status mismatch after relay-ack: expected 0, got ${resultingStatus}`,
-    );
-  }
-
-  return {
-    verification,
-    proof,
-    submission: { stage: "ack", txHash: submitTx.hash, receiptBlock, resultingStatus },
-  };
+  return runRelayStage(config, "ack");
 }
 
 export async function runRelayRefundInitiate(config: RelayConfig): Promise<RelayStageResult> {
-  const handles = await createChainHandles(config);
-  const submitTx = await handles.sourceWriteContract.initiateRefund(config.txId);
-  const receiptBlock = await waitForSubmission(submitTx, "refund-initiate");
-  const resultingStatus = await getStatus(handles.sourceReadContract, config.txId);
-  return {
-    submission: { stage: "refund-initiate", txHash: submitTx.hash, receiptBlock, resultingStatus },
-  };
+  return runRelayStage(config, "refund-initiate");
 }
 
 export async function runRelayRefundClaim(config: RelayConfig): Promise<RelayStageResult> {
-  const { proof, payload, verification } = await prepareStageSubmission(config, "refund-claim");
-  if (!proof || !verification) {
-    throw new Error("prepareStageSubmission(refund-claim) returned an incomplete proof result.");
-  }
-  const handles = await createChainHandles(config);
-  const submitTx = await handles.destinationWriteContract.submitRefundClaimProof(
-    ...payload.contractArgs,
-  );
-  const receiptBlock = await waitForSubmission(submitTx, "refund-claim");
-  const resultingStatus = await getStatus(handles.destinationReadContract, config.txId);
-  return {
-    verification,
-    proof,
-    submission: {
-      stage: "refund-claim",
-      txHash: submitTx.hash,
-      receiptBlock,
-      resultingStatus,
-    },
-  };
+  return runRelayStage(config, "refund-claim");
 }
 
 export async function runRelayExecuteBurn(config: RelayConfig): Promise<RelayStageResult> {
-  const handles = await createChainHandles(config);
-  const submitTx = await handles.destinationWriteContract.executeBurn(config.txId);
-  const receiptBlock = await waitForSubmission(submitTx, "execute-burn");
-  const resultingStatus = await getStatus(handles.destinationReadContract, config.txId);
-  return {
-    submission: { stage: "execute-burn", txHash: submitTx.hash, receiptBlock, resultingStatus },
-  };
+  return runRelayStage(config, "execute-burn");
 }
 
 export async function runRelayBurnProof(config: RelayConfig): Promise<RelayStageResult> {
-  const { proof, payload, verification } = await prepareStageSubmission(config, "burn-proof");
-  if (!proof || !verification) {
-    throw new Error("prepareStageSubmission(burn-proof) returned an incomplete proof result.");
-  }
-  const handles = await createChainHandles(config);
-  const submitTx = await handles.sourceWriteContract.submitBurnProof(...payload.contractArgs);
-  const receiptBlock = await waitForSubmission(submitTx, "burn-proof");
-  const resultingStatus = await getStatus(handles.sourceReadContract, config.txId);
-  return {
-    verification,
-    proof,
-    submission: { stage: "burn-proof", txHash: submitTx.hash, receiptBlock, resultingStatus },
-  };
+  return runRelayStage(config, "burn-proof");
 }
 
 function withExecutionBlockOverrides(

@@ -43,28 +43,15 @@ import type {
 } from "../integrations/relay.js";
 import type { RecoveryCandidate } from "../types.js";
 import type { Stage } from "../../core/types.js";
+import { ALL_RELAY_STAGES, RELAY_STAGE_REGISTRY } from "../../relay/stages.js";
 
 // ---------------------------------------------------------------------------
-// Stage preparation
+// Stage preparation — stage lists derived from the canonical registry
 // ---------------------------------------------------------------------------
 
-const CHECKPOINT_PROOF_STAGES: RelayProofStage[] = [
-  "lock",
-  "mint",
-  "ack",
-  "refund-claim",
-  "burn-proof",
-];
-
-const ALL_RELAY_STAGES: RelayProofStage[] = [
-  "lock",
-  "mint",
-  "ack",
-  "refund-initiate",
-  "refund-claim",
-  "execute-burn",
-  "burn-proof",
-];
+const CHECKPOINT_PROOF_STAGES: RelayProofStage[] = ALL_RELAY_STAGES.filter(
+  (s) => RELAY_STAGE_REGISTRY[s].actionKind === "proof",
+);
 
 const VERIFIED_STAGE_VALUES: Stage[] = [
   "source-deposit",
@@ -511,7 +498,7 @@ async function processPostReceipt(jobId: string): Promise<void> {
 
   runStagePreparation(jobId, next, decision).catch((err: unknown) => {
     const message = err instanceof Error ? err.message : String(err);
-    console.error(`[job-service] next-stage error for ${jobId} stage ${next}: ${message}`);
+    console.error(`[job-service] stage-preparation error for ${jobId} stage ${next}: ${message}`);
   });
 }
 

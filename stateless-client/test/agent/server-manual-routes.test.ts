@@ -2,7 +2,7 @@ import Database from "better-sqlite3";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Express } from "express";
 import { createApp } from "../../src/agent/server.js";
-import { createJob, getJob, setDb, upsertCheckpoint } from "../../src/agent/db.js";
+import { createJob, getJob, setDb, updateJob, upsertCheckpoint } from "../../src/agent/db.js";
 import type { TransferIntent } from "../../src/agent/contracts.js";
 
 vi.mock("../../src/agent/integrations/relay.js", () => {
@@ -185,7 +185,7 @@ describe("agent server manual endpoints", () => {
     expect((detailsRes.payload as { plannerMismatch: boolean }).plannerMismatch).toBe(true);
   });
 
-  it("keeps legacy confirm and next-stage routes working", async () => {
+  it("GET /jobs/:id/stages/current returns StageDetails for the active stage", async () => {
     vi.mocked(getResumeDecision).mockResolvedValue({
       action: "lock",
       reason: "source has deposit, destination needs lock proof",
@@ -196,7 +196,7 @@ describe("agent server manual endpoints", () => {
     const app = createApp();
     const job = createJob(INTENT, "0x" + "aa".repeat(32));
     const confirmHandler = getRouteHandler(app, "post", "/jobs/:id/confirm");
-    const nextStageHandler = getRouteHandler(app, "get", "/jobs/:id/next-stage");
+    const currentHandler = getRouteHandler(app, "get", "/jobs/:id/stages/current");
 
     const confirmRes = makeRes();
     confirmHandler({ params: { id: job.id }, body: {} }, confirmRes);
@@ -206,15 +206,41 @@ describe("agent server manual endpoints", () => {
       expect(getJob(job.id)?.status).toBe("ready_for_signature");
     });
 
-    const nextStageRes = makeRes();
-    nextStageHandler({ params: { id: job.id } }, nextStageRes);
-    expect(nextStageRes.statusCode).toBe(200);
-    expect((nextStageRes.payload as { stage: string }).stage).toBe("lock");
+    const currentRes = makeRes();
+    currentHandler({ params: { id: job.id } }, currentRes);
+    expect(currentRes.statusCode).toBe(200);
+    expect((currentRes.payload as { stage: string }).stage).toBe("lock");
+    expect((currentRes.payload as { checkpointState: string }).checkpointState).toBe("prepared");
   });
 
-  it("keeps legacy /stages/:stage/proof payload route available", async () => {
+  it("GET /jobs/:id/stages/current returns 409 when job has no active stage", () => {
     const app = createApp();
-    const job = createJob(INTENT, "0x" + "bb".repeat(32));
+    const job = createJob(INTENT, "0x" + "cc".repeat(32));
+    // Job starts in pending/awaiting_confirmation with currentStage = "pending"
+    const handler = getRouteHandler(app, "get", "/jobs/:id/stages/current");
+    const res = makeRes();
+
+    handler({ params: { id: job.id } }, res);
+
+    expect(res.statusCode).toBe(409);
+  });
+
+  it("GET /jobs/:id/stages/current returns 409 when job is completed", () => {
+    const app = createApp();
+    const job = createJob(INTENT, "0x" + "dd".repeat(32));
+    updateJob(job.id, { status: "completed", currentStage: "completed" });
+    const handler = getRouteHandler(app, "get", "/jobs/:id/stages/current");
+    const res = makeRes();
+
+    handler({ params: { id: job.id } }, res);
+
+    expect(res.statusCode).toBe(409);
+  });
+
+  it("GET /jobs/:id/stages/current returns checkpoint payload when stage is prepared", async () => {
+    const app = createApp();
+    const job = createJob(INTENT, "0x" + "ee".repeat(32));
+    updateJob(job.id, { status: "ready_for_signature", currentStage: "lock" });
     upsertCheckpoint({
       jobId: job.id,
       stage: "lock",
@@ -228,13 +254,16 @@ describe("agent server manual endpoints", () => {
         targetConnector: INTENT.destinationConnector,
       }),
     });
-    const proofHandler = getRouteHandler(app, "get", "/jobs/:id/stages/:stage/proof");
-    const proofRes = makeRes();
+    const handler = getRouteHandler(app, "get", "/jobs/:id/stages/current");
+    const res = makeRes();
 
-    proofHandler({ params: { id: job.id, stage: "lock" } }, proofRes);
+    handler({ params: { id: job.id } }, res);
 
-    expect(proofRes.statusCode).toBe(200);
-    expect((proofRes.payload as { stage: string }).stage).toBe("lock");
-    expect((proofRes.payload as { contractMethod: string }).contractMethod).toBe("submitLockProof");
+    expect(res.statusCode).toBe(200);
+    expect((res.payload as { stage: string }).stage).toBe("lock");
+    expect((res.payload as { checkpointState: string }).checkpointState).toBe("prepared");
+    expect(
+      (res.payload as { preparedPayload: { contractMethod: string } }).preparedPayload.contractMethod,
+    ).toBe("submitLockProof");
   });
 });

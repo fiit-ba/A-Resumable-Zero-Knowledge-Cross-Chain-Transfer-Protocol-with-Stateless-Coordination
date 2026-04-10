@@ -24,6 +24,8 @@ const DST_CONNECTOR = getAddress("0x2222222222222222222222222222222222222222");
 const SOURCE_USER = getAddress("0x3333333333333333333333333333333333333333");
 const RECEIVER = getAddress("0x4444444444444444444444444444444444444444");
 const ZERO_ADDR = getAddress("0x0000000000000000000000000000000000000000");
+const SOURCE_CHAIN_ID = 11155111n;
+const DESTINATION_CHAIN_ID = 10200n;
 
 const SOURCE_NON_LOCAL: ChainConfig = {
   side: "source",
@@ -113,6 +115,8 @@ function makeGetTxResult(status: number): string {
       0n,
       status,
       0n,
+      SOURCE_CHAIN_ID,
+      DESTINATION_CHAIN_ID,
     ],
   ]);
 }

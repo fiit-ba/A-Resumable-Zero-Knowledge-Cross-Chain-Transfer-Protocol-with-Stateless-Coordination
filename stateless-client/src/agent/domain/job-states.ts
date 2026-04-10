@@ -1,30 +1,21 @@
 import type { JobStatus, RelayProofStage } from "../contracts.js";
+import { ALL_RELAY_STAGES, RELAY_STAGE_REGISTRY } from "../../relay/stages.js";
 
 // ---------------------------------------------------------------------------
-// All known relay stages (happy path + refund path)
+// All known relay stages — derived from the canonical registry
 // ---------------------------------------------------------------------------
 
-export const STAGE_ORDER: RelayProofStage[] = [
-  "lock",
-  "mint",
-  "ack",
-  "refund-initiate",
-  "refund-claim",
-  "execute-burn",
-  "burn-proof",
-];
+export const STAGE_ORDER: RelayProofStage[] = ALL_RELAY_STAGES;
 
 /** Stages that require RISC Zero proof generation. */
-export const PROOF_STAGES = new Set<RelayProofStage>([
-  "lock",
-  "mint",
-  "ack",
-  "refund-claim",
-  "burn-proof",
-]);
+export const PROOF_STAGES = new Set<RelayProofStage>(
+  ALL_RELAY_STAGES.filter((s) => RELAY_STAGE_REGISTRY[s].actionKind === "proof"),
+);
 
 /** Stages that are direct contract calls (no proof needed). */
-export const DIRECT_STAGES = new Set<RelayProofStage>(["refund-initiate", "execute-burn"]);
+export const DIRECT_STAGES = new Set<RelayProofStage>(
+  ALL_RELAY_STAGES.filter((s) => RELAY_STAGE_REGISTRY[s].actionKind === "direct"),
+);
 
 // ---------------------------------------------------------------------------
 // Transition guards

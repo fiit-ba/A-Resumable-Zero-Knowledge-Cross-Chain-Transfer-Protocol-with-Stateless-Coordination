@@ -9,6 +9,7 @@ const USER = "0x3000000000000000000000000000000000000003";
 const RECEIVER = "0x4000000000000000000000000000000000000004";
 const TOKEN_A = "0x5000000000000000000000000000000000000005";
 const TOKEN_B = "0x6000000000000000000000000000000000000006";
+const DESTINATION_CHAIN_ID = 31338n;
 
 function encodeStageLog(eventName: string, args: unknown[]) {
   const eventFragment = connectorInterface.getEvent(eventName);
@@ -34,6 +35,7 @@ describe("validateStageLog", () => {
       10,
       7n,
       31337n,
+      DESTINATION_CHAIN_ID,
     ]);
 
     expect(() =>
@@ -119,6 +121,7 @@ describe("validateStageLog", () => {
       10,
       7n,
       31337n,
+      DESTINATION_CHAIN_ID,
     ]);
 
     expect(() =>

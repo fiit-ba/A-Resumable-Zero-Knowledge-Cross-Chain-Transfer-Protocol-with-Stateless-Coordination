@@ -20,8 +20,8 @@ import { normalizeAddress, normalizeBytes32 } from "../core/utils.js";
 // Event classification
 // ---------------------------------------------------------------------------
 
-const SOURCE_EVENT_NAMES = ["DepositLocked", "AckReady", "RefundInitiated"] as const;
-const DEST_EVENT_NAMES = ["FundsReleased", "BurnExecuted"] as const;
+const SOURCE_EVENT_NAMES = ["DepositLocked", "AckReady", "RefundClaimed"] as const;
+const DEST_EVENT_NAMES = ["FundsReleased", "RefundExecuted"] as const;
 const ALL_EVENT_NAMES = [...SOURCE_EVENT_NAMES, ...DEST_EVENT_NAMES] as const;
 
 export type DiscoveryEventName = (typeof ALL_EVENT_NAMES)[number];
@@ -349,14 +349,14 @@ export async function discoverTransferByTxId(
     for (const evt of srcChain.events) {
       if (evt.eventName === "DepositLocked") executionBlocks.sourceDeposit = evt.blockNumber;
       if (evt.eventName === "AckReady") executionBlocks.sourceAckReady = evt.blockNumber;
-      if (evt.eventName === "RefundInitiated")
+      if (evt.eventName === "RefundClaimed")
         executionBlocks.sourceRefundInitiated = evt.blockNumber;
     }
     if (destChain) {
       for (const evt of destChain.events) {
         if (evt.eventName === "FundsReleased")
           executionBlocks.destinationFundsReleased = evt.blockNumber;
-        if (evt.eventName === "BurnExecuted")
+        if (evt.eventName === "RefundExecuted")
           executionBlocks.destinationBurnExecuted = evt.blockNumber;
       }
     }
@@ -371,8 +371,8 @@ export async function discoverTransferByTxId(
       depositLocked: srcChain.events.some((e) => e.eventName === "DepositLocked"),
       fundsReleased: (destChain?.events ?? []).some((e) => e.eventName === "FundsReleased"),
       ackReady: srcChain.events.some((e) => e.eventName === "AckReady"),
-      refundInitiated: srcChain.events.some((e) => e.eventName === "RefundInitiated"),
-      burnExecuted: (destChain?.events ?? []).some((e) => e.eventName === "BurnExecuted"),
+      refundInitiated: srcChain.events.some((e) => e.eventName === "RefundClaimed"),
+      burnExecuted: (destChain?.events ?? []).some((e) => e.eventName === "RefundExecuted"),
     };
 
     matches.push({
