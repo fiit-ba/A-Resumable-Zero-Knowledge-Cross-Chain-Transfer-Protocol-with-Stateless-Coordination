@@ -55,6 +55,27 @@ interface IConnector {
     /// @param txId Transfer identifier.
     function submitBurnProof(Enums.ProofType proofType, bytes calldata proofPayload, bytes32 txId) external;
 
+    /// @notice Submits a ZK non-acceptance proof to recover origin funds when the destination never
+    ///         accepted the lock.  The proof attests — via a verifiable storage proof of the
+    ///         destination connector — that `destinationLockAccepted[txId]` was `false` at some
+    ///         block whose timestamp is at or after `ackDeadline`.  Because the destination hard-
+    ///         blocks `submitLockProof` once `block.timestamp >= ackDeadline`, a non-acceptance
+    ///         attestation from that point is final: no mint can ever happen for this txId.
+    ///
+    /// @dev Assumption: the destination chain and its gateway are eventually available — i.e., the
+    ///      relayer can always read destination state and generate the storage proof.  This is the
+    ///      stated protocol compromise: a permanently unresponsive destination chain cannot be
+    ///      handled without an additional on-chain timeout mechanism.
+    ///
+    ///      Public inputs committed to by the proof:
+    ///        (txId, dstChainConnector, ackDeadline, sourceChainId, destinationChainId)
+    ///
+    ///      Callable only after `initiateRefund` (status == REFUND_INITIATED).
+    /// @param proofType Proof backend used to verify the payload.
+    /// @param proofPayload ABI-encoded proof payload.
+    /// @param txId Transfer identifier.
+    function submitNonAcceptanceProof(Enums.ProofType proofType, bytes calldata proofPayload, bytes32 txId) external;
+
     /*//////////////////////////////////////////////////////////////
                             DESTINATION FUNCTIONS
     //////////////////////////////////////////////////////////////*/

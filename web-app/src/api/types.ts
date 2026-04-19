@@ -8,7 +8,8 @@ export type RelayProofStage =
   | "refund-initiate"
   | "refund-claim"
   | "execute-burn"
-  | "burn-proof";
+  | "burn-proof"
+  | "non-accept-proof";
 
 export type VerificationMode = "colibri" | "rpc-fallback";
 

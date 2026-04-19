@@ -47,6 +47,12 @@ export interface RelayStageSpec {
   verifyStage?: Stage;
   /** Expected on-chain status after successful submission. null = not asserted. */
   expectedPostSubmitStatus: number | null;
+  /**
+   * Override which chain's RPC URL and connector address is passed to the proof
+   * host. Defaults to the side implied by verifyStage. Used by non-accept-proof,
+   * whose verifyStage is on the source but whose proof runs against the destination.
+   */
+  proofHostSide?: "source" | "destination";
   /** Proof host configuration. Absent for direct stages. */
   proofHost?: {
     workspaceKey: keyof ProofPaths;
@@ -65,6 +71,7 @@ export const ALL_RELAY_STAGES: RelayProofStage[] = [
   "refund-claim",
   "execute-burn",
   "burn-proof",
+  "non-accept-proof",
 ];
 
 /** Single authoritative source for every stage's relay metadata. */
@@ -151,6 +158,24 @@ export const RELAY_STAGE_REGISTRY: Record<RelayProofStage, RelayStageSpec> = {
       dockerScriptKey: "burnDockerScript",
       localPackage: "burn-proof-host",
       localBin: "burn-proof-host",
+    },
+  },
+  "non-accept-proof": {
+    stage: "non-accept-proof",
+    actionKind: "proof",
+    // Submitted on the origin (source) chain: submitNonAcceptanceProof
+    submissionSide: "source",
+    submissionMethod: "submitNonAcceptanceProof",
+    // Verify that source initiated refund before generating the proof.
+    verifyStage: "source-refund-initiated",
+    expectedPostSubmitStatus: null,
+    // The proof itself reads the destination chain, not the source.
+    proofHostSide: "destination",
+    proofHost: {
+      workspaceKey: "nonAcceptWorkspace",
+      dockerScriptKey: "nonAcceptDockerScript",
+      localPackage: "non-accept-proof-host",
+      localBin: "non-accept-proof-host",
     },
   },
 };

@@ -22,6 +22,9 @@ contract Connector is ConnectorStorage, IConnector, ReentrancyGuard {
 
     /// @dev Minimum delay between proposeVerifier and applyVerifier.
     uint64 private constant _VERIFIER_TIMELOCK = 48 hours;
+    /// @dev Maximum window after the timelock opens during which applyVerifier can be called.
+    ///      Forces re-proposal after 7 days, preventing a "poison pill" staged far in advance.
+    uint64 private constant _VERIFIER_APPLY_WINDOW = 7 days;
 
     address private immutable _ADMIN;
     uint64 private immutable _ACK_WINDOW_SECONDS;
@@ -45,7 +48,7 @@ contract Connector is ConnectorStorage, IConnector, ReentrancyGuard {
         address _risc0Adapter,
         address _snarkAdapter,
         uint64 _ackWindowSeconds,
-        bytes32[5] memory risc0RouteImageIds,
+        bytes32[6] memory risc0RouteImageIds,
         address _wrappedTokenFactory
     ) {
         if (_risc0Adapter == address(0)) revert Errors.ZeroAddress();
@@ -57,8 +60,7 @@ contract Connector is ConnectorStorage, IConnector, ReentrancyGuard {
         _ACK_WINDOW_SECONDS = _ackWindowSeconds;
         _WRAPPED_TOKEN_FACTORY = _wrappedTokenFactory;
 
-        // TODO: Extract as the constant
-        uint8 numRoutes = 5;
+        uint8 numRoutes = 6;
         for (uint8 r = 0; r < numRoutes; ++r) {
             _verifiers[r][uint8(Enums.ProofType.RISC0)] = _risc0Adapter;
             _verifiers[r][uint8(Enums.ProofType.SNARKJS)] = _snarkAdapter;
@@ -84,6 +86,9 @@ contract Connector is ConnectorStorage, IConnector, ReentrancyGuard {
         uint64 availableAt = _pendingVerifierAvailableAt[uint8(_route)][uint8(_proofType)];
         if (uint64(block.timestamp) < availableAt) {
             revert Errors.TimelockNotExpired(availableAt, uint64(block.timestamp));
+        }
+        if (uint64(block.timestamp) > availableAt + _VERIFIER_APPLY_WINDOW) {
+            revert Errors.TimelockExpired(availableAt, uint64(block.timestamp));
         }
         _verifiers[uint8(_route)][uint8(_proofType)] = pending;
         delete _pendingVerifiers[uint8(_route)][uint8(_proofType)];
@@ -142,8 +147,6 @@ contract Connector is ConnectorStorage, IConnector, ReentrancyGuard {
         });
         txStatus[txId] = Enums.TxStatus.DEPOSIT_LOCKED;
 
-        // Delegate the 13-argument emit to a private function to avoid stack-too-deep
-        // when forge coverage compiles without --via-ir.
         _emitDepositLocked(_txs[txId]);
     }
 
@@ -268,6 +271,49 @@ contract Connector is ConnectorStorage, IConnector, ReentrancyGuard {
         );
     }
 
+    /// @inheritdoc IConnector
+    function submitNonAcceptanceProof(Enums.ProofType _proofType, bytes calldata _proofPayload, bytes32 _txId)
+        external
+        nonReentrant
+        requireStatus(_txId, Enums.TxStatus.REFUND_INITIATED)
+    {
+        _checkRouteImageId(Enums.VerifierRoute.ORIGIN_NON_ACCEPT, _proofType, _proofPayload);
+        CrossChainTx memory tx_ = _txs[_txId];
+        _cleanupTx(_txId);
+
+        (bytes32 commitment,) = _verifyProof(Enums.VerifierRoute.ORIGIN_NON_ACCEPT, _proofType, _proofPayload, _txId);
+        bytes32 expected = _expectedCommitment(
+            Enums.VerifierRoute.ORIGIN_NON_ACCEPT,
+            _proofType,
+            abi.encode(_txId, tx_.dstChainConnector, tx_.ackDeadline, tx_.sourceChainId, tx_.destinationChainId)
+        );
+        if (commitment != expected) {
+            revert Errors.CommitmentMismatch(commitment, expected);
+        }
+
+        address refundTo = tx_.from;
+        uint256 refundAmt = tx_.amount;
+        address token = tx_.currencyFrom;
+
+        tx_.finalizedAt = uint64(block.timestamp);
+
+        IERC20(token).safeTransfer(refundTo, refundAmt);
+
+        emit RefundExecuted(_txId, refundTo, refundAmt);
+        emit OriginTxClosed(
+            _txId,
+            tx_.amount,
+            tx_.currencyFrom,
+            tx_.currencyTo,
+            tx_.from,
+            tx_.to,
+            tx_.srcChainConnector,
+            tx_.dstChainConnector,
+            tx_.timestamp,
+            tx_.finalizedAt
+        );
+    }
+
     /*//////////////////////////////////////////////////////////////
                             DESTINATION FUNCTIONS
     //////////////////////////////////////////////////////////////*/
@@ -328,7 +374,7 @@ contract Connector is ConnectorStorage, IConnector, ReentrancyGuard {
             revert Errors.CommitmentMismatch(commitment, expected);
         }
 
-        IMintableERC20(_currencyTo).mint(address(this), _amount);
+        _mintHoldingToken(_currencyTo, _amount);
         _emitFundsReleased(
             _txId,
             _amount,
@@ -353,6 +399,9 @@ contract Connector is ConnectorStorage, IConnector, ReentrancyGuard {
     {
         _checkRouteImageId(Enums.VerifierRoute.DEST_ACK, _proofType, _proofPayload);
         CrossChainTx memory tx_ = _txs[_txId];
+        if (!(block.timestamp < tx_.ackDeadline)) {
+            revert Errors.AckWindowExpired(tx_.ackDeadline, uint64(block.timestamp));
+        }
         _cleanupTx(_txId);
 
         bytes32 commitment;
@@ -434,7 +483,7 @@ contract Connector is ConnectorStorage, IConnector, ReentrancyGuard {
         _cleanupTx(_txId);
         tx_.finalizedAt = uint64(block.timestamp);
 
-        IBurnableERC20(tx_.currencyTo).burn(tx_.amount);
+        _burnHoldingToken(tx_.currencyTo, tx_.amount);
 
         emit DestTxClosed(
             _txId,
@@ -501,8 +550,23 @@ contract Connector is ConnectorStorage, IConnector, ReentrancyGuard {
                             INTERNAL FUNCTIONS
     //////////////////////////////////////////////////////////////*/
 
+    /// @dev Mints wrapped tokens into this connector during submitLockProof.
+    ///      Virtual so Certora harness can override with a concrete token type,
+    ///      avoiding opaque interface calls under solc --via-ir.
+    function _mintHoldingToken(address _currencyTo, uint256 _amount) internal virtual {
+        IMintableERC20(_currencyTo).mint(address(this), _amount);
+    }
+
+    /// @dev Burns wrapped tokens held by this connector during executeBurn.
+    ///      Virtual so Certora harness can override with a concrete token type,
+    ///      avoiding opaque interface calls under solc --via-ir.
+    function _burnHoldingToken(address _currencyTo, uint256 _amount) internal virtual {
+        IBurnableERC20(_currencyTo).burn(_amount);
+    }
+
     function _expectedCommitment(Enums.VerifierRoute _route, Enums.ProofType _proofType, bytes memory _publicInputs)
         internal
+        virtual
         returns (bytes32)
     {
         address verifier = _verifiers[uint8(_route)][uint8(_proofType)];
@@ -517,6 +581,45 @@ contract Connector is ConnectorStorage, IConnector, ReentrancyGuard {
 
         delete _txs[_txId];
         delete txStatus[_txId];
+    }
+
+    function _pullOriginTokens(address _currencyFrom, uint256 _amount) internal virtual returns (uint256 received) {
+        uint256 balanceBefore = IERC20(_currencyFrom).balanceOf(address(this));
+        IERC20(_currencyFrom).safeTransferFrom(msg.sender, address(this), _amount);
+        received = IERC20(_currencyFrom).balanceOf(address(this)) - balanceBefore;
+        if (received < 1) revert Errors.ZeroAmount();
+    }
+
+    function _enforceWrappedTokenRoute(
+        uint256 _sourceChainId,
+        address _sourceConnector,
+        address _sourceToken,
+        uint256 _destinationChainId,
+        address _destinationConnector,
+        address _currencyTo
+    ) internal virtual {
+        bytes32 routeKey = IWrappedTokenFactory(_WRAPPED_TOKEN_FACTORY)
+            .routeKey(_sourceChainId, _sourceConnector, _sourceToken, _destinationChainId, _destinationConnector);
+        address expectedWrapped = IWrappedTokenFactory(_WRAPPED_TOKEN_FACTORY)
+            .resolve(_sourceChainId, _sourceConnector, _sourceToken, _destinationChainId, _destinationConnector);
+        if (expectedWrapped == address(0)) revert Errors.WrappedTokenNotRegistered(routeKey);
+        if (_currencyTo != expectedWrapped) revert Errors.WrappedTokenMismatch(_currencyTo, expectedWrapped);
+    }
+
+    function _verifyProof(
+        Enums.VerifierRoute _route,
+        Enums.ProofType _proofType,
+        bytes calldata _proofPayload,
+        bytes32 _txId
+    ) internal virtual returns (bytes32 commitment, bytes32 proofHash) {
+        proofHash = keccak256(_proofPayload);
+
+        address verifier = _verifiers[uint8(_route)][uint8(_proofType)];
+        if (verifier == address(0)) revert Errors.VerifierNotRegistered(uint8(_proofType));
+
+        commitment = IZKVerifier(verifier).verify(_proofPayload);
+
+        emit ProofVerified(_txId, _proofType, proofHash, commitment, _proofPayload);
     }
 
     function _deriveOriginTxId(
@@ -557,13 +660,6 @@ contract Connector is ConnectorStorage, IConnector, ReentrancyGuard {
         if (_currencyFrom == address(0)) revert Errors.ZeroAddress();
         if (_currencyTo == address(0)) revert Errors.ZeroAddress();
         if (_dstChainConnector == address(0)) revert Errors.ZeroAddress();
-    }
-
-    function _pullOriginTokens(address _currencyFrom, uint256 _amount) private returns (uint256 received) {
-        uint256 balanceBefore = IERC20(_currencyFrom).balanceOf(address(this));
-        IERC20(_currencyFrom).safeTransferFrom(msg.sender, address(this), _amount);
-        received = IERC20(_currencyFrom).balanceOf(address(this)) - balanceBefore;
-        if (received < 1) revert Errors.ZeroAmount();
     }
 
     function _emitDepositLocked(CrossChainTx memory tx_) private {
@@ -688,22 +784,6 @@ contract Connector is ConnectorStorage, IConnector, ReentrancyGuard {
         }
     }
 
-    function _verifyProof(
-        Enums.VerifierRoute _route,
-        Enums.ProofType _proofType,
-        bytes calldata _proofPayload,
-        bytes32 _txId
-    ) private returns (bytes32 commitment, bytes32 proofHash) {
-        proofHash = keccak256(_proofPayload);
-
-        address verifier = _verifiers[uint8(_route)][uint8(_proofType)];
-        if (verifier == address(0)) revert Errors.VerifierNotRegistered(uint8(_proofType));
-
-        commitment = IZKVerifier(verifier).verify(_proofPayload);
-
-        emit ProofVerified(_txId, _proofType, proofHash, commitment, _proofPayload);
-    }
-
     function _requireStatus(bytes32 _txId, Enums.TxStatus _expected) private {
         if (txStatus[_txId] != _expected) {
             revert Errors.InvalidStateTransition(uint8(txStatus[_txId]), uint8(_expected));
@@ -756,21 +836,5 @@ contract Connector is ConnectorStorage, IConnector, ReentrancyGuard {
                 })
             )
         );
-    }
-
-    function _enforceWrappedTokenRoute(
-        uint256 _sourceChainId,
-        address _sourceConnector,
-        address _sourceToken,
-        uint256 _destinationChainId,
-        address _destinationConnector,
-        address _currencyTo
-    ) private {
-        bytes32 routeKey = IWrappedTokenFactory(_WRAPPED_TOKEN_FACTORY)
-            .routeKey(_sourceChainId, _sourceConnector, _sourceToken, _destinationChainId, _destinationConnector);
-        address expectedWrapped = IWrappedTokenFactory(_WRAPPED_TOKEN_FACTORY)
-            .resolve(_sourceChainId, _sourceConnector, _sourceToken, _destinationChainId, _destinationConnector);
-        if (expectedWrapped == address(0)) revert Errors.WrappedTokenNotRegistered(routeKey);
-        if (_currencyTo != expectedWrapped) revert Errors.WrappedTokenMismatch(_currencyTo, expectedWrapped);
     }
 }

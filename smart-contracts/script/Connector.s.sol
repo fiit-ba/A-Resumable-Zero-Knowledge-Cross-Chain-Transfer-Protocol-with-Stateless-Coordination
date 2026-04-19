@@ -82,12 +82,13 @@ contract DeployConnector is Script {
         RiscZeroAdapter risc0Adapter = new RiscZeroAdapter(address(risc0), allowedIds);
         SnarkAdapter snarkAdapter = new SnarkAdapter(address(snark));
 
-        bytes32[5] memory routeImageIds;
+        bytes32[6] memory routeImageIds;
         routeImageIds[0] = originMintImageId;
         routeImageIds[1] = originBurnImageId;
         routeImageIds[2] = destLockImageId;
         routeImageIds[3] = destAckImageId;
         routeImageIds[4] = destRefundClaimImageId;
+        routeImageIds[5] = bytes32(0); // ORIGIN_NON_ACCEPT — no guest binary yet; set via env when available
 
         WrappedTokenFactory wrappedTokenFactory = new WrappedTokenFactory();
         connector = new Connector(

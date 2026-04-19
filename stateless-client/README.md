@@ -131,4 +131,3 @@ npm run lint -w stateless-client
 
 - [`../README.md`](../README.md)
 - [`../zk-proofs/README.md`](../zk-proofs/README.md)
-- [`../colibri/README.md`](../colibri/README.md)

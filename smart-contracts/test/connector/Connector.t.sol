@@ -9,7 +9,7 @@ import {Errors} from "../src/libs/Errors.sol";
 import {ProofOutputs} from "../src/libs/ProofOutputs.sol";
 import {RiscZeroAdapter} from "../src/zk-proof/adapters/RiscZeroAdapter.sol";
 import {SnarkAdapter} from "../src/zk-proof/adapters/SnarkAdapter.sol";
-import {WrappedTokenFactory} from "../src/tokens/WrappedTokenFactory.sol";
+import {WrappedTokenFactoryHarness} from "./mocks/WrappedTokenFactoryHarness.sol";
 import {BridgeWrappedToken} from "../src/tokens/BridgeWrappedToken.sol";
 import {MockRiscZeroVerifier} from "./mocks/MockRiscZeroVerifier.sol";
 import {MockSnarkVerifier} from "./mocks/MockSnarkVerifier.sol";
@@ -22,7 +22,7 @@ import {TestableConnector} from "./mocks/TestableConnector.sol";
 
 contract ConnectorTest is Test {
     Connector public connector;
-    WrappedTokenFactory public factory;
+    WrappedTokenFactoryHarness public factory;
     MockRiscZeroVerifier public risc0Mock;
     MockSnarkVerifier public snarkMock;
     RiscZeroAdapter public risc0Adapter;
@@ -49,12 +49,12 @@ contract ConnectorTest is Test {
         risc0Adapter = new RiscZeroAdapter(address(risc0Mock), allowedIds);
         snarkAdapter = new SnarkAdapter(address(snarkMock));
 
-        bytes32[5] memory routeImageIds;
-        for (uint8 i = 0; i < 5; ++i) {
+        bytes32[6] memory routeImageIds;
+        for (uint8 i = 0; i < 6; ++i) {
             routeImageIds[i] = _IMAGE_ID;
         }
 
-        factory = new WrappedTokenFactory();
+        factory = new WrappedTokenFactoryHarness();
         connector =
             new Connector(address(risc0Adapter), address(snarkAdapter), _ACK_WINDOW, routeImageIds, address(factory));
 
@@ -143,6 +143,11 @@ contract ConnectorTest is Test {
         return abi.encode(txId, t.dstChainConnector, t.amount, t.sourceChainId, t.destinationChainId);
     }
 
+    function _nonAcceptanceProofInputs(bytes32 txId) internal view returns (bytes memory) {
+        ConnectorStorage.CrossChainTx memory t = connector.getTx(txId);
+        return abi.encode(txId, t.dstChainConnector, t.ackDeadline, t.sourceChainId, t.destinationChainId);
+    }
+
     function _lockProofPublicInputs(bytes32 txId, uint64 originAckDeadline, uint256 nonce, uint256 srcChainId)
         internal
         view
@@ -228,25 +233,25 @@ contract ConnectorTest is Test {
     }
 
     function test_constructor_RevertsWhen_Risc0Zero() public {
-        bytes32[5] memory ids;
+        bytes32[6] memory ids;
         vm.expectRevert(Errors.ZeroAddress.selector);
         new Connector(address(0), address(snarkAdapter), _ACK_WINDOW, ids, address(factory));
     }
 
     function test_constructor_RevertsWhen_SnarkZero() public {
-        bytes32[5] memory ids;
+        bytes32[6] memory ids;
         vm.expectRevert(Errors.ZeroAddress.selector);
         new Connector(address(risc0Adapter), address(0), _ACK_WINDOW, ids, address(factory));
     }
 
     function test_constructor_RevertsWhen_AckWindowZero() public {
-        bytes32[5] memory ids;
+        bytes32[6] memory ids;
         vm.expectRevert(Errors.ZeroAckWindow.selector);
         new Connector(address(risc0Adapter), address(snarkAdapter), 0, ids, address(factory));
     }
 
     function test_constructor_RevertsWhen_FactoryZero() public {
-        bytes32[5] memory ids;
+        bytes32[6] memory ids;
         vm.expectRevert(Errors.ZeroAddress.selector);
         new Connector(address(risc0Adapter), address(snarkAdapter), _ACK_WINDOW, ids, address(0));
     }
@@ -875,6 +880,157 @@ contract ConnectorTest is Test {
     }
 
     /*//////////////////////////////////////////////////////////////
+                 submitNonAcceptanceProof TESTS
+    //////////////////////////////////////////////////////////////*/
+
+    function test_submitNonAcceptanceProof_HappyPath() public {
+        bytes32 txId = _doDeposit();
+        ConnectorStorage.CrossChainTx memory snap = connector.getTx(txId);
+
+        vm.warp(snap.ackDeadline + 1);
+        vm.prank(_ALICE);
+        connector.initiateRefund(txId);
+
+        bytes memory proof = _buildSnarkProof(_nonAcceptanceProofInputs(txId));
+
+        vm.expectEmit(true, true, true, true);
+        emit ConnectorStorage.RefundExecuted(txId, _ALICE, _AMOUNT);
+
+        connector.submitNonAcceptanceProof(Enums.ProofType.SNARKJS, proof, txId);
+
+        assertEq(token.balanceOf(_ALICE), _AMOUNT);
+        assertEq(token.balanceOf(address(connector)), 0);
+        assertEq(uint8(connector.txStatus(txId)), uint8(Enums.TxStatus.NONE));
+    }
+
+    function test_submitNonAcceptanceProof_EmitsOriginTxClosed() public {
+        bytes32 txId = _doDeposit();
+        ConnectorStorage.CrossChainTx memory snap = connector.getTx(txId);
+
+        vm.warp(snap.ackDeadline + 1);
+        vm.prank(_ALICE);
+        connector.initiateRefund(txId);
+
+        bytes memory proof = _buildSnarkProof(_nonAcceptanceProofInputs(txId));
+
+        vm.expectEmit(true, true, true, false);
+        emit ConnectorStorage.OriginTxClosed(
+            txId,
+            snap.amount,
+            snap.currencyFrom,
+            snap.currencyTo,
+            snap.from,
+            snap.to,
+            snap.srcChainConnector,
+            snap.dstChainConnector,
+            snap.timestamp,
+            uint64(block.timestamp)
+        );
+
+        connector.submitNonAcceptanceProof(Enums.ProofType.SNARKJS, proof, txId);
+    }
+
+    function test_submitNonAcceptanceProof_CleansState() public {
+        bytes32 txId = _doDeposit();
+        ConnectorStorage.CrossChainTx memory snap = connector.getTx(txId);
+
+        vm.warp(snap.ackDeadline + 1);
+        vm.prank(_ALICE);
+        connector.initiateRefund(txId);
+
+        connector.submitNonAcceptanceProof(
+            Enums.ProofType.SNARKJS, _buildSnarkProof(_nonAcceptanceProofInputs(txId)), txId
+        );
+
+        assertEq(uint8(connector.txStatus(txId)), uint8(Enums.TxStatus.NONE));
+        ConnectorStorage.CrossChainTx memory t = connector.getTx(txId);
+        assertEq(t.txId, bytes32(0));
+    }
+
+    function test_submitNonAcceptanceProof_RevertsWhen_NotRefundInitiated() public {
+        bytes32 txId = _doDeposit();
+        ConnectorStorage.CrossChainTx memory snap = connector.getTx(txId);
+
+        // initiateRefund not called — status is still DEPOSIT_LOCKED.
+        vm.warp(snap.ackDeadline + 1);
+
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                Errors.InvalidStateTransition.selector,
+                uint8(Enums.TxStatus.DEPOSIT_LOCKED),
+                uint8(Enums.TxStatus.REFUND_INITIATED)
+            )
+        );
+        connector.submitNonAcceptanceProof(Enums.ProofType.SNARKJS, _buildSnarkProof(abi.encode(txId)), txId);
+    }
+
+    function test_submitNonAcceptanceProof_RevertsWhen_TxDoesNotExist() public {
+        bytes32 fake = bytes32(uint256(0x999));
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                Errors.InvalidStateTransition.selector,
+                uint8(Enums.TxStatus.NONE),
+                uint8(Enums.TxStatus.REFUND_INITIATED)
+            )
+        );
+        connector.submitNonAcceptanceProof(Enums.ProofType.SNARKJS, _buildSnarkProof(abi.encode(fake)), fake);
+    }
+
+    function test_submitNonAcceptanceProof_RevertsWhen_CommitmentMismatch() public {
+        bytes32 txId = _doDeposit();
+        ConnectorStorage.CrossChainTx memory snap = connector.getTx(txId);
+
+        vm.warp(snap.ackDeadline + 1);
+        vm.prank(_ALICE);
+        connector.initiateRefund(txId);
+
+        vm.expectRevert();
+        connector.submitNonAcceptanceProof(Enums.ProofType.SNARKJS, _buildSnarkProofBadCommitment(), txId);
+    }
+
+    /// @notice submitBurnProof wins the race; submitNonAcceptanceProof must then revert.
+    function test_submitNonAcceptanceProof_RevertsAfter_BurnProofAlreadySubmitted() public {
+        bytes32 txId = _doDeposit();
+        ConnectorStorage.CrossChainTx memory snap = connector.getTx(txId);
+
+        vm.warp(snap.ackDeadline + 1);
+        vm.prank(_ALICE);
+        connector.initiateRefund(txId);
+
+        // Snapshot proof inputs before submitBurnProof cleans up the tx record.
+        bytes memory nonAcceptProof = _buildSnarkProof(_nonAcceptanceProofInputs(txId));
+        connector.submitBurnProof(Enums.ProofType.SNARKJS, _buildSnarkProof(_burnProofInputs(txId)), txId);
+
+        // tx is gone — non-acceptance proof must revert.
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                Errors.InvalidStateTransition.selector,
+                uint8(Enums.TxStatus.NONE),
+                uint8(Enums.TxStatus.REFUND_INITIATED)
+            )
+        );
+        connector.submitNonAcceptanceProof(Enums.ProofType.SNARKJS, nonAcceptProof, txId);
+    }
+
+    function test_submitNonAcceptanceProof_CanCallWithoutWaitingForExtendedWindow() public {
+        // Unlike the previous approach, submitNonAcceptanceProof has no time-based gate —
+        // the proof itself is the evidence that no mint happened.  Callable immediately after
+        // initiateRefund (which already requires ackDeadline to have passed).
+        bytes32 txId = _doDeposit();
+        ConnectorStorage.CrossChainTx memory snap = connector.getTx(txId);
+
+        vm.warp(snap.ackDeadline + 1);
+        vm.prank(_ALICE);
+        connector.initiateRefund(txId);
+
+        // No additional warp — proof is sufficient.
+        connector.submitNonAcceptanceProof(
+            Enums.ProofType.SNARKJS, _buildSnarkProof(_nonAcceptanceProofInputs(txId)), txId
+        );
+        assertEq(token.balanceOf(_ALICE), _AMOUNT);
+    }
+
+    /*//////////////////////////////////////////////////////////////
                     submitLockProof TESTS
     //////////////////////////////////////////////////////////////*/
 
@@ -1442,8 +1598,8 @@ contract ConnectorTest is Test {
     ///         even long after ackDeadline has expired.
     function test_flow_Figure4RefundPath_BlockedAfterMintProof() public {
         // ── Deploy real destination connector ─────────────────────
-        bytes32[5] memory dstRouteIds;
-        for (uint8 i = 0; i < 5; ++i) {
+        bytes32[6] memory dstRouteIds;
+        for (uint8 i = 0; i < 6; ++i) {
             dstRouteIds[i] = _IMAGE_ID;
         }
         Connector dstConnector =
@@ -1573,8 +1729,8 @@ contract ConnectorTest is Test {
         //    and generate a ZK proof. Here we simulate by building the proof directly.
 
         // 3. Destination: submit Lock Proof with RISC0 backend
-        bytes32[5] memory dstRouteIds;
-        for (uint8 i = 0; i < 5; ++i) {
+        bytes32[6] memory dstRouteIds;
+        for (uint8 i = 0; i < 6; ++i) {
             dstRouteIds[i] = _IMAGE_ID;
         }
         Connector dstConnector =
@@ -1751,8 +1907,8 @@ contract ConnectorTest is Test {
     function test_flow_FullRefundIntegration() public {
         // ── DESTINATION SIDE ─────────────────────────────────────
         // 1. Deploy destination connector first so we know its address.
-        bytes32[5] memory dstRouteIds;
-        for (uint8 i = 0; i < 5; ++i) {
+        bytes32[6] memory dstRouteIds;
+        for (uint8 i = 0; i < 6; ++i) {
             dstRouteIds[i] = _IMAGE_ID;
         }
         Connector dstConnector =
@@ -2358,8 +2514,8 @@ contract ConnectorTest is Test {
     //////////////////////////////////////////////////////////////*/
 
     function test_cleanupTx_RevertsWhen_TxNotFound() public {
-        bytes32[5] memory imageIds;
-        for (uint8 i = 0; i < 5; ++i) {
+        bytes32[6] memory imageIds;
+        for (uint8 i = 0; i < 6; ++i) {
             imageIds[i] = _IMAGE_ID;
         }
 
@@ -2449,8 +2605,8 @@ contract ConnectorTest is Test {
     }
 
     function test_expectedCommitment_RevertsWhen_VerifierNotRegistered() public {
-        bytes32[5] memory imageIds;
-        for (uint8 i = 0; i < 5; ++i) {
+        bytes32[6] memory imageIds;
+        for (uint8 i = 0; i < 6; ++i) {
             imageIds[i] = _IMAGE_ID;
         }
 
@@ -2469,8 +2625,8 @@ contract ConnectorTest is Test {
     }
 
     function test_testableConnector_ProposeAndApplyVerifier() public {
-        bytes32[5] memory imageIds;
-        for (uint8 i = 0; i < 5; ++i) {
+        bytes32[6] memory imageIds;
+        for (uint8 i = 0; i < 6; ++i) {
             imageIds[i] = _IMAGE_ID;
         }
 

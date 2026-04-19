@@ -6,7 +6,7 @@ import {Enums} from "../../src/libs/Enums.sol";
 
 /// @dev Thin wrapper that exposes internal _cleanupTx for coverage-gap tests.
 contract TestableConnector is Connector {
-    constructor(address risc0_, address snark_, uint64 ackWindow_, bytes32[5] memory imageIds_, address factory_)
+    constructor(address risc0_, address snark_, uint64 ackWindow_, bytes32[6] memory imageIds_, address factory_)
         Connector(risc0_, snark_, ackWindow_, imageIds_, factory_)
     {}
 

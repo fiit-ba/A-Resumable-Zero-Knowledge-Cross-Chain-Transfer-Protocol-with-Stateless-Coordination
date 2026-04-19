@@ -259,6 +259,26 @@ export function parseProofArtifact(
     );
   }
 
+  if (stage === "non-accept-proof") {
+    artifact.dstChainConnector = normalizeAddress(
+      requireMetadataField(metadata, "dstChainConnector", stage),
+      "dstChainConnector",
+    );
+    // ackDeadline is a u64 in the proof output — parse as bigint, store as originAckDeadline.
+    artifact.originAckDeadline = parseBigIntField(
+      requireMetadataField(metadata, "ackDeadline", stage),
+      "ackDeadline",
+    );
+    artifact.sourceChainId = parseNumberField(
+      requireMetadataField(metadata, "sourceChainId", stage),
+      "sourceChainId",
+    );
+    artifact.destChainId = parseNumberField(
+      requireMetadataField(metadata, "destinationChainId", stage),
+      "destinationChainId",
+    );
+  }
+
   return artifact;
 }
 
@@ -274,6 +294,12 @@ function ensureStageChainInputs(input: ProofRunnerInput): void {
 
   if (input.stage === "ack") {
     assert(input.sourceChainId !== undefined, "ack proof requires sourceChainId");
+  }
+
+  if (input.stage === "non-accept-proof") {
+    assert(input.sourceChainId !== undefined, "non-accept-proof requires sourceChainId");
+    assert(input.destinationChainId !== undefined, "non-accept-proof requires destinationChainId");
+    assert(input.ackDeadline !== undefined, "non-accept-proof requires ackDeadline");
   }
 }
 
@@ -341,6 +367,17 @@ export async function runProof(input: ProofRunnerInput): Promise<ProofArtifact> 
       args.push("--source-chain-id", String(input.sourceChainId));
     }
 
+    if (input.stage === "non-accept-proof") {
+      args.push(
+        "--ack-deadline",
+        String(input.ackDeadline),
+        "--source-chain-id",
+        String(input.sourceChainId),
+        "--dest-chain-id",
+        String(input.destinationChainId),
+      );
+    }
+
     result = await runCommand("cargo", args, {
       cwd: input.proofPaths[hostConfig.workspaceKey],
       env,
@@ -363,6 +400,13 @@ export async function runProof(input: ProofRunnerInput): Promise<ProofArtifact> 
     if (input.stage === "ack") {
       env.PROVER_ACTION = "prove";
       env.SOURCE_CHAIN_ID = String(input.sourceChainId);
+    }
+
+    if (input.stage === "non-accept-proof") {
+      env.PROVER_ACTION = "prove";
+      env.ACK_DEADLINE = String(input.ackDeadline);
+      env.SOURCE_CHAIN_ID = String(input.sourceChainId);
+      env.DEST_CHAIN_ID = String(input.destinationChainId);
     }
 
     result = await runCommand("bash", [scriptPath], {

@@ -5,6 +5,7 @@ import {
   runRelayExecuteBurn,
   runRelayLock,
   runRelayMint,
+  runRelayNonAcceptProof,
   runRelayRefundClaim,
   runRelayRefundInitiate,
   shouldUsePrunedAckVerification,
@@ -24,6 +25,7 @@ const ACTION_HANDLERS: Partial<Record<ResumeAction, RelayActionHandler>> = {
   "refund-claim": (c) => runRelayRefundClaim(c),
   "execute-burn": (c) => runRelayExecuteBurn(c),
   "burn-proof": (c) => runRelayBurnProof(c),
+  "non-accept-proof": (c) => runRelayNonAcceptProof(c),
 };
 
 export async function runRelayResume(config: RelayConfig): Promise<ResumeResult> {

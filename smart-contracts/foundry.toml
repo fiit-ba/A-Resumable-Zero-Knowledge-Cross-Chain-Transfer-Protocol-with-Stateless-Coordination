@@ -29,3 +29,4 @@ fs_permissions = [
 "@openzeppelin-contracts" = "5.5.0"
 "@openzeppelin-contracts-upgradeable" = "5.5.0"
 forge-std = "1.9.6"
+perimetersec-fuzzlib = "1.0.0"

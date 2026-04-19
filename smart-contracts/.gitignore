@@ -43,3 +43,5 @@ slither-output.json
 
 lib/
 nemesis-auditor/
+AIComposer/
+.certora_internal

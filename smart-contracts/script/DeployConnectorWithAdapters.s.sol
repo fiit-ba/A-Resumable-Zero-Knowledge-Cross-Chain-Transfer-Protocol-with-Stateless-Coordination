@@ -32,12 +32,13 @@ contract DeployConnectorWithAdapters is Script {
         uint64 ackWindowSeconds = uint64(vm.envUint("ACK_WINDOW_SECONDS"));
         if (ackWindowSeconds == 0) revert Errors.ZeroAckWindow();
 
-        bytes32[5] memory risc0RouteImageIds;
+        bytes32[6] memory risc0RouteImageIds;
         risc0RouteImageIds[0] = vm.envOr("ORIGIN_MINT_IMAGE_ID", bytes32(0));
         risc0RouteImageIds[1] = vm.envOr("ORIGIN_BURN_IMAGE_ID", bytes32(0));
         risc0RouteImageIds[2] = vm.envOr("DEST_LOCK_IMAGE_ID", bytes32(0));
         risc0RouteImageIds[3] = vm.envOr("DEST_ACK_IMAGE_ID", bytes32(0));
         risc0RouteImageIds[4] = vm.envOr("DEST_REFUND_CLAIM_IMAGE_ID", bytes32(0));
+        risc0RouteImageIds[5] = vm.envOr("ORIGIN_NON_ACCEPT_IMAGE_ID", bytes32(0));
 
         address wrappedTokenFactoryAddr = vm.envOr("WRAPPED_TOKEN_FACTORY", address(0));
 

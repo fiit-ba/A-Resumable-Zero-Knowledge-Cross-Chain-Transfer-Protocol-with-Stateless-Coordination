@@ -63,7 +63,9 @@ library Errors {
     error AckWindowExpired(uint64 ackDeadline, uint64 currentTime);
     error ZeroAckWindow();
     error TimelockNotExpired(uint64 availableAt, uint64 currentTime);
+    error TimelockExpired(uint64 availableAt, uint64 currentTime);
     error NoPendingVerifier(uint8 route, uint8 proofType);
+    error NoPendingRoute(bytes32 routeKey);
 
     /*//////////////////////////////////////////////////////////////
                              AMOUNTS

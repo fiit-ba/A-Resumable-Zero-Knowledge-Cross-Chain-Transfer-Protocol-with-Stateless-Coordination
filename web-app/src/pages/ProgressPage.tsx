@@ -35,6 +35,7 @@ const STAGE_LABELS: Record<RelayProofStage, string> = {
   "refund-claim": "Refund – Claim proof (destination)",
   "execute-burn": "Refund – Execute burn (destination)",
   "burn-proof": "Refund – Burn proof (source)",
+  "non-accept-proof": "Refund – Non-acceptance proof (source)",
 };
 
 const ALL_STAGES: RelayProofStage[] = [
@@ -45,6 +46,7 @@ const ALL_STAGES: RelayProofStage[] = [
   "refund-claim",
   "execute-burn",
   "burn-proof",
+  "non-accept-proof",
 ];
 
 const REFUND_STAGES = new Set<RelayProofStage>([
@@ -52,6 +54,7 @@ const REFUND_STAGES = new Set<RelayProofStage>([
   "refund-claim",
   "execute-burn",
   "burn-proof",
+  "non-accept-proof",
 ]);
 
 const DIRECT_ACTION_STAGES = new Set<RelayProofStage>(["refund-initiate", "execute-burn"]);
@@ -62,6 +65,8 @@ const REFUND_STAGE_CONTEXT: Record<string, string> = {
   "refund-claim": "Refund initiated. Submit the refund-claim proof on the destination chain.",
   "execute-burn": "Refund claim accepted. Execute the burn on the destination chain.",
   "burn-proof": "Burn executed. Submit the burn proof on the source chain to complete the refund.",
+  "non-accept-proof":
+    "The destination never accepted the lock. Submit a ZK non-acceptance proof on the source chain to recover your funds without destination interaction.",
 };
 
 const STATUS_LABELS: Record<string, string> = {
@@ -84,6 +89,7 @@ const RISC0_ROUTE_BY_STAGE: Partial<Record<RelayProofStage, number>> = {
   ack: 3,
   "refund-claim": 4,
   "burn-proof": 1,
+  "non-accept-proof": 5,
 };
 
 // ---------------------------------------------------------------------------
@@ -98,6 +104,7 @@ const EXPECTED_TX_STATUS_BY_STAGE: Partial<Record<RelayProofStage, number>> = {
   "refund-claim": 4, // MINTED_IN_HOLDING
   "execute-burn": 5, // REFUND_CLAIM_ACCEPTED
   "burn-proof": 3, // REFUND_INITIATED
+  "non-accept-proof": 3, // REFUND_INITIATED
 };
 
 const TX_STATUS_LABELS: Record<number, string> = {
