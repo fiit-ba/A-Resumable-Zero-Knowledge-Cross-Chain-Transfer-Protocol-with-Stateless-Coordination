@@ -16,12 +16,13 @@ import {RiscZeroAdapter} from "../src/zk-proof/adapters/RiscZeroAdapter.sol";
 /// - RISC0_VERIFIER: IRiscZeroVerifier contract address
 ///   If omitted, this script deploys a RiscZeroGroth16Verifier first.
 ///
-/// At least one of the following five route image IDs must be non-zero:
-/// - ORIGIN_MINT_IMAGE_ID   (used by submitMintProof on the origin chain)
-/// - ORIGIN_BURN_IMAGE_ID   (used by submitBurnProof on the origin chain)
-/// - DEST_LOCK_IMAGE_ID     (used by submitLockProof on the destination chain)
-/// - DEST_ACK_IMAGE_ID      (used by submitAckProof on the destination chain)
-/// - DEST_REFUND_CLAIM_IMAGE_ID (used by submitRefundClaimProof on the destination chain)
+/// At least one of the following six route image IDs must be non-zero:
+/// - ORIGIN_MINT_IMAGE_ID        (used by submitMintProof on the origin chain)
+/// - ORIGIN_BURN_IMAGE_ID        (used by submitBurnProof on the origin chain)
+/// - DEST_LOCK_IMAGE_ID          (used by submitLockProof on the destination chain)
+/// - DEST_ACK_IMAGE_ID           (used by submitAckProof on the destination chain)
+/// - DEST_REFUND_CLAIM_IMAGE_ID  (used by submitRefundClaimProof on the destination chain)
+/// - ORIGIN_NON_ACCEPT_IMAGE_ID  (used by submitNonAcceptanceProof on the origin chain)
 ///
 /// Zero-valued entries are skipped — only non-zero IDs are added to the allowlist.
 contract DeployRiscZeroAdapter is Script {
@@ -36,22 +37,24 @@ contract DeployRiscZeroAdapter is Script {
         bytes32 destLockId = vm.envOr("DEST_LOCK_IMAGE_ID", bytes32(0));
         bytes32 destAckId = vm.envOr("DEST_ACK_IMAGE_ID", bytes32(0));
         bytes32 destRefundClaimId = vm.envOr("DEST_REFUND_CLAIM_IMAGE_ID", bytes32(0));
+        bytes32 originNonAcceptId = vm.envOr("ORIGIN_NON_ACCEPT_IMAGE_ID", bytes32(0));
 
         // Collect non-zero image IDs into the allowlist (deduplicated by omission).
-        bytes32[5] memory candidates;
+        bytes32[6] memory candidates;
         candidates[0] = originMintId;
         candidates[1] = originBurnId;
         candidates[2] = destLockId;
         candidates[3] = destAckId;
         candidates[4] = destRefundClaimId;
+        candidates[5] = originNonAcceptId;
         uint256 count;
-        for (uint256 i = 0; i < 5; ++i) {
+        for (uint256 i = 0; i < 6; ++i) {
             if (candidates[i] != bytes32(0)) ++count;
         }
 
         bytes32[] memory allowedIds = new bytes32[](count);
         uint256 idx;
-        for (uint256 i = 0; i < 5; ++i) {
+        for (uint256 i = 0; i < 6; ++i) {
             if (candidates[i] != bytes32(0)) {
                 allowedIds[idx] = candidates[i];
                 ++idx;
@@ -61,7 +64,7 @@ contract DeployRiscZeroAdapter is Script {
         vm.startBroadcast(privateKey);
         if (risc0Verifier == address(0)) {
             risc0Verifier = address(new RiscZeroGroth16Verifier(ControlID.CONTROL_ROOT, ControlID.BN254_CONTROL_ID));
-            console2.log("RISC0_VERIFIER not set; deployed verifier:", risc0Verifier);
+            console2.log("RISC0 verifier:", risc0Verifier);
         }
         adapter = new RiscZeroAdapter(risc0Verifier, allowedIds);
         vm.stopBroadcast();

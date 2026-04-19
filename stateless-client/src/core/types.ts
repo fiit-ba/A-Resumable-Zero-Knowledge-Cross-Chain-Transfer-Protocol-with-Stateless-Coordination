@@ -14,7 +14,8 @@ export type RelayProofStage =
   | "refund-initiate"
   | "refund-claim"
   | "execute-burn"
-  | "burn-proof";
+  | "burn-proof"
+  | "non-accept-proof";
 
 export type ProofBackend = "local" | "docker";
 
@@ -84,6 +85,8 @@ export interface StageExecutionBlocks {
   sourceAckReady?: BlockTagInput;
   sourceRefundInitiated?: BlockTagInput;
   destinationBurnExecuted?: BlockTagInput;
+  /** Execution block for the non-accept proof (read against destination chain). */
+  destinationNonAccept?: BlockTagInput;
 }
 
 export interface ProofPaths {
@@ -92,11 +95,13 @@ export interface ProofPaths {
   ackWorkspace: string;
   refundClaimWorkspace: string;
   burnWorkspace: string;
+  nonAcceptWorkspace: string;
   lockDockerScript: string;
   mintDockerScript: string;
   ackDockerScript: string;
   refundClaimDockerScript: string;
   burnDockerScript: string;
+  nonAcceptDockerScript: string;
 }
 
 /**
@@ -203,6 +208,7 @@ export type ResumeAction =
   | "refund-claim"
   | "execute-burn"
   | "burn-proof"
+  | "non-accept-proof"
   | "noop"
   | "error";
 
@@ -212,6 +218,12 @@ export interface HistoryFlags {
   ackReady: boolean;
   /** Set when source=1, destination=4 and block.timestamp >= ackDeadline. */
   ackDeadlineExpired?: boolean;
+  /**
+   * Set when source=3, destination=0 to distinguish burn-proof from
+   * non-accept-proof. true = RefundExecuted event found on destination (burn
+   * path); false = no such event (lock was never accepted — non-accept path).
+   */
+  burnExecuted?: boolean;
 }
 
 export interface ResumeDecision {
@@ -227,7 +239,7 @@ export interface ResumeResult {
   executed?: RelayStageResult;
 }
 
-export type ProofRelayStage = "lock" | "mint" | "ack" | "refund-claim" | "burn-proof";
+export type ProofRelayStage = "lock" | "mint" | "ack" | "refund-claim" | "burn-proof" | "non-accept-proof";
 
 export interface ProofRunnerInput {
   stage: ProofRelayStage;
@@ -237,6 +249,8 @@ export interface ProofRunnerInput {
   connector: string;
   sourceChainId?: number;
   destinationChainId?: number;
+  /** Required by non-accept-proof: the ackDeadline from the source transfer record (seconds, u64). */
+  ackDeadline?: string;
   executionBlock: BlockTagInput;
   repoRoot: string;
   proofPaths: ProofPaths;

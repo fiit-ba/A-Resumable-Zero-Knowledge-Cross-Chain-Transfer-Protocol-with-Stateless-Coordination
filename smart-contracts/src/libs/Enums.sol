@@ -11,19 +11,19 @@ library Enums {
     }
 
     enum VerifierRoute {
-        ORIGIN_MINT, // 0  submitMintProof
-        ORIGIN_BURN, // 1  submitBurnProof
-        DEST_LOCK, //   2  submitLockProof
-        DEST_ACK, //    3  submitAckProof
-        DEST_REFUND_CLAIM // 4  submitRefundClaimProof
+        ORIGIN_MINT, //       0  submitMintProof
+        ORIGIN_BURN, //       1  submitBurnProof
+        DEST_LOCK, //         2  submitLockProof
+        DEST_ACK, //          3  submitAckProof
+        DEST_REFUND_CLAIM, // 4  submitRefundClaimProof
+        ORIGIN_NON_ACCEPT //  5  submitNonAcceptanceProof
     }
 
     enum TxStatus {
-        NONE, // 0  default / tx does not exist
-        DEPOSIT_LOCKED, // 1  origin: funds locked in vault
-        MINT_PROOF_ACCEPTED, // 2  origin: destination mint verified, AckReady emitted
-        REFUND_INITIATED, // 3  origin: refund claim active, awaiting burn proof
-        MINTED_IN_HOLDING, // 4  destination: wrapped assets
-        REFUND_CLAIM_ACCEPTED // 5  destination: refund-claim proof from origin verified
+        NONE, //                0  default / tx does not exist
+        DEPOSIT_LOCKED, //      1  origin: funds locked in vault
+        REFUND_INITIATED, //    2  origin: refund claim active, awaiting burn proof
+        MINTED_IN_HOLDING, //   3  destination: wrapped assets minted into holding
+        REFUND_CLAIM_ACCEPTED // 4  destination: refund-claim proof from origin verified
     }
 }

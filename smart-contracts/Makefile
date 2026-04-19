@@ -3,11 +3,19 @@
 #
 # Deploys all contracts required by the web frontend and stateless-client relay.
 #
-# QUICK START (two local chains):
+# QUICK START (two local chains — three-stage setup):
 #   1.  anvil --port 8545 --chain-id 31337   # source chain
 #   2.  anvil --port 8546 --chain-id 31338   # destination chain
-#   3.  make deploy-all
-#   4.  make addresses
+#   3.  make deploy-all                       # Stage 1: deploy tokens + connectors
+#   4.  make addresses                        # print deployed addresses
+#   5.  # Copy SOURCE_CONNECTOR, DEST_CONNECTOR, SOURCE_TOKEN,
+#       # DEST_WRAPPED_TOKEN_FACTORY, DEST_WRAPPED_TOKEN into .env
+#   6.  make bootstrap                        # Stage 2: register wrapped-token route
+#   7.  make seed-test-data                   # Stage 3: mint tokens to test wallet (optional)
+#
+# Or run all three stages in one shot (local only):
+#   make setup              # deploy-all + bootstrap
+#   make setup-test-data    # deploy-all + bootstrap + seed
 #
 # QUICK START (single chain, both connectors on one node):
 #   1.  anvil --port 8545
@@ -79,6 +87,40 @@ ORIGIN_BURN_IMAGE_ID_DEST       ?= $(BYTES32_ZERO)
 DEST_LOCK_IMAGE_ID_DEST         ?= $(DEST_LOCK_IMAGE_ID)
 DEST_ACK_IMAGE_ID_DEST          ?= $(DEST_ACK_IMAGE_ID)
 DEST_REFUND_CLAIM_IMAGE_ID_DEST ?= $(DEST_REFUND_CLAIM_IMAGE_ID)
+
+# ─── Bootstrap configuration ──────────────────────────────────────────────────
+# Chain IDs used by the bootstrap scripts to compute the route key.
+SOURCE_CHAIN_ID ?= 31337
+DEST_CHAIN_ID   ?= 31338
+
+# Addresses populated after deploy-all (copy from `make addresses` output).
+SOURCE_CONNECTOR           ?=
+DEST_CONNECTOR             ?=
+SOURCE_TOKEN               ?=
+DEST_WRAPPED_TOKEN_FACTORY ?=
+DEST_WRAPPED_TOKEN         ?=
+
+# ─── Seed / test-data configuration ──────────────────────────────────────────
+# Optional recipient for seed-test-data; defaults to the PRIVATE_KEY address.
+SEED_RECIPIENT ?=
+# Amount minted to SEED_RECIPIENT (18 decimals → 1 000 tokens).
+SEED_AMOUNT    ?= 1000000000000000000000
+
+# Seconds to advance Anvil's clock for the WrappedTokenFactory 48-hour timelock (48h + 1s).
+TIMELOCK_SECONDS := 172801
+
+# Advance Anvil's clock on local nodes; print a warning on prod networks.
+define warp-timelock
+if echo "$(RPC_URL_DEST)" | grep -qE "127\.0\.0\.1|localhost"; then \
+	echo ">>> Warping Anvil time by 48h+1s to clear WrappedTokenFactory timelock..."; \
+	cast rpc --rpc-url $(RPC_URL_DEST) evm_increaseTime $(TIMELOCK_SECONDS); \
+	cast rpc --rpc-url $(RPC_URL_DEST) evm_mine; \
+else \
+	echo ""; \
+	echo "  NOTE: Production network — 48-hour timelock must elapse naturally."; \
+	echo "  Run 'make apply-routes' again after the timelock expires."; \
+fi
+endef
 
 # ─── Token configuration ──────────────────────────────────────────────────────
 TOKEN_NAME_SRC    ?= SourceToken
@@ -217,6 +259,118 @@ deploy-source: deploy-source-token deploy-source-connector
 ## Backwards-compatible destination deployment (token + connector).
 .PHONY: deploy-dest
 deploy-dest: deploy-dest-token deploy-dest-connector
+
+# =============================================================================
+# Bootstrap  (Stage 2 — register wrapped-token route on dest WrappedTokenFactory)
+# =============================================================================
+# Set SOURCE_CONNECTOR, DEST_CONNECTOR, SOURCE_TOKEN, DEST_WRAPPED_TOKEN_FACTORY,
+# DEST_WRAPPED_TOKEN in .env (or on the command line) before running these targets.
+
+define require-bootstrap-vars
+	@test -n "$(SOURCE_CONNECTOR)"           || (echo "ERROR: SOURCE_CONNECTOR not set."           && exit 1)
+	@test -n "$(DEST_CONNECTOR)"             || (echo "ERROR: DEST_CONNECTOR not set."             && exit 1)
+	@test -n "$(SOURCE_TOKEN)"               || (echo "ERROR: SOURCE_TOKEN not set."               && exit 1)
+	@test -n "$(DEST_WRAPPED_TOKEN_FACTORY)" || (echo "ERROR: DEST_WRAPPED_TOKEN_FACTORY not set." && exit 1)
+endef
+
+## Propose a wrapped-token route on the dest chain WrappedTokenFactory. (48-hour timelock starts now.)
+.PHONY: propose-routes
+propose-routes: require-private-key
+	$(require-bootstrap-vars)
+	@test -n "$(DEST_WRAPPED_TOKEN)" || \
+		(echo "ERROR: DEST_WRAPPED_TOKEN not set." && exit 1)
+	@echo ""
+	@echo ">>> [DEST] Proposing wrapped-token route (timelock: 48 h)"
+	@echo "    Factory: $(DEST_WRAPPED_TOKEN_FACTORY)"
+	@SOURCE_CHAIN_ID="$(SOURCE_CHAIN_ID)" \
+	SOURCE_CONNECTOR="$(SOURCE_CONNECTOR)" \
+	SOURCE_TOKEN="$(SOURCE_TOKEN)" \
+	DEST_CHAIN_ID="$(DEST_CHAIN_ID)" \
+	DEST_CONNECTOR="$(DEST_CONNECTOR)" \
+	DEST_WRAPPED_TOKEN_FACTORY="$(DEST_WRAPPED_TOKEN_FACTORY)" \
+	DEST_WRAPPED_TOKEN="$(DEST_WRAPPED_TOKEN)" \
+	$(call forge-script,script/bootstrap/ProposeRoutes.s.sol:ProposeRoutes,$(RPC_URL_DEST))
+
+## Apply a previously proposed route (after 48-h timelock). On local Anvil use `make bootstrap`.
+.PHONY: apply-routes
+apply-routes: require-private-key
+	$(require-bootstrap-vars)
+	@echo ""
+	@echo ">>> [DEST] Applying wrapped-token route"
+	@echo "    Factory: $(DEST_WRAPPED_TOKEN_FACTORY)"
+	@SOURCE_CHAIN_ID="$(SOURCE_CHAIN_ID)" \
+	SOURCE_CONNECTOR="$(SOURCE_CONNECTOR)" \
+	SOURCE_TOKEN="$(SOURCE_TOKEN)" \
+	DEST_CHAIN_ID="$(DEST_CHAIN_ID)" \
+	DEST_CONNECTOR="$(DEST_CONNECTOR)" \
+	DEST_WRAPPED_TOKEN_FACTORY="$(DEST_WRAPPED_TOKEN_FACTORY)" \
+	$(call forge-script,script/bootstrap/ApplyRoutes.s.sol:ApplyRoutes,$(RPC_URL_DEST))
+
+## Full local bootstrap: propose → warp Anvil 48 h → apply. On prod, use propose-routes + apply-routes.
+.PHONY: bootstrap
+bootstrap: propose-routes ## Register wrapped-token route (local: auto time-warp; prod: propose only)
+	@$(call warp-timelock)
+	$(MAKE) apply-routes
+
+# =============================================================================
+# Seed test data  (Stage 3 — mint tokens to a test wallet)
+# =============================================================================
+
+## Mint SEED_AMOUNT source tokens to SEED_RECIPIENT (defaults to PRIVATE_KEY address).
+.PHONY: seed-test-data
+seed-test-data: require-private-key ## Mint source tokens to a test wallet for local testing
+	@test -n "$(SOURCE_TOKEN)" || \
+		(echo "ERROR: SOURCE_TOKEN not set." && exit 1)
+	@test -n "$(SOURCE_CONNECTOR)" || \
+		(echo "ERROR: SOURCE_CONNECTOR not set." && exit 1)
+	@seed_to="$(SEED_RECIPIENT)"; \
+	if [ -z "$$seed_to" ]; then \
+		seed_to=$$($(CAST) wallet address --private-key $(PRIVATE_KEY)); \
+	fi; \
+	echo ""; \
+	echo ">>> [SOURCE] Minting $(SEED_AMOUNT) tokens to $$seed_to"; \
+	SOURCE_TOKEN="$(SOURCE_TOKEN)" \
+	SOURCE_CONNECTOR="$(SOURCE_CONNECTOR)" \
+	SEED_RECIPIENT="$$seed_to" \
+	SEED_AMOUNT="$(SEED_AMOUNT)" \
+	$(call forge-script,script/test-data/SeedTestData.s.sol:SeedTestData,$(RPC_URL_SOURCE))
+
+## Approve SOURCE_CONNECTOR to spend SOURCE_TOKEN on behalf of the PRIVATE_KEY address.
+.PHONY: approve-connector
+approve-connector: require-private-key ## Approve SOURCE_CONNECTOR to spend SOURCE_TOKEN
+	@test -n "$(SOURCE_TOKEN)" || \
+		(echo "ERROR: SOURCE_TOKEN not set." && exit 1)
+	@test -n "$(SOURCE_CONNECTOR)" || \
+		(echo "ERROR: SOURCE_CONNECTOR not set." && exit 1)
+	$(CAST) send "$(SOURCE_TOKEN)" \
+		"approve(address,uint256)" "$(SOURCE_CONNECTOR)" "$(SEED_AMOUNT)" \
+		--rpc-url "$(RPC_URL_SOURCE)" \
+		--private-key "$(PRIVATE_KEY)"
+
+# =============================================================================
+# Composed targets  (deploy + bootstrap + optional seed)
+# =============================================================================
+
+## Full two-chain deploy + bootstrap (no seed data). Local only — warps Anvil clock.
+.PHONY: setup
+setup: deploy-all bootstrap ## deploy-all then bootstrap (local two-chain)
+	@echo ""
+	@echo "================================================================"
+	@echo "  Setup complete. Run 'make seed-test-data' to mint test tokens."
+	@echo "================================================================"
+
+## Full two-chain deploy + bootstrap + mint test tokens to SEED_RECIPIENT.
+.PHONY: setup-test-data
+setup-test-data: setup seed-test-data ## deploy-all + bootstrap + seed test data
+	@echo ""
+	@echo "================================================================"
+	@echo "  Full setup complete."
+	@echo "  Run 'make approve-connector' to approve the connector."
+	@echo "================================================================"
+
+## Bootstrap + seed on already-deployed contracts (no re-deploy).
+.PHONY: mock-data
+mock-data: bootstrap seed-test-data ## Bootstrap + seed without re-deploying
 
 # =============================================================================
 # Single-chain local deployment  (quick dev — both connectors on one node)
@@ -413,6 +567,21 @@ help: ## Show available targets
 	@echo "  RPC_URL_SOURCE   source-chain RPC  (default: http://127.0.0.1:8545)"
 	@echo "  RPC_URL_DEST     dest-chain RPC    (default: http://127.0.0.1:8546)"
 	@echo "  PRIVATE_KEY      deployer key (required)"
+	@echo ""
+	@echo "Bootstrap (Stage 2) — fill in after deploy-all:"
+	@echo "  SOURCE_CHAIN_ID            (default: 31337)"
+	@echo "  DEST_CHAIN_ID              (default: 31338)"
+	@echo "  SOURCE_CONNECTOR           Connector address on source chain"
+	@echo "  DEST_CONNECTOR             Connector address on dest chain"
+	@echo "  SOURCE_TOKEN               ERC-20 token address on source chain"
+	@echo "  DEST_WRAPPED_TOKEN_FACTORY WrappedTokenFactory address on dest chain"
+	@echo "  DEST_WRAPPED_TOKEN         Wrapped-token address on dest chain"
+	@echo ""
+	@echo "Seed (Stage 3):"
+	@echo "  SEED_RECIPIENT   address to receive test tokens (defaults to PRIVATE_KEY address)"
+	@echo "  SEED_AMOUNT      wei to mint (default: 1 000 × 10^18)"
+	@echo ""
+	@echo "Production deployment:"
 	@echo "  RISC0_ADAPTER_SOURCE / SNARK_ADAPTER_SOURCE"
 	@echo "  RISC0_ADAPTER_DEST   / SNARK_ADAPTER_DEST"
 	@echo "  ACK_WINDOW_SECONDS_SOURCE / ACK_WINDOW_SECONDS_DEST"

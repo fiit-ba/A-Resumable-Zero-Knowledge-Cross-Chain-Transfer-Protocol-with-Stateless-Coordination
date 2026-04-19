@@ -38,6 +38,7 @@ function resolveExecutionBlocks(options: CliOptions): StageExecutionBlocks {
     sourceAckReady: parseBlockOption(options, "ack-execution-block", global),
     sourceRefundInitiated: parseBlockOption(options, "refund-claim-execution-block", global),
     destinationBurnExecuted: parseBlockOption(options, "burn-proof-execution-block", global),
+    destinationNonAccept: parseBlockOption(options, "non-accept-execution-block", global),
   };
 }
 
@@ -90,6 +91,7 @@ export function defaultProofPaths(repoRoot: string): ProofPaths {
     ackWorkspace: path.join(rz, "ack_event"),
     refundClaimWorkspace: path.join(rz, "refund_claim_event"),
     burnWorkspace: path.join(rz, "burn_event"),
+    nonAcceptWorkspace: path.join(rz, "non_accept_event"),
     lockDockerScript: path.join(rz, "lock_event", "scripts", "prove-lock-docker.sh"),
     mintDockerScript: path.join(rz, "mint_event", "scripts", "prove-mint-docker.sh"),
     ackDockerScript: path.join(rz, "ack_event", "scripts", "prove-ack-docker.sh"),
@@ -100,6 +102,12 @@ export function defaultProofPaths(repoRoot: string): ProofPaths {
       "prove-refund-claim-docker.sh",
     ),
     burnDockerScript: path.join(rz, "burn_event", "scripts", "prove-burn-docker.sh"),
+    nonAcceptDockerScript: path.join(
+      rz,
+      "non_accept_event",
+      "scripts",
+      "prove-non-accept-docker.sh",
+    ),
   };
 }
 
@@ -112,12 +120,16 @@ function resolveProofPaths(options: CliOptions, repoRoot: string): ProofPaths {
     refundClaimWorkspace:
       getStringOption(options, "refund-claim-workspace") ?? defaults.refundClaimWorkspace,
     burnWorkspace: getStringOption(options, "burn-workspace") ?? defaults.burnWorkspace,
+    nonAcceptWorkspace:
+      getStringOption(options, "non-accept-workspace") ?? defaults.nonAcceptWorkspace,
     lockDockerScript: getStringOption(options, "lock-docker-script") ?? defaults.lockDockerScript,
     mintDockerScript: getStringOption(options, "mint-docker-script") ?? defaults.mintDockerScript,
     ackDockerScript: getStringOption(options, "ack-docker-script") ?? defaults.ackDockerScript,
     refundClaimDockerScript:
       getStringOption(options, "refund-claim-docker-script") ?? defaults.refundClaimDockerScript,
     burnDockerScript: getStringOption(options, "burn-docker-script") ?? defaults.burnDockerScript,
+    nonAcceptDockerScript:
+      getStringOption(options, "non-accept-docker-script") ?? defaults.nonAcceptDockerScript,
   };
 }
 

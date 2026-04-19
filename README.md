@@ -30,8 +30,7 @@ This repository contains a cross-chain transfer prototype built around stateless
 - [`zk-proofs/README.md`](zk-proofs/README.md): proof workspaces used by the relay flows.
 - [`stateless-client/README.md`](stateless-client/README.md): TypeScript relay CLI, library, and embedded local HTTP agent.
 - [`web-app/README.md`](web-app/README.md): React UI for starting transfers and signing relay submissions.
-- [`colibri/README.md`](colibri/README.md): optional Colibri stage verifier.
-- [`hardhat-local/README.md`](hardhat-local/README.md): local Hardhat destination chain and proxy helpers.
+- [`smart-contracts/certora/README.md`](smart-contracts/certora/README.md): Certora formal verification rules for connector safety.
 - `scripts/`: end-to-end orchestration scripts for happy path and refund path.
 
 ## Prerequisites
@@ -119,6 +118,17 @@ npm run dev -w web-app
 ```
 
 The agent listens on `http://localhost:7549` by default, and the web app targets that same URL unless `VITE_AGENT_URL` is set. The canonical CLI surface is `stateless-client agent start`.
+
+### Run Certora formal verification
+
+From `smart-contracts/` directory:
+
+```bash
+certoraRun certora/confs/connector-state.conf
+certoraRun certora/confs/connector-exclusivity.conf
+certoraRun certora/confs/connector-custody.conf
+certoraRun certora/confs/connector-smoke.conf
+```
 
 ## Root Workspace Commands
 

@@ -38,3 +38,9 @@ sync_*
 Dmytro_specif.pdf
 
 docs/**
+
+graphify-out
+
+.certora_internal
+
+ci.txt

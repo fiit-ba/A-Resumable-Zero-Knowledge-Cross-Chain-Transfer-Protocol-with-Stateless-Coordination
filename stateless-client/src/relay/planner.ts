@@ -89,7 +89,7 @@ export function computeResumeDecision(
     };
   }
 
-  if (sourceStatus === 1 && destinationStatus === 4) {
+  if (sourceStatus === 1 && destinationStatus === 3) {
     if (historyFlags.ackDeadlineExpired) {
       return {
         action: "refund-initiate",
@@ -108,17 +108,7 @@ export function computeResumeDecision(
     };
   }
 
-  if (sourceStatus === 2 && destinationStatus === 4) {
-    return {
-      action: "ack",
-      reason: "source is ack-ready, destination has funds",
-      sourceStatus,
-      destinationStatus,
-      historyFlags,
-    };
-  }
-
-  if (sourceStatus === 0 && destinationStatus === 4) {
+  if (sourceStatus === 0 && destinationStatus === 3) {
     if (historyFlags.ackReady) {
       return {
         action: "ack",
@@ -137,8 +127,8 @@ export function computeResumeDecision(
     };
   }
 
-  // Refund path: source has REFUND_INITIATED (3)
-  if (sourceStatus === 3 && destinationStatus === 4) {
+  // Refund path: source has REFUND_INITIATED (2)
+  if (sourceStatus === 2 && destinationStatus === 3) {
     return {
       action: "refund-claim",
       reason: "refund initiated on source; destination needs refund-claim proof",
@@ -148,7 +138,7 @@ export function computeResumeDecision(
     };
   }
 
-  if (sourceStatus === 3 && destinationStatus === 5) {
+  if (sourceStatus === 2 && destinationStatus === 4) {
     return {
       action: "execute-burn",
       reason: "refund claim accepted on destination; execute burn",
@@ -158,20 +148,22 @@ export function computeResumeDecision(
     };
   }
 
-  if (sourceStatus === 3 && destinationStatus === 0) {
-    return {
-      action: "burn-proof",
-      reason: "burn executed on destination; source needs burn proof",
-      sourceStatus,
-      destinationStatus,
-      historyFlags,
-    };
-  }
-
   if (sourceStatus === 2 && destinationStatus === 0) {
+    if (historyFlags.burnExecuted) {
+      return {
+        action: "burn-proof",
+        reason: "burn executed on destination; source needs burn proof",
+        sourceStatus,
+        destinationStatus,
+        historyFlags,
+      };
+    }
+    // Destination never ran the burn (submitLockProof was never called), so the
+    // refund can be proven via a Steel non-acceptance proof instead.
     return {
-      action: "noop",
-      reason: "destination finished, origin cleanup is manual",
+      action: "non-accept-proof",
+      reason:
+        "destination never accepted the lock; submit non-acceptance proof on source to recover funds",
       sourceStatus,
       destinationStatus,
       historyFlags,
@@ -229,7 +221,7 @@ export async function planRelayResume(config: RelayConfig): Promise<ResumeDecisi
 
   let historyFlags: HistoryFlags = EMPTY_HISTORY;
 
-  if (sourceStatus === 1 && destinationStatus === 4) {
+  if (sourceStatus === 1 && destinationStatus === 3) {
     // Check whether the ACK deadline has expired to decide mint vs refund-initiate.
     const sourceTx = await sourceContract.getTx(txId);
     const ackDeadline = BigInt(sourceTx.ackDeadline);
@@ -247,7 +239,7 @@ export async function planRelayResume(config: RelayConfig): Promise<ResumeDecisi
       ackReady: false,
       ackDeadlineExpired,
     };
-  } else if (sourceStatus === 0 && destinationStatus === 4) {
+  } else if (sourceStatus === 0 && destinationStatus === 3) {
     const ackReadyTopic = getEventTopic("AckReady");
     const ackReady = await hasEventInRange(
       sourceProvider,
@@ -257,6 +249,19 @@ export async function planRelayResume(config: RelayConfig): Promise<ResumeDecisi
       PLANNER_LOG_LOOKBACK_BLOCKS,
     );
     historyFlags = { depositLocked: false, fundsReleased: false, ackReady };
+  } else if (sourceStatus === 2 && destinationStatus === 0) {
+    // Distinguish burn-proof (burn was executed) from non-accept-proof (lock was
+    // never accepted on destination at all). Check for RefundExecuted on the
+    // destination connector.
+    const refundExecutedTopic = getEventTopic("RefundExecuted");
+    const burnExecuted = await hasEventInRange(
+      destinationProvider,
+      config.connectors.destination,
+      refundExecutedTopic,
+      txId,
+      PLANNER_LOG_LOOKBACK_BLOCKS,
+    );
+    historyFlags = { depositLocked: false, fundsReleased: false, ackReady: false, burnExecuted };
   } else if (sourceStatus === 0 && destinationStatus === 0) {
     historyFlags = await checkHistoryFlags(sourceProvider, destinationProvider, config, txId);
   }

@@ -405,6 +405,10 @@ const EXECUTION_BLOCK_RESOLVER: Record<ProofRelayStage, ExecutionBlockResolver> 
   ack: (eb, ev) => eb.sourceAckReady ?? ev ?? "latest",
   "refund-claim": (eb, ev) => eb.sourceRefundInitiated ?? ev ?? "latest",
   "burn-proof": (eb, ev) => eb.destinationBurnExecuted ?? ev ?? "latest",
+  // Non-accept proof runs against the destination chain; eventBlockNumber comes
+  // from verifying source-refund-initiated (a source block), so we skip it and
+  // always prefer "latest" on the destination unless an explicit override is set.
+  "non-accept-proof": (eb) => eb.destinationNonAccept ?? "latest",
 };
 
 type ContractArgsBuilder = (config: StageSubmissionConfig, proof: ProofArtifact) => unknown[];
@@ -429,6 +433,7 @@ const CONTRACT_ARGS_BUILDER: Record<ProofRelayStage, ContractArgsBuilder> = {
   ack: (config, proof) => [0, proof.proofPayload, config.txId],
   "refund-claim": (config, proof) => [0, proof.proofPayload, config.txId],
   "burn-proof": (config, proof) => [0, proof.proofPayload, config.txId],
+  "non-accept-proof": (config, proof) => [0, proof.proofPayload, config.txId],
 };
 
 type ProofConsistencyChecker = (
@@ -574,15 +579,31 @@ export async function prepareStageSubmission(
   );
 
   // 3. Proof generation
+  // Determine which chain the proof host reads against. Most stages use the same
+  // side as their verifyStage; non-accept-proof overrides this to "destination".
+  const proofHostSide = spec.proofHostSide ?? stageDef.side;
+  const proofRpcUrl =
+    proofHostSide === "source" ? config.source.rpcUrls[0] : config.destination.rpcUrls[0];
+  const proofConnector =
+    proofHostSide === "source" ? config.connectors.source : config.connectors.destination;
+
+  // Fetch ackDeadline from the source tx record for non-accept-proof (the proof
+  // host needs it to validate block_timestamp >= ackDeadline in the guest).
+  let ackDeadline: string | undefined;
+  if (proofStage === "non-accept-proof") {
+    const sourceTx = await fetchTxSnapshot(sourceReadContract, config.txId);
+    ackDeadline = sourceTx.ackDeadline.toString();
+  }
+
   const proof = await runProof({
     stage: proofStage,
     backend: config.proofBackend,
     txId: config.txId,
-    rpcUrl: stageDef.side === "source" ? config.source.rpcUrls[0] : config.destination.rpcUrls[0],
-    connector:
-      stageDef.side === "source" ? config.connectors.source : config.connectors.destination,
+    rpcUrl: proofRpcUrl,
+    connector: proofConnector,
     sourceChainId: config.source.chainId,
     destinationChainId: config.destination.chainId,
+    ackDeadline,
     executionBlock,
     repoRoot: config.repoRoot,
     proofPaths: config.proofPaths,
@@ -684,6 +705,10 @@ export async function runRelayExecuteBurn(config: RelayConfig): Promise<RelaySta
 
 export async function runRelayBurnProof(config: RelayConfig): Promise<RelayStageResult> {
   return runRelayStage(config, "burn-proof");
+}
+
+export async function runRelayNonAcceptProof(config: RelayConfig): Promise<RelayStageResult> {
+  return runRelayStage(config, "non-accept-proof");
 }
 
 function withExecutionBlockOverrides(

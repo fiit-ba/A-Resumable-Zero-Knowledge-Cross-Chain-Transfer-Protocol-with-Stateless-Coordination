@@ -5,7 +5,11 @@
     "lint": "npx solhint \"script/**/*.sol\" -c .solhint.s.json; npx solhint \"src/**/*.sol\"; npx solhint \"test/**/*.sol\" -c .solhint.t.json",
     "lint-src": "npx solhint \"script/**/*.sol\"; npx solhint \"src/**/*.sol\"",
     "lint-all": "npx solhint \"script/**/*.sol\" -c .solhint.s.json; npx solhint \"src/**/*.sol\"; npx solhint \"test/**/*.sol\" -c .solhint.t.json",
-    "slither-debug": "slither . --fail-none --skip-assembly --exclude-informational --exclude-low --no-fail --include-paths 'src/(?!ebsi/)'"
+    "slither-debug": "slither . --fail-none --skip-assembly --exclude-informational --exclude-low --no-fail --include-paths 'src/(?!ebsi/)'",
+    "echidna": "sh -lc 'platform=\"\"; arch=\"$(uname -m)\"; if [ \"$arch\" = \"arm64\" ] || [ \"$arch\" = \"aarch64\" ]; then platform=\"--platform linux/amd64\"; fi; exec docker run --rm -it $platform -u \"$(id -u):$(id -g)\" -e HOME=/tmp -e FOUNDRY_PROFILE=echidna -v \"$PWD\":/src -w /src trailofbits/echidna:latest echidna test/fuzzing/Fuzz.sol --contract Fuzz --config echidna-config.yaml'",
+    "echidna-fast": "sh -lc 'platform=\"\"; arch=\"$(uname -m)\"; if [ \"$arch\" = \"arm64\" ] || [ \"$arch\" = \"aarch64\" ]; then platform=\"--platform linux/amd64\"; fi; exec docker run --rm -it $platform -u \"$(id -u):$(id -g)\" -e HOME=/tmp -e FOUNDRY_PROFILE=echidna -v \"$PWD\":/src -w /src trailofbits/echidna:latest echidna test/fuzzing/Fuzz.sol --contract Fuzz --config echidna-config.yaml --disable-slither --test-limit 10000 --shrink-limit 1000'",
+    "medusa": "sh -lc 'platform=\"\"; arch=\"$(uname -m)\"; if [ \"$arch\" = \"arm64\" ] || [ \"$arch\" = \"aarch64\" ]; then platform=\"--platform linux/amd64\"; fi; exec docker run --rm -it $platform -u \"$(id -u):$(id -g)\" -e HOME=/tmp -v \"$PWD\":/src -v \"$HOME/.foundry/bin/forge:/usr/local/bin/forge:ro\" -w /src ghcr.io/crytic/medusa:latest /bin/bash -lc \"medusa fuzz --config medusa.json\"'",
+    "medusa-fast": "sh -lc 'platform=\"\"; arch=\"$(uname -m)\"; if [ \"$arch\" = \"arm64\" ] || [ \"$arch\" = \"aarch64\" ]; then platform=\"--platform linux/amd64\"; fi; exec docker run --rm -it $platform -u \"$(id -u):$(id -g)\" -e HOME=/tmp -v \"$PWD\":/src -v \"$HOME/.foundry/bin/forge:/usr/local/bin/forge:ro\" -w /src ghcr.io/crytic/medusa:latest /bin/bash -lc \"medusa fuzz --config medusa.json --test-limit 1\"'"
   },
   "devDependencies": {
     "solhint": "^6.1.0"

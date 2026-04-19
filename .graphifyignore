@@ -1,0 +1,50 @@
+# .graphifyignore
+# Same syntax as .gitignore (patterns are relative to this repo root).
+
+# Graphify output (avoid self-indexing)
+graphify-out/
+
+# Dependencies / vendored code
+vendor/
+node_modules/
+lib/
+smart-contracts/AIComposer/
+smart-contracts/nemesis-auditor/
+smart-contracts/.certora_internal/
+
+# Build artifacts / generated outputs
+build/
+dist/
+dist-ssr/
+out/
+target/
+coverage/
+coverage.json
+*.generated.py
+*.generated.ts
+*.generated.js
+
+# Package-specific generated folders
+stateless-client/.colibri-cache/
+colibri-cache/
+.colibri-cache/
+smart-contracts/cache/
+smart-contracts/broadcast/
+smart-contracts/artifacts/
+smart-contracts/cache_hardhat/
+smart-contracts/typechain-types/
+smart-contracts/deployments/
+
+# Local state / secrets
+.env
+.env.*
+*.local
+states_*
+sync_*
+
+# Editor / OS noise
+.DS_Store
+.vscode/
+.idea/
+.claude/
+.codex/

@@ -2,15 +2,15 @@
 pragma solidity ^0.8.34;
 
 import {Test} from "forge-std/Test.sol";
-import {Connector} from "../src/connectors/Connector.sol";
-import {ConnectorStorage} from "../src/connectors/ConnectorStorage.sol";
-import {Enums} from "../src/libs/Enums.sol";
-import {ProofOutputs} from "../src/libs/ProofOutputs.sol";
-import {WrappedTokenFactory} from "../src/tokens/WrappedTokenFactory.sol";
-import {BridgeWrappedToken} from "../src/tokens/BridgeWrappedToken.sol";
-import {RiscZeroAdapter} from "../src/zk-proof/adapters/RiscZeroAdapter.sol";
-import {SnarkAdapter} from "../src/zk-proof/adapters/SnarkAdapter.sol";
-import {ISnarkVerifier} from "../src/zk-proof/ISnarkJsVerifier.sol";
+import {Connector} from "../../src/connectors/Connector.sol";
+import {ConnectorStorage} from "../../src/connectors/ConnectorStorage.sol";
+import {Enums} from "../../src/libs/Enums.sol";
+import {ProofOutputs} from "../../src/libs/ProofOutputs.sol";
+import {WrappedTokenFactoryHarness} from "../mocks/WrappedTokenFactoryHarness.sol";
+import {BridgeWrappedToken} from "../../src/tokens/BridgeWrappedToken.sol";
+import {RiscZeroAdapter} from "../../src/zk-proof/adapters/RiscZeroAdapter.sol";
+import {SnarkAdapter} from "../../src/zk-proof/adapters/SnarkAdapter.sol";
+import {ISnarkVerifier} from "../../src/zk-proof/ISnarkJsVerifier.sol";
 import {IRiscZeroVerifier, Receipt} from "risc0-ethereum/IRiscZeroVerifier.sol";
 import {ERC20} from "openzeppelin/contracts/token/ERC20/ERC20.sol";
 
@@ -57,8 +57,8 @@ contract ConnectorE2ETest is Test {
 
     Connector internal _originConnector;
     Connector internal _destinationConnector;
-    WrappedTokenFactory internal _originFactory;
-    WrappedTokenFactory internal _destinationFactory;
+    WrappedTokenFactoryHarness internal _originFactory;
+    WrappedTokenFactoryHarness internal _destinationFactory;
     MockERC20E2E internal _sourceToken;
     BridgeWrappedToken internal _destinationWrappedToken;
     RiscZeroAdapter internal _risc0Adapter;
@@ -73,13 +73,13 @@ contract ConnectorE2ETest is Test {
         _risc0Adapter = new RiscZeroAdapter(address(risc0Verifier), allowedIds);
         _snarkAdapter = new SnarkAdapter(address(snarkVerifier));
 
-        bytes32[5] memory routeImageIds;
-        for (uint8 i = 0; i < 5; ++i) {
+        bytes32[6] memory routeImageIds;
+        for (uint8 i = 0; i < 6; ++i) {
             routeImageIds[i] = _IMAGE_ID;
         }
 
-        _originFactory = new WrappedTokenFactory();
-        _destinationFactory = new WrappedTokenFactory();
+        _originFactory = new WrappedTokenFactoryHarness();
+        _destinationFactory = new WrappedTokenFactoryHarness();
         _originConnector = new Connector(
             address(_risc0Adapter), address(_snarkAdapter), _ACK_WINDOW, routeImageIds, address(_originFactory)
         );

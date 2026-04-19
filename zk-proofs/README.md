@@ -13,6 +13,7 @@ Those workspaces are:
 - [`risc_zero/ack_event/README.md`](risc_zero/ack_event/README.md): proves `AckReady` for destination-side acknowledgement.
 - [`risc_zero/refund_claim_event/README.md`](risc_zero/refund_claim_event/README.md): proves `RefundClaimed` for the refund path.
 - [`risc_zero/burn_event/README.md`](risc_zero/burn_event/README.md): proves `DestTxClosed` so the origin side can release refunded funds.
+- [`risc_zero/non_accept_event/README.md`](risc_zero/non_accept_event/README.md): proves that a destination connector never accepted a lock (`destinationLockAccepted` is false) after `ackDeadline`, enabling a non-acceptance refund path via `submitNonAcceptanceProof` on the origin.
 
 Each RISC Zero workspace follows the same layout:
 

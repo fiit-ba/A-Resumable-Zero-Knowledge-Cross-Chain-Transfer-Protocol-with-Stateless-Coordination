@@ -15,6 +15,7 @@ export const CONNECTOR_ABI = [
   "function submitRefundClaimProof(uint8 proofType,bytes proofPayload,bytes32 txId)",
   "function executeBurn(bytes32 txId)",
   "function submitBurnProof(uint8 proofType,bytes proofPayload,bytes32 txId)",
+  "function submitNonAcceptanceProof(uint8 proofType,bytes proofPayload,bytes32 txId)",
 ] as const;
 
 export const connectorInterface = new Interface(CONNECTOR_ABI);

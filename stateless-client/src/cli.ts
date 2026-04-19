@@ -10,6 +10,7 @@ import {
   runRelayHappyPath,
   runRelayLock,
   runRelayMint,
+  runRelayNonAcceptProof,
   runVerifyStageCommand,
 } from "./relay/relay.js";
 import { runRelayResume } from "./relay/resume.js";
@@ -21,6 +22,7 @@ const SUPPORTED_COMMANDS = new Set([
   "relay-ack",
   "relay-happy-path",
   "relay-resume",
+  "relay-non-accept-proof",
   "agent",
 ]);
 
@@ -33,6 +35,7 @@ function usage(): string {
     "  stateless-client relay-ack --tx-id <bytes32> --private-key <hex> --proof-backend <local|docker> --source-connector <address> --destination-connector <address> [network and proof options]",
     "  stateless-client relay-happy-path --tx-id <bytes32> --private-key <hex> --proof-backend <local|docker> --source-connector <address> --destination-connector <address> [network and proof options]",
     "  stateless-client relay-resume --tx-id <bytes32> --private-key <hex> --proof-backend <local|docker> --source-connector <address> --destination-connector <address> [network and proof options]",
+    "  stateless-client relay-non-accept-proof --tx-id <bytes32> --private-key <hex> --proof-backend <local|docker> --source-connector <address> --destination-connector <address> [network and proof options]",
     "  stateless-client agent <command>",
     "",
     "Common network options:",
@@ -304,6 +307,13 @@ export async function runCli(
       const config = resolveRelayConfig(parsed.options);
       const result = await runRelayResume(config);
       printResumeResult(result, io);
+      return;
+    }
+
+    case "relay-non-accept-proof": {
+      const config = resolveRelayConfig(parsed.options);
+      const result = await runRelayNonAcceptProof(config);
+      printRelayResult(result, io);
       return;
     }
 

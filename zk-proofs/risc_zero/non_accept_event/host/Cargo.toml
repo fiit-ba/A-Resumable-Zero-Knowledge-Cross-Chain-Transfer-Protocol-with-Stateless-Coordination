@@ -1,0 +1,24 @@
+[package]
+name = "non-accept-proof-host"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "print_image_id"
+path = "src/bin/print_image_id.rs"
+
+[dependencies]
+alloy-primitives = { workspace = true }
+alloy-sol-types = { workspace = true }
+non-accept-proof-core = { workspace = true }
+non-accept-proof-methods = { workspace = true }
+anyhow = { workspace = true }
+clap = { workspace = true }
+hex = { workspace = true }
+log = { workspace = true }
+risc0-ethereum-contracts = { workspace = true }
+risc0-steel = { workspace = true, features = ["host"] }
+risc0-zkvm = { workspace = true, features = ["prove"] }
+tokio = { workspace = true }
+tracing-subscriber = { workspace = true }
+url = { workspace = true }

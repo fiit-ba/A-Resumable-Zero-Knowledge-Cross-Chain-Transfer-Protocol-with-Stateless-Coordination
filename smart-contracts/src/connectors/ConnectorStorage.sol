@@ -69,7 +69,7 @@ abstract contract ConnectorStorage {
     /// @dev Expected RISC Zero image ID per VerifierRoute (index == uint8(VerifierRoute)).
     ///      Enforced by Connector before calling the adapter so a single multi-image adapter
     ///      can serve all routes while each route still binds to exactly one guest ELF.
-    bytes32[5] internal _risc0RouteImageIds;
+    bytes32[6] internal _risc0RouteImageIds;
 
     /*//////////////////////////////////////////////////////////////
                             EVENTS

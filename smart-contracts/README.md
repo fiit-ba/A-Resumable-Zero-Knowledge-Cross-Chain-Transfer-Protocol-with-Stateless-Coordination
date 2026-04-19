@@ -38,6 +38,31 @@ forge build
 forge test
 ```
 
+Tests are organized under `test/`:
+
+- `test/connector/`: core happy-path and E2E Foundry tests.
+- `test/fuzzing/`: property-based fuzzing tests.
+- `test/mocks/`: shared mock contracts used by tests.
+
+Run a single test by name:
+
+```bash
+forge test --match-test <TestName>
+```
+
+## Certora Formal Verification
+
+Formal verification specs live in `certora/`. See [`certora/README.md`](certora/README.md) for design notes.
+
+Run from `smart-contracts/`:
+
+```bash
+certoraRun certora/confs/connector-state.conf
+certoraRun certora/confs/connector-exclusivity.conf
+certoraRun certora/confs/connector-custody.conf
+certoraRun certora/confs/connector-smoke.conf
+```
+
 ## Solidity Linting (Solhint)
 
 ```bash
