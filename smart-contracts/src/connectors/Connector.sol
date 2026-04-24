@@ -333,32 +333,9 @@ contract Connector is ConnectorStorage, IConnector, ReentrancyGuard {
         uint256 _nonce,
         uint256 _sourceChainId
     ) external nonReentrant {
-        _checkRouteImageId(Enums.VerifierRoute.DEST_LOCK, _proofType, _proofPayload);
-        _enforceDestinationLockPreconditions(_txId, _originAckDeadline);
-        _enforceWrappedTokenRoute(
-            _sourceChainId, _srcChainConnector, _currencyFrom, block.chainid, address(this), _currencyTo
-        );
-
-        destinationLockAccepted[_txId] = true;
-        uint64 nowTs = uint64(block.timestamp);
-        _recordDestinationLockTx(
-            _txId,
-            _amount,
-            _currencyFrom,
-            _currencyTo,
-            _from,
-            _to,
-            _srcChainConnector,
-            _originAckDeadline,
-            _nonce,
-            _sourceChainId,
-            nowTs
-        );
-
-        (bytes32 commitment, bytes32 proofHash) =
-            _verifyProof(Enums.VerifierRoute.DEST_LOCK, _proofType, _proofPayload, _txId);
-        bytes32 expected = _expectedDestinationLockCommitment(
+        _submitLockProofImpl(
             _proofType,
+            _proofPayload,
             _txId,
             _amount,
             _currencyFrom,
@@ -369,25 +346,6 @@ contract Connector is ConnectorStorage, IConnector, ReentrancyGuard {
             _originAckDeadline,
             _nonce,
             _sourceChainId
-        );
-        if (commitment != expected) {
-            revert Errors.CommitmentMismatch(commitment, expected);
-        }
-
-        _mintHoldingToken(_currencyTo, _amount);
-        _emitFundsReleased(
-            _txId,
-            _amount,
-            _currencyFrom,
-            _currencyTo,
-            _from,
-            _to,
-            _srcChainConnector,
-            nowTs,
-            _proofType,
-            proofHash,
-            commitment,
-            _proofPayload
         );
     }
 
@@ -609,7 +567,7 @@ contract Connector is ConnectorStorage, IConnector, ReentrancyGuard {
     function _verifyProof(
         Enums.VerifierRoute _route,
         Enums.ProofType _proofType,
-        bytes calldata _proofPayload,
+        bytes memory _proofPayload,
         bytes32 _txId
     ) internal virtual returns (bytes32 commitment, bytes32 proofHash) {
         proofHash = keccak256(_proofPayload);
@@ -620,6 +578,79 @@ contract Connector is ConnectorStorage, IConnector, ReentrancyGuard {
         commitment = IZKVerifier(verifier).verify(_proofPayload);
 
         emit ProofVerified(_txId, _proofType, proofHash, commitment, _proofPayload);
+    }
+
+    function _submitLockProofImpl(
+        Enums.ProofType _proofType,
+        bytes memory _proofPayload,
+        bytes32 _txId,
+        uint256 _amount,
+        address _currencyFrom,
+        address _currencyTo,
+        address _from,
+        address _to,
+        address _srcChainConnector,
+        uint64 _originAckDeadline,
+        uint256 _nonce,
+        uint256 _sourceChainId
+    ) private {
+        _checkRouteImageId(Enums.VerifierRoute.DEST_LOCK, _proofType, _proofPayload);
+        _enforceDestinationLockPreconditions(_txId, _originAckDeadline);
+        _enforceWrappedTokenRoute(
+            _sourceChainId, _srcChainConnector, _currencyFrom, block.chainid, address(this), _currencyTo
+        );
+
+        destinationLockAccepted[_txId] = true;
+        _recordDestinationLockTx(
+            _txId,
+            _amount,
+            _currencyFrom,
+            _currencyTo,
+            _from,
+            _to,
+            _srcChainConnector,
+            _originAckDeadline,
+            _nonce,
+            _sourceChainId,
+            uint64(block.timestamp)
+        );
+
+        (bytes32 commitment, bytes32 proofHash) =
+            _verifyProof(Enums.VerifierRoute.DEST_LOCK, _proofType, _proofPayload, _txId);
+        {
+            bytes32 expected = _expectedDestinationLockCommitment(
+                _proofType,
+                _txId,
+                _amount,
+                _currencyFrom,
+                _currencyTo,
+                _from,
+                _to,
+                _srcChainConnector,
+                _originAckDeadline,
+                _nonce,
+                _sourceChainId
+            );
+            if (commitment != expected) {
+                revert Errors.CommitmentMismatch(commitment, expected);
+            }
+        }
+
+        _mintHoldingToken(_currencyTo, _amount);
+        _emitFundsReleased(
+            _proofType,
+            _proofPayload,
+            _txId,
+            _amount,
+            _currencyFrom,
+            _currencyTo,
+            _from,
+            _to,
+            _srcChainConnector,
+            uint64(block.timestamp),
+            proofHash,
+            commitment
+        );
     }
 
     function _deriveOriginTxId(
@@ -715,6 +746,8 @@ contract Connector is ConnectorStorage, IConnector, ReentrancyGuard {
     }
 
     function _emitFundsReleased(
+        Enums.ProofType _proofType,
+        bytes memory _proofPayload,
         bytes32 _txId,
         uint256 _amount,
         address _currencyFrom,
@@ -723,10 +756,8 @@ contract Connector is ConnectorStorage, IConnector, ReentrancyGuard {
         address _to,
         address _srcChainConnector,
         uint64 _timestamp,
-        Enums.ProofType _proofType,
         bytes32 _proofHash,
-        bytes32 _commitment,
-        bytes calldata _proofPayload
+        bytes32 _commitment
     ) private {
         emit FundsReleased(
             _txId,
@@ -773,7 +804,7 @@ contract Connector is ConnectorStorage, IConnector, ReentrancyGuard {
     /// @dev For RISC0 proofs, asserts that the imageId embedded in the payload matches
     ///      the expected imageId stored for this route. Reverts with ImageIdRouteMismatch on mismatch.
     ///      No-op for non-RISC0 proof types.
-    function _checkRouteImageId(Enums.VerifierRoute _route, Enums.ProofType _proofType, bytes calldata _proofPayload)
+    function _checkRouteImageId(Enums.VerifierRoute _route, Enums.ProofType _proofType, bytes memory _proofPayload)
         private
     {
         if (_proofType != Enums.ProofType.RISC0) return;

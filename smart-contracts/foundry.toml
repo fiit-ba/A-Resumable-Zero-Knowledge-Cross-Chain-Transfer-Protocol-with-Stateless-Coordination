@@ -25,6 +25,21 @@ fs_permissions = [
 ]
 
 
+[profile.echidna]
+src = "src"
+out = "out-echidna"
+libs = ["lib"]
+auto_detect_solc = false
+solc_version = "0.8.34"
+evm_version = "cancun"
+optimizer = true
+optimizer_runs = 200
+bytecode_hash = "none"
+cbor_metadata = false
+via-ir = true
+# Only compile the fuzzing target and its dependencies
+test = "test/fuzzing"
+
 [dependencies]
 "@openzeppelin-contracts" = "5.5.0"
 "@openzeppelin-contracts-upgradeable" = "5.5.0"
