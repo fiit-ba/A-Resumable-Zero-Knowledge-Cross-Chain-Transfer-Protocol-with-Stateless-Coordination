@@ -2,19 +2,19 @@
 pragma solidity ^0.8.34;
 
 import {Test} from "forge-std/Test.sol";
-import {Connector} from "../src/connectors/Connector.sol";
-import {ConnectorStorage} from "../src/connectors/ConnectorStorage.sol";
-import {Enums} from "../src/libs/Enums.sol";
-import {Errors} from "../src/libs/Errors.sol";
-import {ProofOutputs} from "../src/libs/ProofOutputs.sol";
-import {RiscZeroAdapter} from "../src/zk-proof/adapters/RiscZeroAdapter.sol";
-import {SnarkAdapter} from "../src/zk-proof/adapters/SnarkAdapter.sol";
-import {WrappedTokenFactoryHarness} from "./mocks/WrappedTokenFactoryHarness.sol";
-import {BridgeWrappedToken} from "../src/tokens/BridgeWrappedToken.sol";
-import {MockRiscZeroVerifier} from "./mocks/MockRiscZeroVerifier.sol";
-import {MockSnarkVerifier} from "./mocks/MockSnarkVerifier.sol";
-import {MockERC20, NonMintableERC20, FullFeeBurnERC20} from "./mocks/MockERC20.sol";
-import {TestableConnector} from "./mocks/TestableConnector.sol";
+import {Connector} from "../../src/connectors/Connector.sol";
+import {ConnectorStorage} from "../../src/connectors/ConnectorStorage.sol";
+import {Enums} from "../../src/libs/Enums.sol";
+import {Errors} from "../../src/libs/Errors.sol";
+import {ProofOutputs} from "../../src/libs/ProofOutputs.sol";
+import {RiscZeroAdapter} from "../../src/zk-proof/adapters/RiscZeroAdapter.sol";
+import {SnarkAdapter} from "../../src/zk-proof/adapters/SnarkAdapter.sol";
+import {WrappedTokenFactoryHarness} from "../mocks/WrappedTokenFactoryHarness.sol";
+import {BridgeWrappedToken} from "../../src/tokens/BridgeWrappedToken.sol";
+import {MockRiscZeroVerifier} from "../mocks/MockRiscZeroVerifier.sol";
+import {MockSnarkVerifier} from "../mocks/MockSnarkVerifier.sol";
+import {MockERC20, NonMintableERC20, FullFeeBurnERC20} from "../mocks/MockERC20.sol";
+import {TestableConnector} from "../mocks/TestableConnector.sol";
 
 /*//////////////////////////////////////////////////////////////
                           TEST CONTRACT

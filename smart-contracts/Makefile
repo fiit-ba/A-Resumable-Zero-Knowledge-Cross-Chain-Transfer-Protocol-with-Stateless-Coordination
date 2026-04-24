@@ -195,6 +195,38 @@ clean: ## Remove build artefacts
 	$(FORGE) clean
 
 # =============================================================================
+# Fuzzing  (Echidna + Medusa)
+# =============================================================================
+
+ECHIDNA  ?= echidna
+MEDUSA   ?= medusa
+
+## Run Echidna fuzzer against the Fuzz harness (assertion + property mode)
+.PHONY: echidna
+echidna: ## Run Echidna fuzzer (FOUNDRY_PROFILE=echidna)
+	FOUNDRY_PROFILE=echidna $(ECHIDNA) test/fuzzing/Fuzz.sol \
+		--contract Fuzz \
+		--config echidna-config.yaml
+
+## Run Echidna with a reduced testLimit for quick smoke testing
+.PHONY: echidna-quick
+echidna-quick: ## Run Echidna fuzzer with 10K limit for a quick smoke test
+	FOUNDRY_PROFILE=echidna $(ECHIDNA) test/fuzzing/Fuzz.sol \
+		--contract Fuzz \
+		--config echidna-config.yaml \
+		--test-limit 10000
+
+## Run Medusa fuzzer against the Fuzz harness
+.PHONY: medusa
+medusa: ## Run Medusa fuzzer
+	$(MEDUSA) fuzz --config medusa.json
+
+## Remove fuzzer corpus directories
+.PHONY: clean-corpus
+clean-corpus: ## Delete Echidna and Medusa corpus directories
+	rm -rf echidna-corpus medusa-corpus
+
+# =============================================================================
 # Two-chain local deployment  (primary target for frontend / stateless-client)
 # =============================================================================
 

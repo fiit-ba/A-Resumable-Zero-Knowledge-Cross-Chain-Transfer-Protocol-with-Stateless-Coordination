@@ -1,6 +1,6 @@
 # Compiler files
 cache/
-out/
+out*/
 dependencies/
 
 # Ignores development broadcast logs
@@ -45,3 +45,6 @@ lib/
 nemesis-auditor/
 AIComposer/
 .certora_internal
+
+crytic-export
+echidna-corpus
