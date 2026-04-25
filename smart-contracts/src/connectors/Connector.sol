@@ -96,6 +96,35 @@ contract Connector is ConnectorStorage, IConnector, ReentrancyGuard {
         emit VerifierUpdated(_route, _proofType, pending);
     }
 
+    /// @inheritdoc IConnector
+    function proposeChainFinalityDelay(uint256 _chainId, uint64 _delaySeconds) external {
+        if (msg.sender != _ADMIN) revert Errors.NotAdmin();
+        uint64 availableAt = uint64(block.timestamp) + _VERIFIER_TIMELOCK;
+        _pendingChainFinalityDelay[_chainId] = _delaySeconds;
+        _pendingChainFinalityDelayAvailableAt[_chainId] = availableAt;
+        _pendingChainFinalityDelayExists[_chainId] = true;
+        emit ChainFinalityDelayProposed(_chainId, _delaySeconds, availableAt);
+    }
+
+    /// @inheritdoc IConnector
+    function applyChainFinalityDelay(uint256 _chainId) external {
+        if (msg.sender != _ADMIN) revert Errors.NotAdmin();
+        if (!_pendingChainFinalityDelayExists[_chainId]) revert Errors.NoPendingFinalityDelay(_chainId);
+        uint64 availableAt = _pendingChainFinalityDelayAvailableAt[_chainId];
+        if (uint64(block.timestamp) < availableAt) {
+            revert Errors.TimelockNotExpired(availableAt, uint64(block.timestamp));
+        }
+        if (uint64(block.timestamp) > availableAt + _VERIFIER_APPLY_WINDOW) {
+            revert Errors.TimelockExpired(availableAt, uint64(block.timestamp));
+        }
+        uint64 pending = _pendingChainFinalityDelay[_chainId];
+        _chainFinalityDelaySeconds[_chainId] = pending;
+        delete _pendingChainFinalityDelay[_chainId];
+        delete _pendingChainFinalityDelayAvailableAt[_chainId];
+        delete _pendingChainFinalityDelayExists[_chainId];
+        emit ChainFinalityDelayUpdated(_chainId, pending);
+    }
+
     /*//////////////////////////////////////////////////////////////
                             ORIGIN FUNCTIONS
     //////////////////////////////////////////////////////////////*/
@@ -279,6 +308,13 @@ contract Connector is ConnectorStorage, IConnector, ReentrancyGuard {
     {
         _checkRouteImageId(Enums.VerifierRoute.ORIGIN_NON_ACCEPT, _proofType, _proofPayload);
         CrossChainTx memory tx_ = _txs[_txId];
+
+        // Reorg-safety gate: the guest proves non-acceptance at some destination block with
+        // timestamp >= ackDeadline.  For that observation to be final, enough wall time must
+        // have elapsed for the destination chain's configured finality delay to cover the
+        // observed block even in the worst case where its timestamp equals ackDeadline.
+        _enforceFinality(tx_.destinationChainId, tx_.ackDeadline);
+
         _cleanupTx(_txId);
 
         (bytes32 commitment,) = _verifyProof(Enums.VerifierRoute.ORIGIN_NON_ACCEPT, _proofType, _proofPayload, _txId);
@@ -400,6 +436,12 @@ contract Connector is ConnectorStorage, IConnector, ReentrancyGuard {
             revert Errors.AckWindowNotExpired(tx_.ackDeadline, uint64(block.timestamp));
         }
 
+        // Reorg-safety gate: the origin's `RefundClaimed` event is emitted by initiateRefund,
+        // which itself requires `block.timestamp (origin) >= ackDeadline`.  Requiring this
+        // destination-side observation to be at least `finalityDelay[sourceChainId]` past
+        // `ackDeadline` ensures the origin block that emitted the event is finalized.
+        _enforceFinality(tx_.sourceChainId, tx_.ackDeadline);
+
         _setStatus(_txId, Enums.TxStatus.REFUND_CLAIM_ACCEPTED);
 
         (bytes32 commitment, bytes32 proofHash) =
@@ -481,6 +523,24 @@ contract Connector is ConnectorStorage, IConnector, ReentrancyGuard {
     /// @inheritdoc IConnector
     function getExpectedRisc0ImageId(Enums.VerifierRoute _route) external view returns (bytes32) {
         return _risc0RouteImageIds[uint8(_route)];
+    }
+
+    /// @inheritdoc IConnector
+    function chainFinalityDelaySeconds(uint256 _chainId) external view returns (uint64) {
+        return _chainFinalityDelaySeconds[_chainId];
+    }
+
+    /// @inheritdoc IConnector
+    function getPendingChainFinalityDelay(uint256 _chainId)
+        external
+        view
+        returns (bool exists, uint64 delaySeconds, uint64 availableAt)
+    {
+        return (
+            _pendingChainFinalityDelayExists[_chainId],
+            _pendingChainFinalityDelay[_chainId],
+            _pendingChainFinalityDelayAvailableAt[_chainId]
+        );
     }
 
     /// @notice Backwards-compatible getter for the connector admin.
@@ -867,5 +927,19 @@ contract Connector is ConnectorStorage, IConnector, ReentrancyGuard {
                 })
             )
         );
+    }
+
+    /// @dev Reverts unless `block.timestamp >= _earliestRemoteObservation + finalityDelay[_remoteChainId]`.
+    ///      `_earliestRemoteObservation` is the lowest timestamp the guest proof could have been
+    ///      taken against — typically `ackDeadline`, which the guest already enforces as a lower
+    ///      bound on the observed remote block's timestamp.
+    ///      When no finality delay is configured for the chain (default 0) this is a no-op.
+    function _enforceFinality(uint256 _remoteChainId, uint64 _earliestRemoteObservation) private view {
+        uint64 delay = _chainFinalityDelaySeconds[_remoteChainId];
+        if (delay == 0) return;
+        uint64 earliestAllowedAt = _earliestRemoteObservation + delay;
+        if (uint64(block.timestamp) < earliestAllowedAt) {
+            revert Errors.FinalityNotReached(_remoteChainId, earliestAllowedAt, uint64(block.timestamp));
+        }
     }
 }
