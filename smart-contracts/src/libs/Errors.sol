@@ -68,6 +68,17 @@ library Errors {
     error NoPendingRoute(bytes32 routeKey);
 
     /*//////////////////////////////////////////////////////////////
+                           FINALITY DELAY
+    //////////////////////////////////////////////////////////////*/
+
+    /// @notice Emitted when a proof is submitted before the remote chain's configured
+    ///         block-finality delay has elapsed since the earliest-possible observation time.
+    error FinalityNotReached(uint256 chainId, uint64 earliestAllowedAt, uint64 currentTime);
+
+    /// @notice Emitted when applyChainFinalityDelay is called with no pending proposal for the chain.
+    error NoPendingFinalityDelay(uint256 chainId);
+
+    /*//////////////////////////////////////////////////////////////
                              AMOUNTS
     //////////////////////////////////////////////////////////////*/
 

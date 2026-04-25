@@ -72,6 +72,25 @@ abstract contract ConnectorStorage {
     bytes32[6] internal _risc0RouteImageIds;
 
     /*//////////////////////////////////////////////////////////////
+                        FINALITY DELAY CONFIG
+    //////////////////////////////////////////////////////////////*/
+
+    /// @notice Per-remote-chain minimum block-finality delay, in seconds.
+    /// @dev   Used to gate proof-acceptance paths whose proofs observe remote state whose
+    ///        earliest-possible block timestamp has a known lower bound (e.g. `ackDeadline`).
+    ///        Zero means "no finality enforcement" and preserves pre-upgrade behaviour.
+    ///        Admin-managed via a two-step timelocked update (propose/apply).
+    mapping(uint256 chainId => uint64 delaySeconds) internal _chainFinalityDelaySeconds;
+
+    /// @dev Pending finality delay per chain ID, activated by applyChainFinalityDelay.
+    mapping(uint256 chainId => uint64 delaySeconds) internal _pendingChainFinalityDelay;
+    mapping(uint256 chainId => uint64 availableAt) internal _pendingChainFinalityDelayAvailableAt;
+    /// @dev True once a pending finality delay exists for the chain ID. Needed so that the
+    ///      admin can explicitly propose a zero delay (disabling finality enforcement)
+    ///      without the proposal being indistinguishable from "no proposal".
+    mapping(uint256 chainId => bool exists) internal _pendingChainFinalityDelayExists;
+
+    /*//////////////////////////////////////////////////////////////
                             EVENTS
     //////////////////////////////////////////////////////////////*/
 
@@ -318,4 +337,17 @@ abstract contract ConnectorStorage {
     event VerifierProposed(
         Enums.VerifierRoute indexed route, Enums.ProofType indexed proofType, address verifier, uint64 availableAt
     );
+
+    /// @notice Emitted when a new per-chain finality delay is proposed and scheduled for activation.
+    /// @param chainId Remote chain identifier the delay applies to.
+    /// @param delaySeconds Proposed finality delay, in seconds.
+    /// @param availableAt Earliest activation timestamp after the timelock expires.
+    event ChainFinalityDelayProposed(
+        uint256 indexed chainId, uint64 indexed delaySeconds, uint64 indexed availableAt
+    );
+
+    /// @notice Emitted when the active finality delay for a chain is updated.
+    /// @param chainId Remote chain identifier the delay applies to.
+    /// @param delaySeconds Newly active finality delay, in seconds.
+    event ChainFinalityDelayUpdated(uint256 indexed chainId, uint64 indexed delaySeconds);
 }

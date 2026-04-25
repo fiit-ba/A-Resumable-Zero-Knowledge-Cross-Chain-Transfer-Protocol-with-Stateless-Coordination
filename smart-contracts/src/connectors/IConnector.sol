@@ -18,6 +18,20 @@ interface IConnector {
     /// @param proofType Proof backend type for which to apply the pending verifier.
     function applyVerifier(Enums.VerifierRoute route, Enums.ProofType proofType) external;
 
+    /// @notice Step 1: propose a new block-finality delay for a remote chain. Becomes active
+    ///         after the same 48h timelock used for verifier updates.
+    /// @dev The delay gates proof-acceptance paths whose proofs observe remote state whose
+    ///      earliest-possible block timestamp has a known lower bound (e.g. `ackDeadline`).
+    ///      Passing `0` is allowed and disables finality enforcement for that chain.
+    /// @param chainId Remote chain identifier the delay applies to.
+    /// @param delaySeconds Proposed finality delay in seconds.
+    function proposeChainFinalityDelay(uint256 chainId, uint64 delaySeconds) external;
+
+    /// @notice Step 2: activate the pending finality delay for a remote chain once the timelock
+    ///         has expired.
+    /// @param chainId Remote chain identifier.
+    function applyChainFinalityDelay(uint256 chainId) external;
+
     /*//////////////////////////////////////////////////////////////
                             ORIGIN FUNCTIONS
     //////////////////////////////////////////////////////////////*/
@@ -146,4 +160,18 @@ interface IConnector {
     /// @notice Returns the expected RISC Zero image ID for the given proof route.
     /// @param route Verifier route.
     function getExpectedRisc0ImageId(Enums.VerifierRoute route) external view returns (bytes32);
+
+    /// @notice Returns the currently active finality delay, in seconds, for a remote chain.
+    /// @param chainId Remote chain identifier.
+    function chainFinalityDelaySeconds(uint256 chainId) external view returns (uint64);
+
+    /// @notice Returns the pending finality delay proposal for a remote chain.
+    /// @param chainId Remote chain identifier.
+    /// @return exists True when a proposal is currently pending.
+    /// @return delaySeconds Pending delay in seconds (meaningful only when `exists` is true).
+    /// @return availableAt Earliest timestamp at which the proposal may be applied.
+    function getPendingChainFinalityDelay(uint256 chainId)
+        external
+        view
+        returns (bool exists, uint64 delaySeconds, uint64 availableAt);
 }

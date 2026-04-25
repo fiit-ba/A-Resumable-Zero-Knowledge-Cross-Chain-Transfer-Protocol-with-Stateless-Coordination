@@ -17,6 +17,7 @@ Its responsibilities are:
 - release destination wrapped tokens only after origin acknowledgement
 - coordinate the refund branch when acknowledgement does not happen in time
 - protect the destination lock path with a permanent tombstone at `destinationLockAccepted[txId]`
+- gate proofs that observe remote state behind a configurable per-chain block-finality delay
 
 ## Prerequisites
 
@@ -75,6 +76,8 @@ Parallel storage:
 - `_pendingVerifiers[route][proofType]`: pending admin update
 - `_pendingVerifierAvailableAt[route][proofType]`: verifier timelock timestamp
 - `_risc0RouteImageIds[route]`: expected RISC Zero image ID per route
+- `_chainFinalityDelaySeconds[chainId]`: active block-finality safety margin per remote chain (0 = disabled)
+- `_pendingChainFinalityDelay[chainId]`, `_pendingChainFinalityDelayAvailableAt[chainId]`, `_pendingChainFinalityDelayExists[chainId]`: pending proposal, timelock timestamp, and "is a proposal active" flag for finality-delay updates
 
 ### Route Matrix
 
@@ -210,6 +213,84 @@ sequenceDiagram
     Note over Admin,Connector: Wait at least 48 hours and no more than 7 days after availableAt
     Admin->>Connector: applyVerifier(route, proofType)
     Connector-->>Admin: VerifierUpdated(route, proofType, newVerifier)
+```
+
+### Chain Finality Delay
+
+A per-chain safety margin, in seconds, that defers acceptance of any proof whose public inputs reveal a *lower bound* on the remote observation block's timestamp. The connector enforces this gate on `submitNonAcceptanceProof` (against `destinationChainId`) and `submitRefundClaimProof` (against `sourceChainId`). For both, the lower bound is `tx.ackDeadline`; the proof is accepted only once `block.timestamp >= ackDeadline + delaySeconds`.
+
+A delay of `0` is the default and means the gate is disabled — preserving the prior behaviour for unconfigured chains. The delay is *not* the chain's intrinsic finality time; it is a conservative buffer chosen by the admin to absorb worst-case reorgs and consensus-instability windows on the remote chain. Because picking the right value is operational (not a property of the chain itself), updates are gated by the same 48-hour timelock used for verifier rotation.
+
+#### `proposeChainFinalityDelay(chainId, delaySeconds)`
+
+What it does:
+
+- stages a new finality delay for `chainId`
+- starts a fixed `48 hours` timelock before the new value can be applied
+- explicitly accepts `delaySeconds = 0` as a way to schedule disabling the gate later
+
+Parameters:
+
+| Parameter | Description |
+| --- | --- |
+| `chainId` | remote chain identifier the delay applies to |
+| `delaySeconds` | proposed delay in seconds; `0` disables the gate for that chain |
+
+Prerequisites:
+
+- caller must be `admin()`
+
+Emits:
+
+- `ChainFinalityDelayProposed(chainId, delaySeconds, availableAt)`
+
+Reverts:
+
+- `NotAdmin`
+
+#### `applyChainFinalityDelay(chainId)`
+
+What it does:
+
+- activates the pending finality delay for `chainId`
+- clears the pending entry, the pending-availability timestamp, and the existence flag
+
+Parameters:
+
+| Parameter | Description |
+| --- | --- |
+| `chainId` | remote chain identifier whose pending proposal should be activated |
+
+Prerequisites:
+
+- caller must be `admin()`
+- a pending proposal must exist (the existence flag is set independently of the proposed value, so a pending `0` is distinguishable from "no proposal")
+- current time must be at least `availableAt`
+- current time must be no later than `availableAt + 7 days`
+
+Emits:
+
+- `ChainFinalityDelayUpdated(chainId, delaySeconds)`
+
+Reverts:
+
+- `NotAdmin`
+- `NoPendingFinalityDelay`
+- `TimelockNotExpired`
+- `TimelockExpired`
+
+Finality-delay update sequence:
+
+```mermaid
+sequenceDiagram
+    actor Admin
+    participant Connector
+
+    Admin->>Connector: proposeChainFinalityDelay(chainId, delaySeconds)
+    Connector-->>Admin: ChainFinalityDelayProposed(chainId, delaySeconds, availableAt)
+    Note over Admin,Connector: Wait at least 48 hours and no more than 7 days after availableAt
+    Admin->>Connector: applyChainFinalityDelay(chainId)
+    Connector-->>Admin: ChainFinalityDelayUpdated(chainId, delaySeconds)
 ```
 
 ### Origin-Side Lifecycle
@@ -391,6 +472,7 @@ Prerequisites:
 - current status must be `REFUND_INITIATED`
 - if `proofType == RISC0`, payload image ID must match `getExpectedRisc0ImageId(ORIGIN_NON_ACCEPT)`
 - the active verifier for `(ORIGIN_NON_ACCEPT, proofType)` must exist
+- if a finality delay is configured for `destinationChainId`, current time must be at or after `ackDeadline + chainFinalityDelaySeconds(destinationChainId)`
 - the returned commitment must equal:
 
 `abi.encode(txId, dstChainConnector, ackDeadline, sourceChainId, destinationChainId)`
@@ -408,6 +490,7 @@ Reverts:
 - `VerifierNotRegistered`
 - adapter proof errors
 - `CommitmentMismatch`
+- `FinalityNotReached`
 
 Origin happy-path sequence:
 
@@ -580,6 +663,7 @@ Prerequisites:
 - current status must be `MINTED_IN_HOLDING`
 - if `proofType == RISC0`, payload image ID must match `getExpectedRisc0ImageId(DEST_REFUND_CLAIM)`
 - current time must be at or after `ackDeadline`
+- if a finality delay is configured for `sourceChainId`, current time must be at or after `ackDeadline + chainFinalityDelaySeconds(sourceChainId)`
 - the active verifier for `(DEST_REFUND_CLAIM, proofType)` must exist
 - the returned commitment must equal:
 
@@ -598,6 +682,7 @@ Reverts:
 - `VerifierNotRegistered`
 - adapter proof errors
 - `CommitmentMismatch`
+- `FinalityNotReached`
 
 #### `executeBurn(txId)`
 
@@ -653,6 +738,8 @@ sequenceDiagram
 | `getVerifier(route, proofType)` | active verifier adapter address | indexed by route and proof backend |
 | `getPendingVerifier(route, proofType)` | pending verifier address and `availableAt` timestamp | used for the admin timelock flow |
 | `getExpectedRisc0ImageId(route)` | expected route image ID | checked only for `ProofType.RISC0` |
+| `chainFinalityDelaySeconds(chainId)` | active finality delay (seconds) for a remote chain | `0` means the gate is disabled |
+| `getPendingChainFinalityDelay(chainId)` | `(exists, delaySeconds, availableAt)` for a pending finality-delay proposal | `exists` distinguishes a pending `0` from "no proposal" |
 | `admin()` | immutable admin address | backward-compatible getter |
 | `ackWindowSeconds()` | immutable ACK window duration | copied into origin transfers as `ackDeadline` offset |
 | `wrappedTokenFactory()` | factory used for route validation | immutable constructor dependency |
@@ -674,6 +761,8 @@ sequenceDiagram
 | --- | --- |
 | `proposeVerifier` | `VerifierProposed` |
 | `applyVerifier` | `VerifierUpdated` |
+| `proposeChainFinalityDelay` | `ChainFinalityDelayProposed` |
+| `applyChainFinalityDelay` | `ChainFinalityDelayUpdated` |
 | `depositAndLock` | `DepositLocked` |
 | `submitMintProof` | `ProofVerified`, `AckReady`, `OriginTxClosed` |
 | `initiateRefund` | `RefundClaimed` |
@@ -702,6 +791,7 @@ sequenceDiagram
 - The connector does not cache proof hashes long term. The durable replay boundary is the destination tombstone plus route-specific commitment checks.
 - Route validation is enforced twice: once on origin deposit and once on destination lock proof.
 - The connector documents and enforces the current code behavior that `submitAckProof` must arrive before `ackDeadline`.
+- The block-finality gate on `submitNonAcceptanceProof` and `submitRefundClaimProof` is admin-configurable per remote chain via `proposeChainFinalityDelay` / `applyChainFinalityDelay`. The default delay is `0` for all chains, which means new connector deployments behave exactly as before until the admin opts into a non-zero margin. The gate uses `ackDeadline` as the lower bound on the remote observation block's timestamp; the underlying ZK guests already enforce that lower bound, so the gate adds *only* a clock check.
 
 ### Common Custom Errors
 
@@ -720,3 +810,7 @@ sequenceDiagram
 | `VerifierNotRegistered` | active verifier adapter is missing for the route and proof backend |
 | `ImageIdRouteMismatch` | RISC Zero proof image ID does not match the configured route image |
 | `CommitmentMismatch` | proof was valid, but not for this exact transfer context |
+| `FinalityNotReached` | proof was submitted before `ackDeadline + chainFinalityDelaySeconds(remoteChainId)` |
+| `NoPendingFinalityDelay` | `applyChainFinalityDelay` was called with no pending proposal for the chain |
+| `TimelockNotExpired` | timelocked admin action (verifier or finality delay) was applied too early |
+| `TimelockExpired` | timelocked admin action was applied after the 7-day apply window closed |

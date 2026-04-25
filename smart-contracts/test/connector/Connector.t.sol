@@ -2641,4 +2641,188 @@ contract ConnectorTest is Test {
 
         assertEq(tc.getVerifier(Enums.VerifierRoute.ORIGIN_MINT, Enums.ProofType.SNARKJS), newAdapter);
     }
+
+    /*//////////////////////////////////////////////////////////////
+             CHAIN FINALITY DELAY ADMIN + ENFORCEMENT TESTS
+    //////////////////////////////////////////////////////////////*/
+
+    /// @dev Activate a non-zero finality delay for the given chain id via the full timelock flow.
+    function _setChainFinalityDelay(uint256 chainId, uint64 delaySeconds) internal {
+        connector.proposeChainFinalityDelay(chainId, delaySeconds);
+        vm.warp(block.timestamp + _VERIFIER_TIMELOCK + 1);
+        connector.applyChainFinalityDelay(chainId);
+    }
+
+    function test_chainFinalityDelay_DefaultsToZero() public view {
+        assertEq(connector.chainFinalityDelaySeconds(block.chainid), 0);
+        (bool exists, uint64 delay, uint64 availableAt) = connector.getPendingChainFinalityDelay(block.chainid);
+        assertFalse(exists);
+        assertEq(delay, 0);
+        assertEq(availableAt, 0);
+    }
+
+    function test_proposeChainFinalityDelay_EmitsProposedEvent() public {
+        uint64 expectedAvailableAt = uint64(block.timestamp) + _VERIFIER_TIMELOCK;
+        vm.expectEmit(true, true, true, true);
+        emit ConnectorStorage.ChainFinalityDelayProposed(block.chainid, 900, expectedAvailableAt);
+        connector.proposeChainFinalityDelay(block.chainid, 900);
+    }
+
+    function test_proposeChainFinalityDelay_RevertsWhen_NotAdmin() public {
+        vm.prank(_ALICE);
+        vm.expectRevert(Errors.NotAdmin.selector);
+        connector.proposeChainFinalityDelay(block.chainid, 900);
+    }
+
+    function test_applyChainFinalityDelay_RevertsWhen_NotAdmin() public {
+        connector.proposeChainFinalityDelay(block.chainid, 900);
+        vm.warp(block.timestamp + _VERIFIER_TIMELOCK + 1);
+        vm.prank(_ALICE);
+        vm.expectRevert(Errors.NotAdmin.selector);
+        connector.applyChainFinalityDelay(block.chainid);
+    }
+
+    function test_applyChainFinalityDelay_RevertsWhen_NoPending() public {
+        vm.expectRevert(abi.encodeWithSelector(Errors.NoPendingFinalityDelay.selector, block.chainid));
+        connector.applyChainFinalityDelay(block.chainid);
+    }
+
+    function test_applyChainFinalityDelay_RevertsWhen_TimelockNotExpired() public {
+        connector.proposeChainFinalityDelay(block.chainid, 900);
+        uint64 availableAt = uint64(block.timestamp) + _VERIFIER_TIMELOCK;
+        uint64 warpTarget = availableAt - 1;
+        vm.warp(warpTarget);
+        vm.expectRevert(abi.encodeWithSelector(Errors.TimelockNotExpired.selector, availableAt, warpTarget));
+        connector.applyChainFinalityDelay(block.chainid);
+    }
+
+    function test_applyChainFinalityDelay_EmitsUpdatedAndActivates() public {
+        connector.proposeChainFinalityDelay(block.chainid, 900);
+        vm.warp(block.timestamp + _VERIFIER_TIMELOCK + 1);
+
+        vm.expectEmit(true, true, true, true);
+        emit ConnectorStorage.ChainFinalityDelayUpdated(block.chainid, 900);
+        connector.applyChainFinalityDelay(block.chainid);
+
+        assertEq(connector.chainFinalityDelaySeconds(block.chainid), 900);
+        (bool exists, uint64 delay, uint64 availableAt) = connector.getPendingChainFinalityDelay(block.chainid);
+        assertFalse(exists);
+        assertEq(delay, 0);
+        assertEq(availableAt, 0);
+    }
+
+    function test_applyChainFinalityDelay_AllowsZeroAsExplicitDisable() public {
+        _setChainFinalityDelay(block.chainid, 900);
+        assertEq(connector.chainFinalityDelaySeconds(block.chainid), 900);
+
+        connector.proposeChainFinalityDelay(block.chainid, 0);
+        (bool exists,,) = connector.getPendingChainFinalityDelay(block.chainid);
+        assertTrue(exists);
+
+        vm.warp(block.timestamp + _VERIFIER_TIMELOCK + 1);
+        connector.applyChainFinalityDelay(block.chainid);
+        assertEq(connector.chainFinalityDelaySeconds(block.chainid), 0);
+    }
+
+    /*//////////////////////////////////////////////////////////////
+         submitNonAcceptanceProof — FINALITY GATE
+    //////////////////////////////////////////////////////////////*/
+
+    function test_submitNonAcceptanceProof_RevertsWhen_FinalityNotReached() public {
+        // Activate finality delay BEFORE the deposit; otherwise the 48h timelock warp
+        // would push block.timestamp past any reasonable ackDeadline + finalityDelay.
+        _setChainFinalityDelay(block.chainid, 30 minutes);
+
+        bytes32 txId = _doDeposit();
+        ConnectorStorage.CrossChainTx memory snap = connector.getTx(txId);
+        uint64 deadline = snap.ackDeadline;
+
+        // Warp to just after ackDeadline — enough for initiateRefund but NOT for finality.
+        vm.warp(deadline + 1);
+        vm.prank(_ALICE);
+        connector.initiateRefund(txId);
+
+        bytes memory proof = _buildSnarkProof(_nonAcceptanceProofInputs(txId));
+        uint64 earliestAllowedAt = deadline + 30 minutes;
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                Errors.FinalityNotReached.selector, block.chainid, earliestAllowedAt, uint64(block.timestamp)
+            )
+        );
+        connector.submitNonAcceptanceProof(Enums.ProofType.SNARKJS, proof, txId);
+    }
+
+    function test_submitNonAcceptanceProof_SucceedsOnceFinalityElapsed() public {
+        _setChainFinalityDelay(block.chainid, 30 minutes);
+
+        bytes32 txId = _doDeposit();
+        ConnectorStorage.CrossChainTx memory snap = connector.getTx(txId);
+        uint64 deadline = snap.ackDeadline;
+
+        vm.warp(deadline + 1);
+        vm.prank(_ALICE);
+        connector.initiateRefund(txId);
+
+        // Warp past the finality window.
+        vm.warp(deadline + 30 minutes + 1);
+
+        bytes memory proof = _buildSnarkProof(_nonAcceptanceProofInputs(txId));
+        connector.submitNonAcceptanceProof(Enums.ProofType.SNARKJS, proof, txId);
+
+        assertEq(token.balanceOf(_ALICE), _AMOUNT);
+        assertEq(uint8(connector.txStatus(txId)), uint8(Enums.TxStatus.NONE));
+    }
+
+    function test_submitNonAcceptanceProof_UnchangedWhenFinalityDelayZero() public {
+        // Default delay is 0 → finality gate is a no-op. Prior happy-path behaviour preserved.
+        bytes32 txId = _doDeposit();
+        ConnectorStorage.CrossChainTx memory snap = connector.getTx(txId);
+
+        vm.warp(snap.ackDeadline + 1);
+        vm.prank(_ALICE);
+        connector.initiateRefund(txId);
+
+        connector.submitNonAcceptanceProof(
+            Enums.ProofType.SNARKJS, _buildSnarkProof(_nonAcceptanceProofInputs(txId)), txId
+        );
+        assertEq(token.balanceOf(_ALICE), _AMOUNT);
+    }
+
+    /*//////////////////////////////////////////////////////////////
+         submitRefundClaimProof — FINALITY GATE
+    //////////////////////////////////////////////////////////////*/
+
+    function test_submitRefundClaimProof_RevertsWhen_FinalityNotReached() public {
+        // Activate finality delay BEFORE the lock proof so the deadline is meaningful.
+        _setChainFinalityDelay(block.chainid, 30 minutes);
+
+        bytes32 txId = bytes32(uint256(0xABC));
+        uint64 deadline = uint64(block.timestamp) + _ACK_WINDOW;
+        _doLockProof(txId, deadline);
+
+        bytes memory proof = _buildSnarkProof(_refundClaimInputs(txId));
+        uint64 earliestAllowedAt = deadline + 30 minutes;
+
+        // Warp just past deadline — ack window expired but finality not yet reached.
+        uint64 warpTo = deadline + 1;
+        vm.warp(warpTo);
+        vm.expectRevert(
+            abi.encodeWithSelector(Errors.FinalityNotReached.selector, block.chainid, earliestAllowedAt, warpTo)
+        );
+        connector.submitRefundClaimProof(Enums.ProofType.SNARKJS, proof, txId);
+    }
+
+    function test_submitRefundClaimProof_SucceedsOnceFinalityElapsed() public {
+        _setChainFinalityDelay(block.chainid, 30 minutes);
+
+        bytes32 txId = bytes32(uint256(0xABC));
+        uint64 deadline = uint64(block.timestamp) + _ACK_WINDOW;
+        _doLockProof(txId, deadline);
+
+        vm.warp(deadline + 30 minutes + 1);
+        connector.submitRefundClaimProof(
+            Enums.ProofType.SNARKJS, _buildSnarkProof(_refundClaimInputs(txId)), txId
+        );
+        assertEq(uint8(connector.txStatus(txId)), uint8(Enums.TxStatus.REFUND_CLAIM_ACCEPTED));
+    }
 }
