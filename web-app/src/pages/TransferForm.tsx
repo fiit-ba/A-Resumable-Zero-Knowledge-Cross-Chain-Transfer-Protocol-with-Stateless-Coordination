@@ -19,6 +19,9 @@ import {
 } from "../api/agentApi";
 import type { JobStatus, RelayJob, RelayMode } from "../api/types";
 import { CONNECTOR_ABI, ERC20_ABI } from "../lib/abi";
+import { logConnectorGasEstimate, logConnectorGasReceipt } from "../lib/connectorGasLog";
+import type { ConnectorContractMethodLike, ConnectorReceiptLike } from "../lib/connectorGasLog";
+import { decodeContractError } from "../lib/contractErrors";
 import { NETWORK_OPTIONS, NETWORKS, getChainId } from "../lib/networks";
 import { ensureWalletOnChain } from "../lib/wallet";
 
@@ -66,6 +69,7 @@ const JOB_STAGE_LABELS: Record<RelayJob["currentStage"], string> = {
   "refund-claim": "Refund - Claim proof (destination)",
   "execute-burn": "Refund - Execute burn (destination)",
   "burn-proof": "Refund - Burn proof (source)",
+  "non-accept-proof": "Refund - Non-acceptance proof (source)",
   pending: "Pending",
   completed: "Completed",
 };
@@ -452,6 +456,11 @@ export function TransferForm() {
       await provider.send("eth_requestAccounts", []);
 
       const srcChainId = getChainId(draft.sourceProfile);
+      const destinationChainId = getChainId(draft.destProfile);
+      if (!destinationChainId) {
+        dispatch(setError("Unknown destination network. Select a supported destination profile."));
+        return;
+      }
       if (srcChainId) {
         await ensureWalletOnChain(provider, srcChainId);
       }
@@ -525,21 +534,46 @@ export function TransferForm() {
 
       dispatch(setTxStatus("depositing"));
       const connector = new Contract(draft.sourceConnector, CONNECTOR_ABI, signer);
-      const depositTx = await (connector.depositAndLock!(
+      const depositAndLock = connector.depositAndLock as unknown as ConnectorContractMethodLike;
+      const depositArgs = [
         draft.tokenFrom,
         draft.tokenTo,
         draft.receiver,
         amountBn,
         draft.destConnector,
-      ) as Promise<{
-        hash: string;
-        wait: () => Promise<{ logs: { topics: readonly string[]; data: string }[] } | null>;
-      }>);
+        destinationChainId,
+      ];
+      const sourceNetwork = NETWORKS[draft.sourceProfile];
+
+      await logConnectorGasEstimate({
+        provider,
+        method: "depositAndLock",
+        connectorAddress: draft.sourceConnector,
+        chainId: srcChainId,
+        nativeSymbol: sourceNetwork?.nativeCurrency.symbol,
+        args: depositArgs,
+        estimateGas: depositAndLock.estimateGas
+          ? (...args: unknown[]) => depositAndLock.estimateGas!(...args)
+          : undefined,
+      });
+
+      const depositTx = await depositAndLock(...depositArgs);
       setPendingTx({ phase: "deposit", hash: depositTx.hash });
 
-      const receipt = await depositTx.wait();
+      const receipt = (await depositTx.wait()) as
+        | (ConnectorReceiptLike & { logs: { topics: readonly string[]; data: string }[] })
+        | null;
       if (!receipt) throw new Error("No transaction receipt returned");
       setPendingTx(null);
+      await logConnectorGasReceipt({
+        provider,
+        method: "depositAndLock",
+        connectorAddress: draft.sourceConnector,
+        chainId: srcChainId,
+        nativeSymbol: sourceNetwork?.nativeCurrency.symbol,
+        txHash: depositTx.hash,
+        receipt,
+      });
 
       const iface = new Interface(CONNECTOR_ABI);
       let txId: string | undefined;
@@ -583,11 +617,12 @@ export function TransferForm() {
       navigate(`/progress/${job.id}`);
     } catch (err) {
       setPendingTx(null);
+      const decoded = decodeContractError(err);
       const message = err instanceof Error ? err.message : String(err);
       if (/user rejected|rejected by user|action_rejected/i.test(message)) {
         dispatch(setError("Transaction request was rejected in wallet."));
       } else {
-        dispatch(setError(message));
+        dispatch(setError(decoded ?? message));
       }
       dispatch(setTxStatus("idle"));
     }

@@ -5,6 +5,7 @@ use burn_proof_core::{
     BurnGuestInput, IConnector, ObservedDestTxClosed,
     build_public_inputs, chain_spec_from_id, select_unique_event, validate_burn_event,
 };
+use alloy_primitives::U256;
 use alloy_sol_types::SolValue;
 use risc0_steel::Event;
 use risc0_zkvm::guest::env;
@@ -35,7 +36,11 @@ fn main() {
     validate_burn_event(&event, input.connector)
         .expect("DestTxClosed validation failed");
 
-    let public_inputs = build_public_inputs(&event);
+    let public_inputs = build_public_inputs(
+        &event,
+        U256::from(input.source_chain_id),
+        U256::from(input.dest_chain_id),
+    );
 
     env::commit_slice(&public_inputs.abi_encode());
 }

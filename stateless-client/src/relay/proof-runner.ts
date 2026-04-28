@@ -294,6 +294,17 @@ function ensureStageChainInputs(input: ProofRunnerInput): void {
 
   if (input.stage === "ack") {
     assert(input.sourceChainId !== undefined, "ack proof requires sourceChainId");
+    assert(input.destinationChainId !== undefined, "ack proof requires destinationChainId");
+  }
+
+  if (input.stage === "burn-proof") {
+    assert(input.sourceChainId !== undefined, "burn-proof requires sourceChainId");
+    assert(input.destinationChainId !== undefined, "burn-proof requires destinationChainId");
+  }
+
+  if (input.stage === "refund-claim") {
+    assert(input.sourceChainId !== undefined, "refund-claim proof requires sourceChainId");
+    assert(input.destinationChainId !== undefined, "refund-claim proof requires destinationChainId");
   }
 
   if (input.stage === "non-accept-proof") {
@@ -306,13 +317,13 @@ function ensureStageChainInputs(input: ProofRunnerInput): void {
 export async function runProof(input: ProofRunnerInput): Promise<ProofArtifact> {
   ensureStageChainInputs(input);
 
-  console.error(
-    `[proof-runner] stage=${input.stage} backend=${input.backend} proverMode=${input.risc0ProverMode} rpc=${redactRpcUrl(input.rpcUrl)}`,
-  );
-
   const hostConfig = RELAY_STAGE_TO_PROOF_HOST[input.stage];
   const executionBlock = toRpcBlockTag(normalizeBlockTag(input.executionBlock, "latest"));
   const timeoutMs = resolveProofTimeoutMs();
+  console.error(
+    `[proof-runner] stage=${input.stage} backend=${input.backend} proverMode=${input.risc0ProverMode} timeoutSec=${timeoutMs / 1000} rpc=${redactRpcUrl(input.rpcUrl)}`,
+  );
+
   const proofStartMs = Date.now();
   const env: NodeJS.ProcessEnv = {
     ...process.env,
@@ -364,6 +375,24 @@ export async function runProof(input: ProofRunnerInput): Promise<ProofArtifact> 
     }
 
     if (input.stage === "ack") {
+      args.push(
+        "--source-chain-id",
+        String(input.sourceChainId),
+        "--destination-chain-id",
+        String(input.destinationChainId),
+      );
+    }
+
+    if (input.stage === "burn-proof") {
+      args.push(
+        "--source-chain-id",
+        String(input.sourceChainId),
+        "--dest-chain-id",
+        String(input.destinationChainId),
+      );
+    }
+
+    if (input.stage === "refund-claim") {
       args.push("--source-chain-id", String(input.sourceChainId));
     }
 
@@ -398,6 +427,18 @@ export async function runProof(input: ProofRunnerInput): Promise<ProofArtifact> 
     }
 
     if (input.stage === "ack") {
+      env.PROVER_ACTION = "prove";
+      env.SOURCE_CHAIN_ID = String(input.sourceChainId);
+      env.DEST_CHAIN_ID = String(input.destinationChainId);
+    }
+
+    if (input.stage === "burn-proof") {
+      env.PROVER_ACTION = "prove";
+      env.SOURCE_CHAIN_ID = String(input.sourceChainId);
+      env.DEST_CHAIN_ID = String(input.destinationChainId);
+    }
+
+    if (input.stage === "refund-claim") {
       env.PROVER_ACTION = "prove";
       env.SOURCE_CHAIN_ID = String(input.sourceChainId);
     }

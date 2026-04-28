@@ -13,6 +13,10 @@ contract WrappedTokenFactory {
     /// @notice Administrator address that can register wrapped token routes.
     address public immutable ADMIN;
 
+    /// @notice Timelock duration (seconds) between proposeRoute and applyRoute.
+    ///         Set to 0 for instant registration (e.g. initial deployment before any users).
+    uint64 public immutable REGISTRATION_TIMELOCK;
+
     /// @dev route key -> canonical wrapped token address (address(0) = unregistered)
     mapping(bytes32 routeKeyHash => address wrappedTokenAddress) private _wrappedTokens;
 
@@ -60,8 +64,13 @@ contract WrappedTokenFactory {
         address wrappedToken
     );
 
-    constructor() {
+    /// @notice Deploys the factory.
+    /// @param registrationTimelock_ Seconds between proposeRoute and applyRoute.
+    ///        Pass 0 for instant registration (safe for initial deployment when no users exist yet).
+    ///        Pass 172800 (48 hours) for live production where existing users need time to exit.
+    constructor(uint64 registrationTimelock_) {
         ADMIN = msg.sender;
+        REGISTRATION_TIMELOCK = registrationTimelock_;
     }
 
     /// @notice Returns the registered wrapped token for a route, or address(0) if unregistered.
@@ -163,9 +172,8 @@ contract WrappedTokenFactory {
         );
     }
 
-    /// @dev Override in test harnesses to set timelock to 0 for instant registration.
     function _registrationTimelock() internal virtual returns (uint64) {
-        return 48 hours;
+        return REGISTRATION_TIMELOCK;
     }
 
     function _key(

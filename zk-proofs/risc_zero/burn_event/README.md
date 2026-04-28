@@ -7,7 +7,7 @@ a refund claim is accepted.
 The committed public inputs are ABI-encoded as:
 
 ```solidity
-(bytes32 txId, address dstChainConnector, uint256 amount)
+(bytes32 txId, address dstChainConnector, uint256 amount, uint256 sourceChainId, uint256 destinationChainId)
 ```
 
 This matches the commitment expected by `Connector.submitBurnProof(...)` on the
@@ -22,6 +22,7 @@ EXECUTION_BLOCK=latest \
 cargo run -p burn-proof-host -- \
   --connector 0xDestConnector \
   --tx-id 0xTxId \
+  --source-chain-id 31337 \
   --dest-chain-id 31338
 ```
 

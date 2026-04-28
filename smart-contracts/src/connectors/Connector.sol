@@ -220,8 +220,7 @@ contract Connector is ConnectorStorage, IConnector, ReentrancyGuard {
             tx_.timestamp,
             _proofType,
             proofHash,
-            commitment,
-            _proofPayload
+            commitment
         );
         emit OriginTxClosed(
             _txId,
@@ -393,9 +392,10 @@ contract Connector is ConnectorStorage, IConnector, ReentrancyGuard {
     {
         _checkRouteImageId(Enums.VerifierRoute.DEST_ACK, _proofType, _proofPayload);
         CrossChainTx memory tx_ = _txs[_txId];
-        if (!(block.timestamp < tx_.ackDeadline)) {
-            revert Errors.AckWindowExpired(tx_.ackDeadline, uint64(block.timestamp));
-        }
+        // No ackDeadline check here: once submitMintProof has been accepted on the source
+        // chain its storage is deleted, making initiateRefund impossible.  The competing
+        // refund path (submitRefundClaimProof) therefore can never be triggered, so the ack
+        // proof is safe to submit at any time after MINTED_IN_HOLDING is reached.
         _cleanupTx(_txId);
 
         bytes32 commitment;

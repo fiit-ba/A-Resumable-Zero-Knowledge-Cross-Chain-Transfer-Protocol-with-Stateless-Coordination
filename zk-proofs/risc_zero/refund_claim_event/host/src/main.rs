@@ -30,6 +30,7 @@ struct Args {
     #[arg(long)]
     source_chain_id: u64,
 
+    /// Block where the RefundClaimed event was emitted — used for the log query only.
     #[arg(long, env = "EXECUTION_BLOCK", default_value_t = BlockNumberOrTag::Latest)]
     execution_block: BlockNumberOrTag,
 }
@@ -45,21 +46,21 @@ async fn main() -> Result<()> {
     let chain_spec = chain_spec_from_id(args.source_chain_id)
         .with_context(|| format!("unsupported source chain id: {}", args.source_chain_id))?;
 
-    let mut env = EthEvmEnv::builder()
-        .rpc(args.rpc_url)
+    // --- Event environment (at the event block) ---
+    // Used only for Event::preflight — fetches the RefundClaimed log via eth_getLogs.
+    // No state trie access; works on any RPC regardless of archive depth.
+    let mut event_env = EthEvmEnv::builder()
+        .rpc(args.rpc_url.clone())
         .chain_spec(chain_spec)
         .block_number_or_tag(args.execution_block)
         .build()
         .await
-        .context("failed to build EthEvmEnv")?;
+        .context("failed to build event EthEvmEnv")?;
 
-    let event = Event::preflight::<IConnector::RefundClaimed>(&mut env)
+    let event_query = Event::preflight::<IConnector::RefundClaimed>(&mut event_env)
         .address(args.connector)
         .topic1(args.tx_id);
-    let logs = event
-        .query()
-        .await
-        .context("RefundClaimed preflight failed")?;
+    let logs = event_query.query().await.context("RefundClaimed preflight failed")?;
 
     ensure!(!logs.is_empty(), "no RefundClaimed logs found for txId");
     ensure!(
@@ -68,7 +69,19 @@ async fn main() -> Result<()> {
         logs.len()
     );
 
-    let mut connector = Contract::preflight(args.connector, &mut env);
+    // --- State environment (at latest block) ---
+    // Used only for Contract::preflight (getTx state read).
+    // "latest" is always available regardless of RPC archive depth.
+    // Connector storage for this txId persists until executeBurn is called.
+    let mut state_env = EthEvmEnv::builder()
+        .rpc(args.rpc_url.clone())
+        .chain_spec(chain_spec)
+        .block_number_or_tag(BlockNumberOrTag::Latest)
+        .build()
+        .await
+        .context("failed to build state EthEvmEnv")?;
+
+    let mut connector = Contract::preflight(args.connector, &mut state_env);
     let tx_snapshot = connector
         .call_builder(&IConnector::getTxCall { _txId: args.tx_id })
         .call()
@@ -84,10 +97,8 @@ async fn main() -> Result<()> {
     );
 
     let guest_input = RefundClaimGuestInput {
-        evm_input: env
-            .into_input()
-            .await
-            .context("failed to build EthEvmInput")?,
+        event_evm_input: event_env.into_input().await.context("failed to build event EthEvmInput")?,
+        state_evm_input: state_env.into_input().await.context("failed to build state EthEvmInput")?,
         connector: args.connector,
         tx_id: args.tx_id,
         source_chain_id: args.source_chain_id,
@@ -134,7 +145,6 @@ async fn main() -> Result<()> {
     let image_id_b256 = B256::from(image_id);
     let journal_digest = B256::from_slice(receipt.journal.digest().as_bytes());
     let seal = encode_seal(&receipt).context("failed to encode seal")?;
-    // Encode as ABI params so Solidity can decode directly as (bytes, bytes32, bytes32).
     let proof_payload = (seal.clone(), image_id_b256, journal_digest).abi_encode_params();
 
     println!("Proof generated and verified.");

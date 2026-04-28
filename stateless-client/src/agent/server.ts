@@ -18,6 +18,7 @@ import type {
   RecoverJobBody,
   UpdateSettingsBody,
 } from "./types.js";
+import { ALL_RELAY_STAGES } from "../relay/stages.js";
 
 const AGENT_VERSION = "0.1.0";
 
@@ -30,15 +31,7 @@ const DEFAULT_ALLOWED_ORIGINS = [
   "http://localhost:4173", // Vite preview
 ];
 
-const VALID_STAGES: RelayProofStage[] = [
-  "lock",
-  "mint",
-  "ack",
-  "refund-initiate",
-  "refund-claim",
-  "execute-burn",
-  "burn-proof",
-];
+const VALID_STAGES: RelayProofStage[] = [...ALL_RELAY_STAGES];
 
 const VALID_STAGE_SET = new Set<RelayProofStage>(VALID_STAGES);
 

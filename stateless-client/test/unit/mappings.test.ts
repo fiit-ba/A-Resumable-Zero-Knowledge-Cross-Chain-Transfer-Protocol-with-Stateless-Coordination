@@ -38,8 +38,8 @@ describe("relay stage mappings", () => {
 // ---------------------------------------------------------------------------
 
 describe("RELAY_STAGE_REGISTRY invariants", () => {
-  it("contains exactly 7 stages in ALL_RELAY_STAGES order", () => {
-    expect(ALL_RELAY_STAGES).toHaveLength(7);
+  it("contains exactly 8 stages in ALL_RELAY_STAGES order", () => {
+    expect(ALL_RELAY_STAGES).toHaveLength(8);
     expect(ALL_RELAY_STAGES).toEqual([
       "lock",
       "mint",
@@ -48,6 +48,7 @@ describe("RELAY_STAGE_REGISTRY invariants", () => {
       "refund-claim",
       "execute-burn",
       "burn-proof",
+      "non-accept-proof",
     ]);
   });
 
@@ -95,14 +96,14 @@ describe("RELAY_STAGE_REGISTRY invariants", () => {
     }
   });
 
-  it("exactly 5 proof stages and 2 direct stages", () => {
+  it("exactly 6 proof stages and 2 direct stages", () => {
     const proofStages = ALL_RELAY_STAGES.filter(
       (s) => RELAY_STAGE_REGISTRY[s].actionKind === "proof",
     );
     const directStages = ALL_RELAY_STAGES.filter(
       (s) => RELAY_STAGE_REGISTRY[s].actionKind === "direct",
     );
-    expect(proofStages).toHaveLength(5);
+    expect(proofStages).toHaveLength(6);
     expect(directStages).toHaveLength(2);
   });
 
@@ -114,7 +115,14 @@ describe("RELAY_STAGE_REGISTRY invariants", () => {
   });
 
   it("isProofRelayStage returns true only for proof stages", () => {
-    const proofStages: RelayProofStage[] = ["lock", "mint", "ack", "refund-claim", "burn-proof"];
+    const proofStages: RelayProofStage[] = [
+      "lock",
+      "mint",
+      "ack",
+      "refund-claim",
+      "burn-proof",
+      "non-accept-proof",
+    ];
     const directStages: RelayProofStage[] = ["refund-initiate", "execute-burn"];
 
     for (const s of proofStages) {

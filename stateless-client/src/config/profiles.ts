@@ -57,8 +57,14 @@ export const NETWORK_PROFILES: Record<NetworkProfileName, NetworkProfileDefaults
     isLocal: false,
     rpcUrls: ["https://ethereum-sepolia-rpc.publicnode.com"],
     proverUrls: ["https://sepolia.colibri-proof.tech"],
-    beaconUrls: ["https://ethereum-sepolia-beacon-api.publicnode.com"],
-    checkpointzUrls: ["https://ethereum-sepolia-beacon-api.publicnode.com"],
+    beaconUrls: [
+      "https://sepolia.colibri-proof.tech/consensus/",
+      "https://ethereum-sepolia-beacon-api.publicnode.com",
+    ],
+    checkpointzUrls: [
+      "https://sepolia.colibri-proof.tech/consensus/",
+      "https://ethereum-sepolia-beacon-api.publicnode.com",
+    ],
   },
   holesky: {
     name: "holesky",

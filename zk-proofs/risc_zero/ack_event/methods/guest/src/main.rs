@@ -2,11 +2,12 @@
 #![no_main]
 
 use ack_proof_core::{
-    AckGuestInput, IConnector, MINT_PROOF_ACCEPTED_STATUS, ObservedAckReady,
-    build_public_inputs_from_tx, chain_spec_from_id, select_unique_event, validate_ack_event,
+    AckGuestInput, IConnector, ObservedAckReady,
+    build_public_inputs, chain_spec_from_id, select_unique_event, validate_ack_event,
 };
+use alloy_primitives::U256;
 use alloy_sol_types::SolValue;
-use risc0_steel::{Contract, Event};
+use risc0_steel::Event;
 use risc0_zkvm::guest::env;
 
 risc0_zkvm::guest::entry!(main);
@@ -17,9 +18,12 @@ fn main() {
     let chain_spec = chain_spec_from_id(input.source_chain_id)
         .expect("unsupported source chain id for Steel chain spec");
 
-    let evm_env = input.evm_input.into_env(chain_spec);
+    // Event environment: anchored to the block where AckReady was emitted.
+    // submitMintProof deletes the source tx record via _cleanupTx, so there is
+    // no storage to read — all public inputs come from the event log.
+    let event_env = input.event_evm_input.into_env(chain_spec);
 
-    let logs = Event::new::<IConnector::AckReady>(&evm_env)
+    let logs = Event::new::<IConnector::AckReady>(&event_env)
         .address(input.connector)
         .topic1(input.tx_id)
         .query();
@@ -31,31 +35,10 @@ fn main() {
 
     validate_ack_event(&event, input.connector).expect("AckReady validation failed");
 
-    let contract = Contract::new(input.connector, &evm_env);
-    let tx_snapshot = contract
-        .call_builder(&IConnector::getTxCall { _txId: input.tx_id })
-        .call();
-
-    assert_eq!(tx_snapshot.txId, input.tx_id, "txId mismatch in getTx");
-    assert_eq!(
-        tx_snapshot.status, MINT_PROOF_ACCEPTED_STATUS,
-        "source tx must be MINT_PROOF_ACCEPTED"
-    );
-    assert_eq!(tx_snapshot.from, event.sender, "from mismatch in getTx");
-    assert_eq!(tx_snapshot.to, event.receiver, "to mismatch in getTx");
-    assert_eq!(
-        tx_snapshot.srcChainConnector, event.src_chain_connector,
-        "srcChainConnector mismatch in getTx"
-    );
-    assert_eq!(
-        tx_snapshot.dstChainConnector, event.dst_chain_connector,
-        "dstChainConnector mismatch in getTx"
-    );
-
-    let public_inputs = build_public_inputs_from_tx(
-        tx_snapshot.txId,
-        tx_snapshot.srcChainConnector,
-        tx_snapshot.dstChainConnector,
+    let public_inputs = build_public_inputs(
+        &event,
+        U256::from(input.source_chain_id),
+        U256::from(input.destination_chain_id),
     );
 
     env::commit_slice(&public_inputs.abi_encode());

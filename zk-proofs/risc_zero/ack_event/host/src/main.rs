@@ -1,5 +1,5 @@
 use ack_proof_core::{
-    chain_spec_from_id, AckGuestInput, AckProofPublicInputs, IConnector, MINT_PROOF_ACCEPTED_STATUS,
+    chain_spec_from_id, AckGuestInput, AckProofPublicInputs, IConnector,
 };
 use ack_proof_methods::{ACK_PROOF_GUEST_ELF, ACK_PROOF_GUEST_ID};
 use alloy_primitives::{Address, B256};
@@ -7,7 +7,7 @@ use alloy_sol_types::SolValue;
 use anyhow::{ensure, Context, Result};
 use clap::Parser;
 use risc0_ethereum_contracts::encode_seal;
-use risc0_steel::{ethereum::EthEvmEnv, host::BlockNumberOrTag, Contract, Event};
+use risc0_steel::{ethereum::EthEvmEnv, host::BlockNumberOrTag, Event};
 use risc0_zkvm::{default_prover, sha::Digestible, Digest, ExecutorEnv, Prover, ProverOpts};
 use std::time::Instant;
 use tracing_subscriber::EnvFilter;
@@ -28,6 +28,10 @@ struct Args {
     #[arg(long)]
     source_chain_id: u64,
 
+    #[arg(long)]
+    destination_chain_id: u64,
+
+    /// Block where the AckReady event was emitted — used for the log query only.
     #[arg(long, env = "EXECUTION_BLOCK", default_value_t = BlockNumberOrTag::Latest)]
     execution_block: BlockNumberOrTag,
 }
@@ -43,18 +47,21 @@ async fn main() -> Result<()> {
     let chain_spec = chain_spec_from_id(args.source_chain_id)
         .with_context(|| format!("unsupported source chain id: {}", args.source_chain_id))?;
 
-    let mut env = EthEvmEnv::builder()
-        .rpc(args.rpc_url)
+    // Event environment (at the event block).
+    // submitMintProof deletes the source tx record via _cleanupTx, so we only
+    // fetch the AckReady log — no state trie access is needed.
+    let mut event_env = EthEvmEnv::builder()
+        .rpc(args.rpc_url.clone())
         .chain_spec(chain_spec)
         .block_number_or_tag(args.execution_block)
         .build()
         .await
-        .context("failed to build EthEvmEnv")?;
+        .context("failed to build event EthEvmEnv")?;
 
-    let event = Event::preflight::<IConnector::AckReady>(&mut env)
+    let event_query = Event::preflight::<IConnector::AckReady>(&mut event_env)
         .address(args.connector)
         .topic1(args.tx_id);
-    let logs = event.query().await.context("AckReady preflight failed")?;
+    let logs = event_query.query().await.context("AckReady preflight failed")?;
 
     ensure!(!logs.is_empty(), "no AckReady logs found for txId");
     ensure!(
@@ -63,29 +70,12 @@ async fn main() -> Result<()> {
         logs.len()
     );
 
-    let mut connector = Contract::preflight(args.connector, &mut env);
-    let tx_snapshot = connector
-        .call_builder(&IConnector::getTxCall { _txId: args.tx_id })
-        .call()
-        .await
-        .context("getTx preflight failed")?;
-    ensure!(
-        tx_snapshot.txId == args.tx_id,
-        "getTx returned unexpected txId"
-    );
-    ensure!(
-        tx_snapshot.status == MINT_PROOF_ACCEPTED_STATUS,
-        "source tx status is not MINT_PROOF_ACCEPTED"
-    );
-
     let guest_input = AckGuestInput {
-        evm_input: env
-            .into_input()
-            .await
-            .context("failed to build EthEvmInput")?,
+        event_evm_input: event_env.into_input().await.context("failed to build event EthEvmInput")?,
         connector: args.connector,
         tx_id: args.tx_id,
         source_chain_id: args.source_chain_id,
+        destination_chain_id: args.destination_chain_id,
     };
 
     eprintln!(
@@ -125,7 +115,6 @@ async fn main() -> Result<()> {
     let image_id_b256 = B256::from(image_id);
     let journal_digest = B256::from_slice(receipt.journal.digest().as_bytes());
     let seal = encode_seal(&receipt).context("failed to encode seal")?;
-    // Encode as ABI params so Solidity can decode directly as (bytes, bytes32, bytes32).
     let proof_payload = (seal.clone(), image_id_b256, journal_digest).abi_encode_params();
 
     println!("Proof generated and verified.");

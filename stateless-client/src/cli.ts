@@ -3,6 +3,7 @@
 import { realpathSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { resolveRelayConfig, resolveVerificationConfig, type CliOptions } from "./config/config.js";
+import { loadDefaultEnv } from "./config/env.js";
 import type { HappyPathResult, RelayStageResult, ResumeResult, Stage } from "./core/types.js";
 import { runAgentMain } from "./agent/main.js";
 import {
@@ -323,6 +324,7 @@ export async function runCli(
 }
 
 async function main(): Promise<void> {
+  loadDefaultEnv();
   await runCli(process.argv.slice(2));
 }
 

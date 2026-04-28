@@ -16,6 +16,15 @@ import {
 } from "../api/agentApi";
 import { CONNECTOR_ABI, ERC20_ABI } from "../lib/abi";
 import { assertContractCodePresent, ensureWalletOnChain } from "../lib/wallet";
+import { getNetworkByChainId } from "../lib/networks";
+import { logConnectorGasEstimate, logConnectorGasReceipt } from "../lib/connectorGasLog";
+import { decodeContractError } from "../lib/contractErrors";
+import {
+  EXPECTED_TX_STATUS_BY_STAGE,
+  stageRequiresActiveAckWindow,
+  txStatusLabel,
+} from "../lib/protocolStatus";
+import type { ConnectorContractMethodLike } from "../lib/connectorGasLog";
 import type {
   EnrichedStagePayload,
   PostSubmitBehavior,
@@ -92,56 +101,25 @@ const RISC0_ROUTE_BY_STAGE: Partial<Record<RelayProofStage, number>> = {
   "non-accept-proof": 5,
 };
 
-// ---------------------------------------------------------------------------
-// Expected txStatus on the target connector before each stage can be submitted
-// ---------------------------------------------------------------------------
-
-const EXPECTED_TX_STATUS_BY_STAGE: Partial<Record<RelayProofStage, number>> = {
-  lock: 0, // NONE
-  mint: 1, // DEPOSIT_LOCKED
-  ack: 4, // MINTED_IN_HOLDING
-  "refund-initiate": 1, // DEPOSIT_LOCKED (and deadline must be expired)
-  "refund-claim": 4, // MINTED_IN_HOLDING
-  "execute-burn": 5, // REFUND_CLAIM_ACCEPTED
-  "burn-proof": 3, // REFUND_INITIATED
-  "non-accept-proof": 3, // REFUND_INITIATED
-};
-
-const TX_STATUS_LABELS: Record<number, string> = {
-  0: "NONE",
-  1: "DEPOSIT_LOCKED",
-  2: "MINT_PROOF_ACCEPTED",
-  3: "REFUND_INITIATED",
-  4: "MINTED_IN_HOLDING",
-  5: "REFUND_CLAIM_ACCEPTED",
-};
-
 const abiCoder = AbiCoder.defaultAbiCoder();
 
-/**
- * Decodes known connector custom errors from raw revert data so the user
- * sees a readable message instead of "execution reverted (unknown custom error)".
- */
-function decodeContractError(err: unknown): string | null {
-  if (!err || typeof err !== "object") return null;
-  const data = (err as { data?: unknown }).data;
-  if (typeof data !== "string" || data.length < 10) return null;
+function formatUiError(err: unknown): string {
+  const decoded = decodeContractError(err);
+  if (decoded) return decoded;
+  if (err instanceof Error) return err.message;
 
-  const selector = data.slice(0, 10).toLowerCase();
-  const payload = data.slice(10);
-
-  if ((selector === "0x116563d8" || selector === "0xaee908ce") && payload.length >= 128) {
-    const deadline = BigInt("0x" + payload.slice(0, 64));
-    const currentTime = BigInt("0x" + payload.slice(64, 128));
-    const expiredSec = Number(currentTime - deadline);
-    return (
-      `ACK window expired — the relay deadline passed ${expiredSec}s ago ` +
-      `(deadline=${deadline.toString()}, now=${currentTime.toString()}). ` +
-      `Refund flow is required.`
-    );
+  if (typeof err === "object" && err !== null) {
+    const raw = err as { data?: unknown; error?: unknown; status?: unknown };
+    const data = raw.data;
+    if (typeof data === "object" && data !== null && "error" in data) {
+      const message = (data as { error?: unknown }).error;
+      if (typeof message === "string") return message;
+    }
+    if (typeof raw.error === "string") return raw.error;
+    if (raw.status !== undefined) return `Request failed with status ${String(raw.status)}.`;
   }
 
-  return null;
+  return String(err);
 }
 
 export function ProgressPage() {
@@ -219,22 +197,32 @@ export function ProgressPage() {
 
   async function handlePrepareSelectedStage() {
     if (!jobId) return;
-    await prepareJobStage({
-      jobId,
-      stage: manualStage,
-      force: plannerMismatch,
-    }).unwrap();
+    setSubmitError(null);
+    try {
+      await prepareJobStage({
+        jobId,
+        stage: manualStage,
+        force: plannerMismatch,
+      }).unwrap();
+    } catch (err) {
+      setSubmitError(formatUiError(err));
+    }
   }
 
   async function handleRegenerateProof(stage: RelayProofStage) {
     if (!jobId) return;
     const force = Boolean(job?.plannerAction && job.plannerAction !== stage);
-    await prepareJobStage({
-      jobId,
-      stage,
-      force,
-      regenerate: true,
-    }).unwrap();
+    setSubmitError(null);
+    try {
+      await prepareJobStage({
+        jobId,
+        stage,
+        force,
+        regenerate: true,
+      }).unwrap();
+    } catch (err) {
+      setSubmitError(formatUiError(err));
+    }
   }
 
   async function handleRelaySubmit(stage: EnrichedStagePayload) {
@@ -256,7 +244,7 @@ export function ProgressPage() {
         const currentStatus = Number(await readonlyConnector.txStatus(stageTxId));
         if (currentStatus !== expectedStatus) {
           throw new Error(
-            `Stage preflight failed: txStatus is ${currentStatus} (${TX_STATUS_LABELS[currentStatus] ?? "UNKNOWN"}) on connector ${stage.targetConnector}, expected ${expectedStatus} (${TX_STATUS_LABELS[expectedStatus]}).`,
+            `Stage preflight failed: txStatus is ${currentStatus} (${txStatusLabel(currentStatus)}) on connector ${stage.targetConnector}, expected ${expectedStatus} (${txStatusLabel(expectedStatus)}).`,
           );
         }
       }
@@ -276,8 +264,8 @@ export function ProgressPage() {
         }
       }
 
-      // ── lock/mint/ack deadline check ──────────────────────────────────────
-      if (stage.stage === "lock") {
+      // ── lock/mint deadline check ──────────────────────────────────────────
+      if (stageRequiresActiveAckWindow(stage.stage) && stage.stage === "lock") {
         const originAckDeadline = BigInt(String(stage.contractArgs[9] ?? "0"));
         if (originAckDeadline > 0n) {
           const latestBlock = await provider.getBlock("latest");
@@ -293,10 +281,8 @@ export function ProgressPage() {
         }
       }
 
-      if (stage.stage === "mint" || stage.stage === "ack") {
+      if (stageRequiresActiveAckWindow(stage.stage) && stage.stage === "mint") {
         const txSnapshot = (await readonlyConnector.getTx(stageTxId)) as {
-          amount: bigint;
-          currencyTo: string;
           ackDeadline: bigint;
         };
         const latestBlock = await provider.getBlock("latest");
@@ -309,20 +295,22 @@ export function ProgressPage() {
               `Refund flow is required.`,
           );
         }
+      }
 
-        if (stage.stage === "ack") {
-          const payoutToken = String(txSnapshot.currencyTo);
-          const payoutAmount = BigInt(txSnapshot.amount.toString());
-          const token = new Contract(payoutToken, ERC20_ABI, provider);
-          const connectorLiquidity = BigInt(
-            (await token.balanceOf(stage.targetConnector)).toString(),
+      if (stage.stage === "ack") {
+        const txSnapshot = (await readonlyConnector.getTx(stageTxId)) as {
+          amount: bigint;
+          currencyTo: string;
+        };
+        const payoutToken = String(txSnapshot.currencyTo);
+        const payoutAmount = BigInt(txSnapshot.amount.toString());
+        const token = new Contract(payoutToken, ERC20_ABI, provider);
+        const connectorLiquidity = BigInt((await token.balanceOf(stage.targetConnector)).toString());
+        if (connectorLiquidity < payoutAmount) {
+          throw new Error(
+            `ACK preflight failed: destination connector ${stage.targetConnector} has insufficient liquidity. ` +
+              `Required ${payoutAmount}, balance ${connectorLiquidity} on token ${payoutToken}.`,
           );
-          if (connectorLiquidity < payoutAmount) {
-            throw new Error(
-              `ACK preflight failed: destination connector ${stage.targetConnector} has insufficient liquidity. ` +
-                `Required ${payoutAmount}, balance ${connectorLiquidity} on token ${payoutToken}.`,
-            );
-          }
         }
       }
 
@@ -354,18 +342,37 @@ export function ProgressPage() {
         throw new Error(`Unknown contract method: ${stage.contractMethod}`);
       }
 
-      const relayTx = await (
-        fn as (...args: unknown[]) => Promise<{
-          wait: () => Promise<{ hash: string } | null>;
-        }>
-      )(...stage.contractArgs);
+      const targetNetwork = getNetworkByChainId(stage.targetChainId);
+      const contractMethod = fn as ConnectorContractMethodLike;
+      await logConnectorGasEstimate({
+        provider,
+        method: stage.contractMethod,
+        connectorAddress: stage.targetConnector,
+        chainId: stage.targetChainId,
+        nativeSymbol: targetNetwork?.nativeCurrency.symbol,
+        args: stage.contractArgs,
+        estimateGas: contractMethod.estimateGas
+          ? (...args: unknown[]) => contractMethod.estimateGas!(...args)
+          : undefined,
+      });
+
+      const relayTx = await contractMethod(...stage.contractArgs);
       const receipt = await relayTx.wait();
-      const txHash = receipt?.hash ?? "";
+      const txHash = receipt?.hash ?? relayTx.hash ?? "";
+
+      await logConnectorGasReceipt({
+        provider,
+        method: stage.contractMethod,
+        connectorAddress: stage.targetConnector,
+        chainId: stage.targetChainId,
+        nativeSymbol: targetNetwork?.nativeCurrency.symbol,
+        txHash,
+        receipt,
+      });
 
       await submitReceipt({ jobId: jobId!, stage: stage.stage, txHash }).unwrap();
     } catch (err) {
-      const decodedMsg = decodeContractError(err);
-      setSubmitError(decodedMsg ?? (err instanceof Error ? err.message : String(err)));
+      setSubmitError(formatUiError(err));
     } finally {
       setSubmitting(false);
     }
@@ -524,7 +531,7 @@ export function ProgressPage() {
       )}
 
       {/* Post-mint limitation note */}
-      {job.sourceStatus === 2 && job.destinationStatus === 4 && (
+      {job.sourceStatus === 0 && job.destinationStatus === 3 && job.plannerAction === "ack" && (
         <div
           role="note"
           className="rounded-md border border-blue-200 bg-blue-50 px-4 py-3 text-sm text-blue-700 dark:border-blue-700 dark:bg-blue-950 dark:text-blue-300"

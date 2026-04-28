@@ -152,7 +152,7 @@ export function shouldUsePrunedAckVerification(
   sourceStatus: number,
   destinationStatus: number,
 ): boolean {
-  return sourceStatus === 0 && destinationStatus === 4;
+  return sourceStatus === 0 && destinationStatus === 3;
 }
 
 function hasPriorDegradedNonLocalProofStage(config: StageSubmissionConfig): boolean {
@@ -381,14 +381,10 @@ const TIMELOCK_PREFLIGHT: Partial<Record<ProofRelayStage, TimelockPreflightHandl
     );
     await assertAckWindowActive("mint", sourceTx, sourceProvider, "source");
   },
-  ack: async (config, _srcRC, destinationReadContract, _srcP, destinationProvider) => {
-    const destinationTx = await fetchTxSnapshot(
-      destinationReadContract,
-      config.txId,
-      config.executionBlocks.destinationFundsReleased,
-    );
-    await assertAckWindowActive("ack", destinationTx, destinationProvider, "destination");
-  },
+  // No preflight for 'ack': submitAckProof has no ackDeadline guard on-chain because
+  // once submitMintProof is accepted the source tx record is deleted, making
+  // initiateRefund (and therefore submitRefundClaimProof) impossible.  The ack proof
+  // is safe to submit at any time after MINTED_IN_HOLDING regardless of the deadline.
 };
 
 type ExecutionBlockResolver = (
