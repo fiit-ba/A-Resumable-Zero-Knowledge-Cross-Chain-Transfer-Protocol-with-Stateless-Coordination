@@ -5,9 +5,7 @@ import {WrappedTokenFactory} from "../../src/tokens/WrappedTokenFactory.sol";
 
 /// @dev Test harness: zero-delay timelock + register() convenience for use in Foundry tests.
 contract WrappedTokenFactoryHarness is WrappedTokenFactory {
-    function _registrationTimelock() internal pure override returns (uint64) {
-        return 0;
-    }
+    constructor() WrappedTokenFactory(0) {}
 
     /// @dev One-shot register identical to the old API: propose then immediately apply.
     function register(

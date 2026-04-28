@@ -86,7 +86,7 @@ export function buildStageConfig(
   const risc0ProverMode = resolveRisc0ProverMode(source.isLocal, destination.isLocal);
   if (risc0ProverMode === "local" && (!source.isLocal || !destination.isLocal)) {
     console.warn(
-      `[agent] Using local RISC0 prover for non-local profiles ${source.profileName}->${destination.profileName}; proving can take 20+ minutes.`,
+      `[agent] Using local RISC0 prover for non-local profiles ${source.profileName}->${destination.profileName}; lock proofs can exceed 30 minutes locally. Use Bonsai for a sub-25-minute target.`,
     );
   }
 

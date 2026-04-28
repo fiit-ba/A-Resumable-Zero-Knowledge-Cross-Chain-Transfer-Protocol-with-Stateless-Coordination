@@ -1,5 +1,5 @@
 use alloy_primitives::{Address, B256, U256};
-use alloy_sol_types::{SolEvent, SolValue, sol};
+use alloy_sol_types::{sol, SolEvent};
 use risc0_steel::ethereum::{
     EthChainSpec, EthEvmInput, ETH_HOLESKY_CHAIN_SPEC, ETH_MAINNET_CHAIN_SPEC,
     ETH_SEPOLIA_CHAIN_SPEC,
@@ -17,23 +17,26 @@ sol! {
             address currencyFrom,
             address currencyTo,
             address indexed from,
-            address to,
+            address indexed to,
             address srcChainConnector,
             address dstChainConnector,
-            uint64 timestamp
+            uint64 timestamp,
+            uint64 finalizedAt
         );
     }
 }
 
-/// ABI-encoded public inputs committed to the RISC Zero journal.
-/// Matches the commitment expected by `submitBurnProof` on the origin chain:
-///   `abi.encode(txId, dstChainConnector, amount)`
+// ABI-encoded public inputs committed to the RISC Zero journal.
+// Matches the commitment expected by `submitBurnProof` on the origin chain:
+//   `abi.encode(txId, dstChainConnector, amount, sourceChainId, destinationChainId)`
 sol! {
     #[sol(all_derives)]
     struct BurnProofPublicInputs {
         bytes32 txId;
         address dstChainConnector;
         uint256 amount;
+        uint256 sourceChainId;
+        uint256 destinationChainId;
     }
 }
 
@@ -44,6 +47,7 @@ pub struct BurnGuestInput {
     pub connector: Address,
     pub tx_id: B256,
     pub dest_chain_id: u64,
+    pub source_chain_id: u64,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -57,6 +61,7 @@ pub struct NormalizedDestTxClosedEvent {
     pub src_chain_connector: Address,
     pub dst_chain_connector: Address,
     pub timestamp: u64,
+    pub finalized_at: u64,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -79,6 +84,7 @@ impl ObservedDestTxClosed {
                 src_chain_connector: log.data.srcChainConnector,
                 dst_chain_connector: log.data.dstChainConnector,
                 timestamp: log.data.timestamp,
+                finalized_at: log.data.finalizedAt,
             },
         }
     }
@@ -185,10 +191,32 @@ pub fn validate_burn_event(
     Ok(())
 }
 
-pub fn build_public_inputs(event: &NormalizedDestTxClosedEvent) -> BurnProofPublicInputs {
+pub fn build_public_inputs(
+    event: &NormalizedDestTxClosedEvent,
+    source_chain_id: alloy_primitives::U256,
+    destination_chain_id: alloy_primitives::U256,
+) -> BurnProofPublicInputs {
     BurnProofPublicInputs {
         txId: event.tx_id,
         dstChainConnector: event.dst_chain_connector,
         amount: event.amount,
+        sourceChainId: source_chain_id,
+        destinationChainId: destination_chain_id,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use alloy_primitives::keccak256;
+
+    #[test]
+    fn dest_tx_closed_topic_matches_connector_event_signature() {
+        let expected = keccak256(
+            "DestTxClosed(bytes32,uint256,address,address,address,address,address,address,uint64,uint64)"
+                .as_bytes(),
+        );
+
+        assert_eq!(dest_tx_closed_topic0(), expected);
     }
 }

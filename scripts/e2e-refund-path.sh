@@ -12,7 +12,7 @@
 # with a capability error rather than wasting time on long-running work.
 #
 # Flags: identical to e2e-happy-path.sh plus refund-specific options.
-#   --ack-window <seconds>   ACK deadline window (default: 60 for quick refund test)
+#   --ack-window <seconds>   ACK deadline window (default: 3600)
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -20,8 +20,8 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=./lib/e2e-common.sh
 source "$SCRIPT_DIR/lib/e2e-common.sh"
 
-# Short default window so tests can warp past the deadline quickly.
-ACK_WINDOW_SECONDS="${ACK_WINDOW_SECONDS:-60}"
+# Keep the refund path aligned with the production/default one-hour ACK window.
+ACK_WINDOW_SECONDS="${ACK_WINDOW_SECONDS:-3600}"
 
 # ── Usage ───────────────────────────────────────────────────────────────────
 export E2E_USAGE="Usage: $0 [OPTIONS]

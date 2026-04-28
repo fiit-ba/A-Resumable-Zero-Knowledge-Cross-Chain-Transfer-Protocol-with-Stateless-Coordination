@@ -1,4 +1,10 @@
-import type { ProofPaths, ProofRelayStage, RelayProofStage, Stage, StageDefinition } from "../core/types.js";
+import type {
+  ProofPaths,
+  ProofRelayStage,
+  RelayProofStage,
+  Stage,
+  StageDefinition,
+} from "../core/types.js";
 
 export const STAGE_DEFINITIONS: Record<Stage, StageDefinition> = {
   "source-deposit": {
@@ -10,25 +16,25 @@ export const STAGE_DEFINITIONS: Record<Stage, StageDefinition> = {
   "destination-funds-released": {
     stage: "destination-funds-released",
     eventName: "FundsReleased",
-    expectedStatus: 4,
+    expectedStatus: 3, // MINTED_IN_HOLDING — set by submitLockProof on the destination
     side: "destination",
   },
   "source-ack-ready": {
     stage: "source-ack-ready",
     eventName: "AckReady",
-    expectedStatus: 2,
+    expectedStatus: 0, // NONE — submitMintProof calls _cleanupTx, deleting the source record
     side: "source",
   },
   "source-refund-initiated": {
     stage: "source-refund-initiated",
     eventName: "RefundClaimed",
-    expectedStatus: 3,
+    expectedStatus: 2, // REFUND_INITIATED — set by initiateRefund on the source
     side: "source",
   },
   "destination-burn-executed": {
     stage: "destination-burn-executed",
-    eventName: "RefundExecuted",
-    expectedStatus: 5,
+    eventName: "DestTxClosed",
+    expectedStatus: 0, // NONE — executeBurn calls _cleanupTx, deleting the destination record
     side: "destination",
   },
 };
@@ -82,7 +88,7 @@ export const RELAY_STAGE_REGISTRY: Record<RelayProofStage, RelayStageSpec> = {
     submissionSide: "destination",
     submissionMethod: "submitLockProof",
     verifyStage: "source-deposit",
-    expectedPostSubmitStatus: 4,
+    expectedPostSubmitStatus: 3, // MINTED_IN_HOLDING on destination after submitLockProof
     proofHost: {
       workspaceKey: "lockWorkspace",
       dockerScriptKey: "lockDockerScript",
@@ -96,7 +102,7 @@ export const RELAY_STAGE_REGISTRY: Record<RelayProofStage, RelayStageSpec> = {
     submissionSide: "source",
     submissionMethod: "submitMintProof",
     verifyStage: "destination-funds-released",
-    expectedPostSubmitStatus: 2,
+    expectedPostSubmitStatus: 0, // NONE — submitMintProof calls _cleanupTx, source record deleted
     proofHost: {
       workspaceKey: "mintWorkspace",
       dockerScriptKey: "mintDockerScript",
@@ -194,19 +200,17 @@ export function isProofRelayStage(stage: RelayProofStage): stage is ProofRelaySt
 // ---------------------------------------------------------------------------
 
 /** Which stages require RISC Zero proof generation vs direct contract call. */
-export const ACTION_KIND_BY_STAGE: Record<RelayProofStage, "proof" | "direct"> =
-  Object.fromEntries(
-    ALL_RELAY_STAGES.map((s) => [s, RELAY_STAGE_REGISTRY[s].actionKind]),
-  ) as Record<RelayProofStage, "proof" | "direct">;
+export const ACTION_KIND_BY_STAGE: Record<RelayProofStage, "proof" | "direct"> = Object.fromEntries(
+  ALL_RELAY_STAGES.map((s) => [s, RELAY_STAGE_REGISTRY[s].actionKind]),
+) as Record<RelayProofStage, "proof" | "direct">;
 
 export const RELAY_STAGE_TO_VERIFY_STAGE: Record<ProofRelayStage, Stage> = Object.fromEntries(
   ALL_RELAY_STAGES.filter(isProofRelayStage).map((s) => [s, RELAY_STAGE_REGISTRY[s].verifyStage]),
 ) as Record<ProofRelayStage, Stage>;
 
-export const RELAY_STAGE_TO_SUBMISSION_METHOD: Record<RelayProofStage, string> =
-  Object.fromEntries(
-    ALL_RELAY_STAGES.map((s) => [s, RELAY_STAGE_REGISTRY[s].submissionMethod]),
-  ) as Record<RelayProofStage, string>;
+export const RELAY_STAGE_TO_SUBMISSION_METHOD: Record<RelayProofStage, string> = Object.fromEntries(
+  ALL_RELAY_STAGES.map((s) => [s, RELAY_STAGE_REGISTRY[s].submissionMethod]),
+) as Record<RelayProofStage, string>;
 
 export const RELAY_STAGE_TO_PROOF_HOST: Record<
   ProofRelayStage,

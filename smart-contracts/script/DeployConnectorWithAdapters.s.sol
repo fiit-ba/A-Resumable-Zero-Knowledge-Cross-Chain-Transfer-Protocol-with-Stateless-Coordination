@@ -15,6 +15,8 @@ import {Errors} from "../src/libs/Errors.sol";
 /// - SNARK_ADAPTER: deployed SnarkAdapter address
 /// - ACK_WINDOW_SECONDS: ack window in seconds (uint64)
 /// - WRAPPED_TOKEN_FACTORY: deployed WrappedTokenFactory address (optional — deploys a new one if unset)
+/// - REGISTRATION_TIMELOCK: route-registration timelock in seconds for a freshly deployed factory
+///   (default 0 = instant; set to 172800 for 48-hour timelock on live bridges with existing users)
 ///
 /// Per-route RISC Zero image IDs (set to 0x0 for routes unused on this chain):
 /// - ORIGIN_MINT_IMAGE_ID   (VerifierRoute 0 — submitMintProof)
@@ -41,10 +43,11 @@ contract DeployConnectorWithAdapters is Script {
         risc0RouteImageIds[5] = vm.envOr("ORIGIN_NON_ACCEPT_IMAGE_ID", bytes32(0));
 
         address wrappedTokenFactoryAddr = vm.envOr("WRAPPED_TOKEN_FACTORY", address(0));
+        uint64 registrationTimelock = uint64(vm.envOr("REGISTRATION_TIMELOCK", uint256(0)));
 
         vm.startBroadcast(privateKey);
         if (wrappedTokenFactoryAddr == address(0)) {
-            wrappedTokenFactoryAddr = address(new WrappedTokenFactory());
+            wrappedTokenFactoryAddr = address(new WrappedTokenFactory(registrationTimelock));
         }
         connector =
             new Connector(risc0Adapter, snarkAdapter, ackWindowSeconds, risc0RouteImageIds, wrappedTokenFactoryAddr);

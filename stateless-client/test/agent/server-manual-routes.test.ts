@@ -185,6 +185,47 @@ describe("agent server manual endpoints", () => {
     expect((detailsRes.payload as { plannerMismatch: boolean }).plannerMismatch).toBe(true);
   });
 
+  it("accepts non-accept-proof through manual prepare and stage details endpoints", async () => {
+    vi.mocked(getResumeDecision).mockResolvedValue({
+      action: "non-accept-proof",
+      reason: "destination never accepted the lock; submit non-acceptance proof",
+      sourceStatus: 2,
+      destinationStatus: 0,
+      historyFlags: { depositLocked: false, fundsReleased: false, ackReady: false },
+    });
+    const app = createApp();
+    const job = createJob(INTENT, "0x" + "f1".repeat(32));
+    const prepareHandler = getRouteHandler(app, "post", "/jobs/:id/prepare");
+    const detailsHandler = getRouteHandler(app, "get", "/jobs/:id/stages/:stage");
+
+    const prepareRes = makeRes();
+    prepareHandler(
+      {
+        params: { id: job.id },
+        body: { stage: "non-accept-proof" },
+      },
+      prepareRes,
+    );
+
+    await vi.waitFor(() => {
+      const updated = getJob(job.id);
+      expect(updated?.currentStage).toBe("non-accept-proof");
+      expect(updated?.status).toBe("ready_for_signature");
+      expect(prepareRes.statusCode).toBe(202);
+    });
+
+    const detailsRes = makeRes();
+    detailsHandler(
+      {
+        params: { id: job.id, stage: "non-accept-proof" },
+      },
+      detailsRes,
+    );
+    expect(detailsRes.statusCode).toBe(200);
+    expect((detailsRes.payload as { stage: string }).stage).toBe("non-accept-proof");
+    expect((detailsRes.payload as { checkpointState: string }).checkpointState).toBe("prepared");
+  });
+
   it("GET /jobs/:id/stages/current returns StageDetails for the active stage", async () => {
     vi.mocked(getResumeDecision).mockResolvedValue({
       action: "lock",

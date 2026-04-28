@@ -12,15 +12,17 @@ sol! {
         event DepositLocked(
             bytes32 indexed txId,
             address indexed from,
-            address to,
+            address indexed to,
             uint256 amount,
             address currencyFrom,
             address currencyTo,
             address srcChainConnector,
             address dstChainConnector,
             uint64 timestamp,
+            uint64 ackDeadline,
             uint256 nonce,
-            uint256 sourceChainId
+            uint256 sourceChainId,
+            uint256 destinationChainId
         );
 
         function getTx(bytes32 _txId)
@@ -65,7 +67,12 @@ sol! {
 
 #[derive(Clone, Serialize, Deserialize)]
 pub struct LockGuestInput {
-    pub evm_input: EthEvmInput,
+    /// EVM input anchored to the event block — used only for the DepositLocked log query.
+    /// No state trie access is required so this works on non-archive RPCs.
+    pub event_evm_input: EthEvmInput,
+    /// EVM input anchored to a recent block — used only for the getTx() state read.
+    /// Built against "latest" so it is always available regardless of RPC archive depth.
+    pub state_evm_input: EthEvmInput,
     pub connector: Address,
     pub tx_id: B256,
     pub source_chain_id: u64,
@@ -83,8 +90,10 @@ pub struct NormalizedLockEvent {
     pub src_chain_connector: Address,
     pub dst_chain_connector: Address,
     pub timestamp: u64,
+    pub ack_deadline: u64,
     pub nonce: U256,
     pub source_chain_id: U256,
+    pub destination_chain_id: U256,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -107,8 +116,10 @@ impl ObservedDepositLocked {
                 src_chain_connector: log.data.srcChainConnector,
                 dst_chain_connector: log.data.dstChainConnector,
                 timestamp: log.data.timestamp,
+                ack_deadline: log.data.ackDeadline,
                 nonce: log.data.nonce,
                 source_chain_id: log.data.sourceChainId,
+                destination_chain_id: log.data.destinationChainId,
             },
         }
     }
@@ -128,6 +139,7 @@ pub enum LockValidationError {
     ZeroAddress(&'static str),
     ZeroSourceChainId,
     SourceChainMismatch { expected: u64, got: U256 },
+    DestinationChainMismatch { expected: U256, got: U256 },
     SameSourceAndDestinationChain,
     TxIdMismatch { expected: B256, got: B256 },
 }
@@ -182,6 +194,8 @@ pub fn compute_tx_id(event: &NormalizedLockEvent) -> B256 {
         event.src_chain_connector,
         event.dst_chain_connector,
         event.nonce,
+        event.source_chain_id,
+        event.destination_chain_id,
     )
     .abi_encode();
 
@@ -255,7 +269,14 @@ pub fn validate_lock_event(
         });
     }
 
-    if event.source_chain_id == destination_chain_id {
+    if event.destination_chain_id != destination_chain_id {
+        return Err(LockValidationError::DestinationChainMismatch {
+            expected: destination_chain_id,
+            got: event.destination_chain_id,
+        });
+    }
+
+    if event.source_chain_id == event.destination_chain_id {
         return Err(LockValidationError::SameSourceAndDestinationChain);
     }
 
@@ -270,11 +291,7 @@ pub fn validate_lock_event(
     Ok(())
 }
 
-pub fn build_public_inputs(
-    event: &NormalizedLockEvent,
-    destination_chain_id: U256,
-    origin_ack_deadline: u64,
-) -> LockProofPublicInputs {
+pub fn build_public_inputs(event: &NormalizedLockEvent) -> LockProofPublicInputs {
     LockProofPublicInputs {
         txId: event.tx_id,
         amount: event.amount,
@@ -284,9 +301,9 @@ pub fn build_public_inputs(
         currencyTo: event.currency_to,
         srcChainConnector: event.src_chain_connector,
         dstChainConnector: event.dst_chain_connector,
-        originAckDeadline: origin_ack_deadline,
+        originAckDeadline: event.ack_deadline,
         nonce: event.nonce,
         sourceChainId: event.source_chain_id,
-        destinationChainId: destination_chain_id,
+        destinationChainId: event.destination_chain_id,
     }
 }

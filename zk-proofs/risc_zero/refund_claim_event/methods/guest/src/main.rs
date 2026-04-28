@@ -18,9 +18,10 @@ fn main() {
     let chain_spec = chain_spec_from_id(input.source_chain_id)
         .expect("unsupported source chain id for Steel chain spec");
 
-    let evm_env = input.evm_input.into_env(chain_spec);
+    // Event environment: anchored to the block where RefundClaimed was emitted.
+    let event_env = input.event_evm_input.into_env(chain_spec);
 
-    let logs = Event::new::<IConnector::RefundClaimed>(&evm_env)
+    let logs = Event::new::<IConnector::RefundClaimed>(&event_env)
         .address(input.connector)
         .topic1(input.tx_id)
         .query();
@@ -36,7 +37,10 @@ fn main() {
     validate_refund_claim_event(&event, input.connector)
         .expect("RefundClaimed validation failed");
 
-    let contract = Contract::new(input.connector, &evm_env);
+    // State environment: anchored to a recent block for the getTx() storage read.
+    let state_env = input.state_evm_input.into_env(chain_spec);
+
+    let contract = Contract::new(input.connector, &state_env);
     let tx_snapshot = contract
         .call_builder(&IConnector::getTxCall { _txId: input.tx_id })
         .call();
@@ -57,7 +61,7 @@ fn main() {
 
     validate_tx_status(tx_snapshot.status).expect("tx status validation failed");
 
-    let public_inputs = build_public_inputs(&event);
+    let public_inputs = build_public_inputs(&event, tx_snapshot.sourceChainId, tx_snapshot.destinationChainId);
 
     env::commit_slice(&public_inputs.abi_encode());
 }

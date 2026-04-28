@@ -197,9 +197,14 @@ async function runStagePreparation(
   const job = getJob(jobId);
   if (!job) throw new Error(`Job not found: ${jobId}`);
 
-  // Resume: if checkpoint already exists and not yet completed, surface it
+  // Resume: reuse an existing checkpoint payload whenever one is present.
+  // We intentionally reuse even when completedAt is set (i.e. the user already submitted this
+  // stage once). Proof payloads are stable for a given txId — if the on-chain submission failed
+  // and the planner re-queues the same stage, re-running the proof host against an increasingly
+  // old event block risks hitting "historical state not available" on public non-archive RPCs.
+  // Explicit regeneration is still possible via opts.regenerate.
   const existing = getCheckpoint(jobId, stage);
-  if (existing && !existing.completedAt && !opts?.regenerate) {
+  if (existing?.payloadJson && !opts?.regenerate) {
     updateJob(jobId, { status: "ready_for_signature", currentStage: stage });
     return;
   }

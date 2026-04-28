@@ -58,6 +58,19 @@ const DEFAULT_COLIBRI_CACHE_DIR = ".colibri-cache";
 let registeredColibriStorageDir: string | undefined;
 let registeredColibriBackend: ColibriBackend | undefined;
 
+const STAGE_EVENT_CONNECTOR_FIELDS: Record<
+  Stage,
+  { srcChainConnector: boolean; dstChainConnector: boolean }
+> = {
+  "source-deposit": { srcChainConnector: true, dstChainConnector: true },
+  "destination-funds-released": { srcChainConnector: true, dstChainConnector: true },
+  "source-ack-ready": { srcChainConnector: true, dstChainConnector: true },
+  "source-refund-initiated": { srcChainConnector: true, dstChainConnector: false },
+  "destination-burn-executed": { srcChainConnector: true, dstChainConnector: true },
+};
+
+const EVENT_ONLY_STAGES = new Set<Stage>(["source-ack-ready", "destination-burn-executed"]);
+
 function parsePositiveIntegerEnv(name: string): number | undefined {
   const raw = process.env[name];
   if (!raw || !/^\d+$/.test(raw)) {
@@ -456,8 +469,7 @@ export function isChiadoColibriTransportUnavailableError(error: unknown): boolea
   const message = error.message;
   if (!message.startsWith("HTTP error! Status: 503")) return false;
   return (
-    message === "HTTP error! Status: 503" ||
-    /^HTTP error! Status: 503, Details:\s*$/.test(message)
+    message === "HTTP error! Status: 503" || /^HTTP error! Status: 503, Details:\s*$/.test(message)
   );
 }
 
@@ -562,24 +574,29 @@ export function validateStageLog(
     );
   }
 
-  const src = normalizeAddress(
-    decoded.srcChainConnector,
-    `${stageDef.eventName}.srcChainConnector`,
-  );
-  if (src.toLowerCase() !== normalizedSrc.toLowerCase()) {
-    throw new Error(
-      `${stageDef.eventName}.srcChainConnector mismatch: expected ${normalizedSrc}, got ${src}`,
+  const connectorFields = STAGE_EVENT_CONNECTOR_FIELDS[stage];
+  if (connectorFields.srcChainConnector) {
+    const src = normalizeAddress(
+      decoded.srcChainConnector,
+      `${stageDef.eventName}.srcChainConnector`,
     );
+    if (src.toLowerCase() !== normalizedSrc.toLowerCase()) {
+      throw new Error(
+        `${stageDef.eventName}.srcChainConnector mismatch: expected ${normalizedSrc}, got ${src}`,
+      );
+    }
   }
 
-  const dst = normalizeAddress(
-    decoded.dstChainConnector,
-    `${stageDef.eventName}.dstChainConnector`,
-  );
-  if (dst.toLowerCase() !== normalizedDst.toLowerCase()) {
-    throw new Error(
-      `${stageDef.eventName}.dstChainConnector mismatch: expected ${normalizedDst}, got ${dst}`,
+  if (connectorFields.dstChainConnector) {
+    const dst = normalizeAddress(
+      decoded.dstChainConnector,
+      `${stageDef.eventName}.dstChainConnector`,
     );
+    if (dst.toLowerCase() !== normalizedDst.toLowerCase()) {
+      throw new Error(
+        `${stageDef.eventName}.dstChainConnector mismatch: expected ${normalizedDst}, got ${dst}`,
+      );
+    }
   }
 }
 
@@ -628,9 +645,10 @@ function validateGetTxResult(
   return status;
 }
 
-export async function verifyAckEventOnly(
+export async function verifyStageEventOnly(
   request: VerifyStageRequest,
 ): Promise<StageVerificationResult> {
+  const stageDef = STAGE_DEFINITIONS[request.stage];
   const connector = normalizeAddress(request.connector, "connector");
   const txId = normalizeBytes32(request.txId, "txId");
   const expectedSrcConnector = normalizeAddress(
@@ -645,9 +663,9 @@ export async function verifyAckEventOnly(
   const provider =
     request.provider ?? new JsonRpcProvider(request.chain.rpcUrls[0], request.chain.chainId);
 
-  const event = connectorInterface.getEvent("AckReady");
+  const event = connectorInterface.getEvent(stageDef.eventName);
   if (!event) {
-    throw new Error("Missing ABI event fragment for AckReady");
+    throw new Error(`Missing ABI event fragment for ${stageDef.eventName}`);
   }
   const eventTopic = event.topicHash;
   const logRange = await resolveLogRange(effectiveBlockTag, provider);
@@ -655,17 +673,19 @@ export async function verifyAckEventOnly(
   let mode: VerificationMode = "rpc-fallback";
   let degradeReason: VerificationDegradeReason | undefined;
 
-  function assertSingleAckLog(logs: unknown): Log {
+  function assertSingleStageLog(logs: unknown): Log {
     if (!Array.isArray(logs) || logs.length === 0) {
-      throw new Error(`No AckReady event found for txId ${txId} (source origin pruned path)`);
+      throw new Error(`No ${stageDef.eventName} event found for txId ${txId} (event-only path)`);
     }
     if (logs.length !== 1) {
-      throw new Error(`Expected exactly 1 AckReady event for txId ${txId}, got ${logs.length}`);
+      throw new Error(
+        `Expected exactly 1 ${stageDef.eventName} event for txId ${txId}, got ${logs.length}`,
+      );
     }
 
     const firstLog = logs[0];
     if (!firstLog) {
-      throw new Error(`No AckReady event found for txId ${txId} (source origin pruned path)`);
+      throw new Error(`No ${stageDef.eventName} event found for txId ${txId} (event-only path)`);
     }
     return firstLog as Log;
   }
@@ -691,14 +711,14 @@ export async function verifyAckEventOnly(
         const getLogsSupport = await colibri.getMethodSupport("eth_getLogs", [rpcFilter]);
         if (getLogsSupport !== ColibriMethodType.PROOFABLE) {
           throw new Error(
-            `Colibri eth_getLogs is not proofable for pruned ack (support=${getLogsSupport})`,
+            `Colibri eth_getLogs is not proofable for ${request.stage} event-only verification (support=${getLogsSupport})`,
           );
         }
 
         const logs = await colibri.rpc("eth_getLogs", [rpcFilter], ColibriMethodType.PROOFABLE);
-        const firstLog = assertSingleAckLog(logs);
+        const firstLog = assertSingleStageLog(logs);
         validateStageLog(
-          "source-ack-ready",
+          request.stage,
           firstLog,
           connector,
           txId,
@@ -707,13 +727,13 @@ export async function verifyAckEventOnly(
         );
 
         return {
-          stage: "source-ack-ready",
+          stage: request.stage,
           mode: "colibri",
           degraded: false,
-          eventName: "AckReady",
+          eventName: stageDef.eventName,
           txId,
           connector,
-          status: 0,
+          status: stageDef.expectedStatus,
           eventBlockNumber: extractLogBlockNumber(firstLog),
         };
       } catch (error) {
@@ -727,12 +747,12 @@ export async function verifyAckEventOnly(
         if (isSyncBackwardsError(lastColibriError) && isSyncBackwardsStateResetAllowed()) {
           const removed = resetLocalColibriStateFiles(request.chain.chainId);
           console.warn(
-            `[colibri] pruned ack sync-backwards: state reset removed ${removed.length} file(s);` +
+            `[colibri] ${request.stage} event-only sync-backwards: state reset removed ${removed.length} file(s);` +
               ` retry ${attempt + 1}/${maxColibriRetries}`,
           );
         } else {
           console.warn(
-            `[colibri] pruned ack transient Colibri issue; retry ${attempt + 1}/${maxColibriRetries}: ` +
+            `[colibri] ${request.stage} event-only transient Colibri issue; retry ${attempt + 1}/${maxColibriRetries}: ` +
               `${errorMessage(lastColibriError)}`,
           );
         }
@@ -742,7 +762,7 @@ export async function verifyAckEventOnly(
     degradeReason = degradeReasonFromError(lastColibriError);
     mode = "rpc-fallback";
     console.warn(
-      `[colibri] pruned ack verification degraded to rpc-fallback` +
+      `[colibri] ${request.stage} event-only verification degraded to rpc-fallback` +
         ` (reason=${degradeReason ?? "unknown"}): ${errorMessage(lastColibriError)}`,
     );
   } else {
@@ -755,10 +775,10 @@ export async function verifyAckEventOnly(
     fromBlock: rpcFilter.fromBlock,
     toBlock: rpcFilter.toBlock,
   });
-  const firstLog = assertSingleAckLog(logs);
+  const firstLog = assertSingleStageLog(logs);
 
   validateStageLog(
-    "source-ack-ready",
+    request.stage,
     firstLog,
     connector,
     txId,
@@ -767,19 +787,29 @@ export async function verifyAckEventOnly(
   );
 
   return {
-    stage: "source-ack-ready",
+    stage: request.stage,
     mode,
     degraded: true,
     degradeReason,
-    eventName: "AckReady",
+    eventName: stageDef.eventName,
     txId,
     connector,
-    status: 0,
+    status: stageDef.expectedStatus,
     eventBlockNumber: extractLogBlockNumber(firstLog),
   };
 }
 
+export async function verifyAckEventOnly(
+  request: VerifyStageRequest,
+): Promise<StageVerificationResult> {
+  return verifyStageEventOnly(request);
+}
+
 export async function verifyStage(request: VerifyStageRequest): Promise<StageVerificationResult> {
+  if (EVENT_ONLY_STAGES.has(request.stage)) {
+    return verifyStageEventOnly(request);
+  }
+
   const stageDef = STAGE_DEFINITIONS[request.stage];
   const connector = normalizeAddress(request.connector, "connector");
   const txId = normalizeBytes32(request.txId, "txId");
@@ -862,7 +892,10 @@ export async function verifyStage(request: VerifyStageRequest): Promise<StageVer
   let mode: VerificationMode;
   let degradeReason: VerificationDegradeReason | undefined;
 
-  async function runColibriWithRecoveryRetry<T>(operationLabel: string, op: () => Promise<T>): Promise<T> {
+  async function runColibriWithRecoveryRetry<T>(
+    operationLabel: string,
+    op: () => Promise<T>,
+  ): Promise<T> {
     async function clampColibriFilterToLatestWindow(): Promise<void> {
       const latestBlock = await provider.getBlockNumber();
       const lookback = resolveDynamicLookbackBlocks();

@@ -251,13 +251,13 @@ export async function planRelayResume(config: RelayConfig): Promise<ResumeDecisi
     historyFlags = { depositLocked: false, fundsReleased: false, ackReady };
   } else if (sourceStatus === 2 && destinationStatus === 0) {
     // Distinguish burn-proof (burn was executed) from non-accept-proof (lock was
-    // never accepted on destination at all). Check for RefundExecuted on the
+    // never accepted on destination at all). Check for DestTxClosed on the
     // destination connector.
-    const refundExecutedTopic = getEventTopic("RefundExecuted");
+    const destTxClosedTopic = getEventTopic("DestTxClosed");
     const burnExecuted = await hasEventInRange(
       destinationProvider,
       config.connectors.destination,
-      refundExecutedTopic,
+      destTxClosedTopic,
       txId,
       PLANNER_LOG_LOOKBACK_BLOCKS,
     );

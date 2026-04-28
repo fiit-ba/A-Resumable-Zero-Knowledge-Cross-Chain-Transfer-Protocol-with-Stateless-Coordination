@@ -14,8 +14,9 @@ const DESTINATION_CHAIN_ID = 31338n;
 function encodeStageLog(eventName: string, args: unknown[]) {
   const eventFragment = connectorInterface.getEvent(eventName);
   const encoded = connectorInterface.encodeEventLog(eventFragment, args);
+  const destinationEvents = new Set(["FundsReleased", "DestTxClosed"]);
   return {
-    address: eventName === "FundsReleased" ? DEST_CONNECTOR : SOURCE_CONNECTOR,
+    address: destinationEvents.has(eventName) ? DEST_CONNECTOR : SOURCE_CONNECTOR,
     topics: encoded.topics,
     data: encoded.data,
   };
@@ -33,6 +34,7 @@ describe("validateStageLog", () => {
       SOURCE_CONNECTOR,
       DEST_CONNECTOR,
       10,
+      20n,
       7n,
       31337n,
       DESTINATION_CHAIN_ID,
@@ -93,7 +95,6 @@ describe("validateStageLog", () => {
       0,
       "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
       "0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
-      "0x1234",
     ]);
 
     expect(() =>
@@ -101,6 +102,50 @@ describe("validateStageLog", () => {
         "source-ack-ready",
         log,
         SOURCE_CONNECTOR,
+        TX_ID,
+        SOURCE_CONNECTOR,
+        DEST_CONNECTOR,
+      ),
+    ).not.toThrow();
+  });
+
+  it("decodes and validates RefundClaimed with indexed srcChainConnector", () => {
+    const log = encodeStageLog("RefundClaimed", [TX_ID, USER, 1000n, SOURCE_CONNECTOR]);
+
+    expect(log.data).toBe("0x00000000000000000000000000000000000000000000000000000000000003e8");
+    expect(log.topics).toHaveLength(4);
+    expect(() =>
+      validateStageLog(
+        "source-refund-initiated",
+        log,
+        SOURCE_CONNECTOR,
+        TX_ID,
+        SOURCE_CONNECTOR,
+        DEST_CONNECTOR,
+      ),
+    ).not.toThrow();
+  });
+
+  it("decodes and validates DestTxClosed", () => {
+    const log = encodeStageLog("DestTxClosed", [
+      TX_ID,
+      1000n,
+      TOKEN_A,
+      TOKEN_B,
+      USER,
+      RECEIVER,
+      SOURCE_CONNECTOR,
+      DEST_CONNECTOR,
+      10,
+      20,
+    ]);
+
+    expect(log.topics).toHaveLength(4);
+    expect(() =>
+      validateStageLog(
+        "destination-burn-executed",
+        log,
+        DEST_CONNECTOR,
         TX_ID,
         SOURCE_CONNECTOR,
         DEST_CONNECTOR,
@@ -119,6 +164,7 @@ describe("validateStageLog", () => {
       SOURCE_CONNECTOR,
       DEST_CONNECTOR,
       10,
+      20n,
       7n,
       31337n,
       DESTINATION_CHAIN_ID,

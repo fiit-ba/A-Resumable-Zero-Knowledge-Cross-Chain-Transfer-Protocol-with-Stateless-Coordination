@@ -135,9 +135,11 @@ abstract contract ConnectorStorage {
     /// @param dstChainConnector Destination connector contract address.
     /// @param timestamp Event timestamp.
     /// @param proofType Proof backend used for verification.
-    /// @param proofHash Hash of submitted proof payload.
+    /// @param proofHash Hash of submitted proof payload (keccak256 of the full payload).
     /// @param commitment Commitment derived from proof public inputs.
-    /// @param proofPayload ABI-encoded proof payload.
+    /// @dev proofPayload is intentionally omitted — proofHash already uniquely identifies the
+    ///      proof, and including the raw payload (a full Groth16 seal, ~1 KB) would make the
+    ///      receipt trie proof prohibitively expensive inside a RISC Zero guest.
     event AckReady(
         bytes32 indexed txId,
         uint256 amount,
@@ -150,8 +152,7 @@ abstract contract ConnectorStorage {
         uint64 timestamp,
         Enums.ProofType proofType,
         bytes32 proofHash,
-        bytes32 commitment,
-        bytes proofPayload
+        bytes32 commitment
     );
 
     /// @notice Emitted when refund is claimed on origin chain.
@@ -342,9 +343,7 @@ abstract contract ConnectorStorage {
     /// @param chainId Remote chain identifier the delay applies to.
     /// @param delaySeconds Proposed finality delay, in seconds.
     /// @param availableAt Earliest activation timestamp after the timelock expires.
-    event ChainFinalityDelayProposed(
-        uint256 indexed chainId, uint64 indexed delaySeconds, uint64 indexed availableAt
-    );
+    event ChainFinalityDelayProposed(uint256 indexed chainId, uint64 indexed delaySeconds, uint64 indexed availableAt);
 
     /// @notice Emitted when the active finality delay for a chain is updated.
     /// @param chainId Remote chain identifier the delay applies to.

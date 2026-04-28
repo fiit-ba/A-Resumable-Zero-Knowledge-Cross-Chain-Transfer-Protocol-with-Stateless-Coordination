@@ -1,10 +1,8 @@
-use burn_proof_core::{
-    chain_spec_from_id, BurnGuestInput, BurnProofPublicInputs, IConnector,
-};
-use burn_proof_methods::{BURN_PROOF_GUEST_ELF, BURN_PROOF_GUEST_ID};
 use alloy_primitives::{Address, B256};
 use alloy_sol_types::SolValue;
 use anyhow::{ensure, Context, Result};
+use burn_proof_core::{chain_spec_from_id, BurnGuestInput, BurnProofPublicInputs, IConnector};
+use burn_proof_methods::{BURN_PROOF_GUEST_ELF, BURN_PROOF_GUEST_ID};
 use clap::Parser;
 use risc0_ethereum_contracts::encode_seal;
 use risc0_steel::{ethereum::EthEvmEnv, host::BlockNumberOrTag, Event};
@@ -28,6 +26,9 @@ struct Args {
 
     #[arg(long)]
     dest_chain_id: u64,
+
+    #[arg(long)]
+    source_chain_id: u64,
 
     #[arg(long, env = "EXECUTION_BLOCK", default_value_t = BlockNumberOrTag::Latest)]
     execution_block: BlockNumberOrTag,
@@ -75,6 +76,7 @@ async fn main() -> Result<()> {
         connector: args.connector,
         tx_id: args.tx_id,
         dest_chain_id: args.dest_chain_id,
+        source_chain_id: args.source_chain_id,
     };
 
     eprintln!(
@@ -89,11 +91,7 @@ async fn main() -> Result<()> {
             .build()
             .context("failed to build ExecutorEnv")?;
 
-        default_prover().prove_with_opts(
-            exec_env,
-            BURN_PROOF_GUEST_ELF,
-            &ProverOpts::groth16(),
-        )
+        default_prover().prove_with_opts(exec_env, BURN_PROOF_GUEST_ELF, &ProverOpts::groth16())
     })
     .await
     .context("prover worker task join failed")?

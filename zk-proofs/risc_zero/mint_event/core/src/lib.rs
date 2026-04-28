@@ -7,7 +7,7 @@ use risc0_steel::ethereum::{
 use serde::{Deserialize, Serialize};
 use std::sync::LazyLock;
 
-pub const MINTED_IN_HOLDING_STATUS: u8 = 4;
+pub const MINTED_IN_HOLDING_STATUS: u8 = 3;
 
 sol! {
     interface IConnector {
@@ -44,7 +44,9 @@ sol! {
                 uint64 mintedAt,
                 uint64 ackDeadline,
                 uint8 status,
-                uint256 nonce
+                uint256 nonce,
+                uint256 sourceChainId,
+                uint256 destinationChainId
             );
     }
 }
@@ -56,6 +58,8 @@ sol! {
         address dstChainConnector;
         uint256 amount;
         address receiver;
+        uint256 sourceChainId;
+        uint256 destinationChainId;
     }
 }
 
@@ -226,25 +230,20 @@ pub fn validate_mint_event(
     Ok(())
 }
 
-pub fn build_public_inputs(event: &NormalizedMintEvent) -> MintProofPublicInputs {
-    MintProofPublicInputs {
-        txId: event.tx_id,
-        dstChainConnector: event.dst_chain_connector,
-        amount: event.amount,
-        receiver: event.receiver,
-    }
-}
-
 pub fn build_public_inputs_from_tx(
     tx_id: B256,
     dst_chain_connector: Address,
     amount: U256,
     receiver: Address,
+    source_chain_id: U256,
+    destination_chain_id: U256,
 ) -> MintProofPublicInputs {
     MintProofPublicInputs {
         txId: tx_id,
         dstChainConnector: dst_chain_connector,
         amount,
         receiver,
+        sourceChainId: source_chain_id,
+        destinationChainId: destination_chain_id,
     }
 }

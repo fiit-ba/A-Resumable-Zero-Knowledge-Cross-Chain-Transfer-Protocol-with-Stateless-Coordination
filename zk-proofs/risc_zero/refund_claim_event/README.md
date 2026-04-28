@@ -6,7 +6,7 @@ This workspace generates a RISC Zero Groth16 proof for an origin-chain
 The committed public inputs are ABI-encoded as:
 
 ```solidity
-(bytes32 txId, address srcChainConnector, uint256 amount)
+(bytes32 txId, address srcChainConnector, uint256 amount, uint256 sourceChainId, uint256 destinationChainId)
 ```
 
 This matches the commitment expected by `Connector.submitRefundClaimProof(...)` on the

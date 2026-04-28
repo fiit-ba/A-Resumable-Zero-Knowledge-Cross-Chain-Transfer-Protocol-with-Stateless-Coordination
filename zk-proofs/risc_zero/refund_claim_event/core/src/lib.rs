@@ -1,5 +1,5 @@
 use alloy_primitives::{Address, B256, U256};
-use alloy_sol_types::{SolEvent, SolValue, sol};
+use alloy_sol_types::{SolEvent, sol};
 use risc0_steel::ethereum::{
     EthChainSpec, EthEvmInput, ETH_HOLESKY_CHAIN_SPEC, ETH_MAINNET_CHAIN_SPEC,
     ETH_SEPOLIA_CHAIN_SPEC,
@@ -7,8 +7,8 @@ use risc0_steel::ethereum::{
 use serde::{Deserialize, Serialize};
 use std::sync::LazyLock;
 
-/// TxStatus::REFUND_INITIATED = 3
-pub const REFUND_INITIATED_STATUS: u8 = 3;
+/// TxStatus::REFUND_INITIATED = 2
+pub const REFUND_INITIATED_STATUS: u8 = 2;
 
 sol! {
     interface IConnector {
@@ -17,7 +17,7 @@ sol! {
             bytes32 indexed txId,
             address indexed from,
             uint256 amount,
-            address srcChainConnector
+            address indexed srcChainConnector
         );
 
         function getTx(bytes32 _txId)
@@ -37,26 +37,33 @@ sol! {
                 uint64 mintedAt,
                 uint64 ackDeadline,
                 uint8 status,
-                uint256 nonce
+                uint256 nonce,
+                uint256 sourceChainId,
+                uint256 destinationChainId
             );
     }
 }
 
-/// ABI-encoded public inputs committed to the RISC Zero journal.
-/// Matches the commitment expected by `submitRefundClaimProof` on the destination:
-///   `abi.encode(txId, srcChainConnector, amount)`
+// ABI-encoded public inputs committed to the RISC Zero journal.
+// Matches the commitment expected by `submitRefundClaimProof` on the destination:
+//   `abi.encode(txId, srcChainConnector, amount, sourceChainId, destinationChainId)`
 sol! {
     #[sol(all_derives)]
     struct RefundClaimProofPublicInputs {
         bytes32 txId;
         address srcChainConnector;
         uint256 amount;
+        uint256 sourceChainId;
+        uint256 destinationChainId;
     }
 }
 
 #[derive(Clone, Serialize, Deserialize)]
 pub struct RefundClaimGuestInput {
-    pub evm_input: EthEvmInput,
+    /// EVM input anchored to the event block — used only for the RefundClaimed log query.
+    pub event_evm_input: EthEvmInput,
+    /// EVM input anchored to a recent block — used only for the getTx() state read.
+    pub state_evm_input: EthEvmInput,
     /// Origin-chain connector address (emitter of `RefundClaimed`).
     pub connector: Address,
     pub tx_id: B256,
@@ -206,10 +213,52 @@ pub fn validate_tx_status(status: u8) -> Result<(), RefundClaimValidationError> 
     Ok(())
 }
 
-pub fn build_public_inputs(event: &NormalizedRefundClaimedEvent) -> RefundClaimProofPublicInputs {
+pub fn build_public_inputs(
+    event: &NormalizedRefundClaimedEvent,
+    source_chain_id: U256,
+    destination_chain_id: U256,
+) -> RefundClaimProofPublicInputs {
     RefundClaimProofPublicInputs {
         txId: event.tx_id,
         srcChainConnector: event.src_chain_connector,
         amount: event.amount,
+        sourceChainId: source_chain_id,
+        destinationChainId: destination_chain_id,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use alloy_primitives::Log;
+
+    #[test]
+    fn refund_claimed_decodes_indexed_src_chain_connector() {
+        let connector = Address::repeat_byte(0x10);
+        let tx_id = B256::repeat_byte(0x11);
+        let from = Address::repeat_byte(0x22);
+        let amount = U256::from(1_000u64);
+        let src_chain_connector = connector;
+
+        let typed_log = Log::new_from_event_unchecked(
+            connector,
+            IConnector::RefundClaimed {
+                txId: tx_id,
+                from,
+                amount,
+                srcChainConnector: src_chain_connector,
+            },
+        );
+        let raw_log = typed_log.reserialize();
+
+        assert_eq!(raw_log.data.topics().len(), 4);
+        assert_eq!(raw_log.data.data.len(), 32);
+
+        let decoded = IConnector::RefundClaimed::decode_log(&raw_log).unwrap();
+        assert_eq!(decoded.address, connector);
+        assert_eq!(decoded.data.txId, tx_id);
+        assert_eq!(decoded.data.from, from);
+        assert_eq!(decoded.data.amount, amount);
+        assert_eq!(decoded.data.srcChainConnector, src_chain_connector);
     }
 }

@@ -1,5 +1,5 @@
-use burn_proof_methods::BURN_PROOF_GUEST_ID;
 use alloy_primitives::B256;
+use burn_proof_methods::BURN_PROOF_GUEST_ID;
 use risc0_zkvm::Digest;
 
 fn main() {

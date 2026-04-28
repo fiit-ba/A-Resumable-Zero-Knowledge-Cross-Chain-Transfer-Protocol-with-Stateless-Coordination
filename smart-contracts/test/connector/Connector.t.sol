@@ -261,6 +261,7 @@ contract ConnectorTest is Test {
     //////////////////////////////////////////////////////////////*/
 
     uint64 internal constant _VERIFIER_TIMELOCK = 48 hours;
+    uint64 internal constant _VERIFIER_APPLY_WINDOW = 7 days;
 
     /// @dev Propose a verifier, warp past the 48 h timelock, then apply it.
     function _proposeAndApply(Enums.VerifierRoute route, Enums.ProofType proofType, address verifier) internal {
@@ -316,6 +317,15 @@ contract ConnectorTest is Test {
         uint64 warpTarget = availableAt - 1; // one second before unlock
         vm.warp(warpTarget);
         vm.expectRevert(abi.encodeWithSelector(Errors.TimelockNotExpired.selector, availableAt, warpTarget));
+        connector.applyVerifier(Enums.VerifierRoute.ORIGIN_MINT, Enums.ProofType.RISC0);
+    }
+
+    function test_applyVerifier_RevertsWhen_TimelockExpired() public {
+        connector.proposeVerifier(Enums.VerifierRoute.ORIGIN_MINT, Enums.ProofType.RISC0, address(0xBEEF));
+        uint64 availableAt = uint64(block.timestamp) + _VERIFIER_TIMELOCK;
+        uint64 warpTarget = availableAt + _VERIFIER_APPLY_WINDOW + 1;
+        vm.warp(warpTarget);
+        vm.expectRevert(abi.encodeWithSelector(Errors.TimelockExpired.selector, availableAt, warpTarget));
         connector.applyVerifier(Enums.VerifierRoute.ORIGIN_MINT, Enums.ProofType.RISC0);
     }
 
@@ -582,8 +592,7 @@ contract ConnectorTest is Test {
             uint64(block.timestamp),
             Enums.ProofType.RISC0,
             proofHash,
-            commitment,
-            proof
+            commitment
         );
 
         connector.submitMintProof(Enums.ProofType.RISC0, proof, txId);
@@ -2696,6 +2705,15 @@ contract ConnectorTest is Test {
         connector.applyChainFinalityDelay(block.chainid);
     }
 
+    function test_applyChainFinalityDelay_RevertsWhen_TimelockExpired() public {
+        connector.proposeChainFinalityDelay(block.chainid, 900);
+        uint64 availableAt = uint64(block.timestamp) + _VERIFIER_TIMELOCK;
+        uint64 warpTarget = availableAt + _VERIFIER_APPLY_WINDOW + 1;
+        vm.warp(warpTarget);
+        vm.expectRevert(abi.encodeWithSelector(Errors.TimelockExpired.selector, availableAt, warpTarget));
+        connector.applyChainFinalityDelay(block.chainid);
+    }
+
     function test_applyChainFinalityDelay_EmitsUpdatedAndActivates() public {
         connector.proposeChainFinalityDelay(block.chainid, 900);
         vm.warp(block.timestamp + _VERIFIER_TIMELOCK + 1);
@@ -2820,9 +2838,7 @@ contract ConnectorTest is Test {
         _doLockProof(txId, deadline);
 
         vm.warp(deadline + 30 minutes + 1);
-        connector.submitRefundClaimProof(
-            Enums.ProofType.SNARKJS, _buildSnarkProof(_refundClaimInputs(txId)), txId
-        );
+        connector.submitRefundClaimProof(Enums.ProofType.SNARKJS, _buildSnarkProof(_refundClaimInputs(txId)), txId);
         assertEq(uint8(connector.txStatus(txId)), uint8(Enums.TxStatus.REFUND_CLAIM_ACCEPTED));
     }
 }

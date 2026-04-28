@@ -16,18 +16,13 @@ describe("computeResumeDecision", () => {
     expect(d.destinationStatus).toBe(0);
   });
 
-  it("1/4 -> mint", () => {
-    const d = computeResumeDecision(1, 4, NO_HISTORY);
+  it("1/3 -> mint", () => {
+    const d = computeResumeDecision(1, 3, NO_HISTORY);
     expect(d.action).toBe("mint");
   });
 
-  it("2/4 -> ack", () => {
-    const d = computeResumeDecision(2, 4, NO_HISTORY);
-    expect(d.action).toBe("ack");
-  });
-
-  it("0/4 + AckReady history -> ack", () => {
-    const d = computeResumeDecision(0, 4, {
+  it("0/3 + AckReady history -> ack", () => {
+    const d = computeResumeDecision(0, 3, {
       ...NO_HISTORY,
       ackReady: true,
     });
@@ -36,16 +31,10 @@ describe("computeResumeDecision", () => {
     expect(d.historyFlags.ackReady).toBe(true);
   });
 
-  it("0/4 without AckReady history -> inconsistent error", () => {
-    const d = computeResumeDecision(0, 4, NO_HISTORY);
+  it("0/3 without AckReady history -> inconsistent error", () => {
+    const d = computeResumeDecision(0, 3, NO_HISTORY);
     expect(d.action).toBe("error");
     expect(d.reason).toMatch(/inconsistent/i);
-  });
-
-  it("2/0 -> noop with manual-cleanup reason", () => {
-    const d = computeResumeDecision(2, 0, NO_HISTORY);
-    expect(d.action).toBe("noop");
-    expect(d.reason).toMatch(/manual/i);
   });
 
   it("0/0 + DepositLocked history -> noop terminal", () => {
@@ -81,34 +70,34 @@ describe("computeResumeDecision", () => {
     expect(d.reason).toMatch(/not found/i);
   });
 
-  it("1/4 + ackDeadlineExpired -> refund-initiate", () => {
-    const d = computeResumeDecision(1, 4, { ...NO_HISTORY, ackDeadlineExpired: true });
+  it("1/3 + ackDeadlineExpired -> refund-initiate", () => {
+    const d = computeResumeDecision(1, 3, { ...NO_HISTORY, ackDeadlineExpired: true });
     expect(d.action).toBe("refund-initiate");
     expect(d.reason).toMatch(/expired/i);
   });
 
-  it("3/4 -> refund-claim", () => {
-    const d = computeResumeDecision(3, 4, NO_HISTORY);
+  it("2/3 -> refund-claim", () => {
+    const d = computeResumeDecision(2, 3, NO_HISTORY);
     expect(d.action).toBe("refund-claim");
     expect(d.reason).toMatch(/refund/i);
   });
 
-  it("3/5 -> execute-burn", () => {
-    const d = computeResumeDecision(3, 5, NO_HISTORY);
+  it("2/4 -> execute-burn", () => {
+    const d = computeResumeDecision(2, 4, NO_HISTORY);
     expect(d.action).toBe("execute-burn");
     expect(d.reason).toMatch(/burn/i);
   });
 
-  it("3/0 -> burn-proof", () => {
-    const d = computeResumeDecision(3, 0, NO_HISTORY);
+  it("2/0 + DestTxClosed history -> burn-proof", () => {
+    const d = computeResumeDecision(2, 0, { ...NO_HISTORY, burnExecuted: true });
     expect(d.action).toBe("burn-proof");
     expect(d.reason).toMatch(/burn/i);
   });
 
-  it("0/5 -> inconsistent error", () => {
-    const d = computeResumeDecision(0, 5, NO_HISTORY);
-    expect(d.action).toBe("error");
-    expect(d.reason).toMatch(/inconsistent/i);
+  it("2/0 without DestTxClosed history -> non-accept-proof", () => {
+    const d = computeResumeDecision(2, 0, NO_HISTORY);
+    expect(d.action).toBe("non-accept-proof");
+    expect(d.reason).toMatch(/non-acceptance/i);
   });
 
   it("unknown combination 1/1 -> inconsistent error", () => {

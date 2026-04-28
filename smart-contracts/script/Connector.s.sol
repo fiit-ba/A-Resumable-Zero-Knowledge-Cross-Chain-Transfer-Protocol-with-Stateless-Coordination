@@ -48,13 +48,13 @@ contract DeployConnector is Script {
     bytes32 internal constant _ORIGIN_MINT_IMAGE_ID_DEFAULT =
         0x5ab55c3e99a94be256acd6f786e7b9ff19b7b3665233a2adf086a6ae7daad736;
     bytes32 internal constant _ORIGIN_BURN_IMAGE_ID_DEFAULT =
-        0xa9decb43bf304fe0d047baf4aa6c613f566c9d5f89e82aa1b156d51fadfcc390;
+        0xc1e95709b036343286d70ae5a6f72713900cf47ccb3b3d0ecc531ebca6d75264;
     bytes32 internal constant _DEST_LOCK_IMAGE_ID_DEFAULT =
         0x20a6b70fd94b1eef9415e6acf26d61732d54fc94d43cb99290ad5b1174fb3545;
     bytes32 internal constant _DEST_ACK_IMAGE_ID_DEFAULT =
         0xca03b49170b4091a352759887eb483ae4624a5b780223f85b8742249e3b814fb;
     bytes32 internal constant _DEST_REFUND_CLAIM_IMAGE_ID_DEFAULT =
-        0x3e1fb2ad43fb2f08627576c6ddeb107a228751a682355da65e05b3fcadd4f0f5;
+        0x98359dabb236c6ad721ebb6efeb518f188a74a91d7728800d29d8df89b66fda7;
 
     uint64 internal constant _ACK_WINDOW_SECONDS = 1 hours;
 
@@ -90,7 +90,7 @@ contract DeployConnector is Script {
         routeImageIds[4] = destRefundClaimImageId;
         routeImageIds[5] = bytes32(0); // ORIGIN_NON_ACCEPT — no guest binary yet; set via env when available
 
-        WrappedTokenFactory wrappedTokenFactory = new WrappedTokenFactory();
+        WrappedTokenFactory wrappedTokenFactory = new WrappedTokenFactory(0);
         connector = new Connector(
             address(risc0Adapter),
             address(snarkAdapter),

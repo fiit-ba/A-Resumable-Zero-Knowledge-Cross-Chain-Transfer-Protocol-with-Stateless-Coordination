@@ -17,9 +17,10 @@ fn main() {
     let chain_spec = chain_spec_from_id(input.source_chain_id)
         .expect("unsupported source chain id for Steel chain spec");
 
-    let evm_env = input.evm_input.into_env(chain_spec);
+    // Event environment: anchored to the block where DepositLocked was emitted.
+    let event_env = input.event_evm_input.into_env(chain_spec);
 
-    let logs = Event::new::<IConnector::DepositLocked>(&evm_env)
+    let logs = Event::new::<IConnector::DepositLocked>(&event_env)
         .address(input.connector)
         .topic1(input.tx_id)
         .query();
@@ -33,7 +34,12 @@ fn main() {
     validate_lock_event(&event, input.source_chain_id, input.destination_chain_id)
         .expect("DepositLocked validation failed");
 
-    let contract = Contract::new(input.connector, &evm_env);
+    // State environment: anchored to a recent block for the getTx() storage read.
+    // Connector storage for this txId is unchanged between the event block and the state block
+    // because storage is only deleted after submitMintProof succeeds.
+    let state_env = input.state_evm_input.into_env(chain_spec);
+
+    let contract = Contract::new(input.connector, &state_env);
     let tx_snapshot = contract
         .call_builder(&IConnector::getTxCall { _txId: input.tx_id })
         .call();
@@ -53,9 +59,9 @@ fn main() {
         "dstChainConnector mismatch in getTx"
     );
     assert_eq!(tx_snapshot.nonce, event.nonce, "nonce mismatch in getTx");
+    assert_eq!(tx_snapshot.ackDeadline, event.ack_deadline, "ackDeadline mismatch in getTx");
 
-    let public_inputs =
-        build_public_inputs(&event, input.destination_chain_id, tx_snapshot.ackDeadline);
+    let public_inputs = build_public_inputs(&event);
 
     env::commit_slice(&public_inputs.abi_encode());
 }

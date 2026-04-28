@@ -51,6 +51,8 @@ fn main() {
         tx_snapshot.dstChainConnector,
         tx_snapshot.amount,
         tx_snapshot.to,
+        tx_snapshot.sourceChainId,
+        tx_snapshot.destinationChainId,
     );
 
     env::commit_slice(&public_inputs.abi_encode());

@@ -69,11 +69,12 @@ WRAPPED_TOKEN_FACTORY_DEST   ?=
 
 # Default guest image IDs from current repo builds.
 BYTES32_ZERO                ?= 0x0000000000000000000000000000000000000000000000000000000000000000
-ORIGIN_MINT_IMAGE_ID        ?= 0x5ab55c3e99a94be256acd6f786e7b9ff19b7b3665233a2adf086a6ae7daad736
-ORIGIN_BURN_IMAGE_ID        ?= 0xa9decb43bf304fe0d047baf4aa6c613f566c9d5f89e82aa1b156d51fadfcc390
-DEST_LOCK_IMAGE_ID          ?= 0x20a6b70fd94b1eef9415e6acf26d61732d54fc94d43cb99290ad5b1174fb3545
-DEST_ACK_IMAGE_ID           ?= 0xca03b49170b4091a352759887eb483ae4624a5b780223f85b8742249e3b814fb
-DEST_REFUND_CLAIM_IMAGE_ID  ?= 0x3e1fb2ad43fb2f08627576c6ddeb107a228751a682355da65e05b3fcadd4f0f5
+ORIGIN_MINT_IMAGE_ID        ?= 0xff75eff548880c268cc66ea63b7cd4872cab28c7852e682bc0d8bfc542980309
+ORIGIN_BURN_IMAGE_ID        ?= 0xc1e95709b036343286d70ae5a6f72713900cf47ccb3b3d0ecc531ebca6d75264
+DEST_LOCK_IMAGE_ID          ?= 0x119e554ae1d65c0190fdf548f3ee5e068089cb5f8f817cada47334993d4199c7
+DEST_ACK_IMAGE_ID           ?= 0x284e25a5d75c3ea0e80d02b3d5bab756ab0356726106a0c1e432c2bc9f1fd8e2
+DEST_REFUND_CLAIM_IMAGE_ID  ?= 0x98359dabb236c6ad721ebb6efeb518f188a74a91d7728800d29d8df89b66fda7
+ORIGIN_NON_ACCEPT_IMAGE_ID 		?= 0x7b607ff01e6bcee8e429186596090ab4aa83954b883f9e14e8efdfbf6fea3742
 
 # By default source connector enables origin routes; destination connector enables dest routes.
 ORIGIN_MINT_IMAGE_ID_SOURCE       ?= $(ORIGIN_MINT_IMAGE_ID)
@@ -88,6 +89,28 @@ DEST_LOCK_IMAGE_ID_DEST         ?= $(DEST_LOCK_IMAGE_ID)
 DEST_ACK_IMAGE_ID_DEST          ?= $(DEST_ACK_IMAGE_ID)
 DEST_REFUND_CLAIM_IMAGE_ID_DEST ?= $(DEST_REFUND_CLAIM_IMAGE_ID)
 
+# Non-accept event image ID (optional; zero disables the route on each chain).
+ORIGIN_NON_ACCEPT_IMAGE_ID        ?= $(BYTES32_ZERO)
+ORIGIN_NON_ACCEPT_IMAGE_ID_SOURCE ?= $(ORIGIN_NON_ACCEPT_IMAGE_ID)
+ORIGIN_NON_ACCEPT_IMAGE_ID_DEST   ?= $(ORIGIN_NON_ACCEPT_IMAGE_ID)
+
+# Optional: reuse an existing Groth16Verifier instead of deploying a fresh one.
+RISC0_VERIFIER ?=
+
+# Name / symbol for the BridgeWrappedToken deployed by deploy-prod-full on the dest chain.
+WRAPPED_TOKEN_NAME   ?= Wrapped $(TOKEN_NAME_SRC)
+WRAPPED_TOKEN_SYMBOL ?= w$(TOKEN_SYMBOL_SRC)
+
+# When 1, deploy-prod-full auto-detects the ack window from on-chain block times
+# instead of using ACK_WINDOW_SECONDS_SOURCE / _DEST. Default 0 keeps the configured
+# one-hour ACK window unless explicitly overridden.
+AUTO_DETECT_FINALITY ?= 0
+
+# Route-registration timelock (seconds) for a freshly deployed WrappedTokenFactory.
+# Default 0 = instant registration, safe for initial deployment when no users exist yet.
+# Set to 172800 (48 h) once the bridge is live and you need to protect existing users.
+REGISTRATION_TIMELOCK ?= 0
+
 # ─── Bootstrap configuration ──────────────────────────────────────────────────
 # Chain IDs used by the bootstrap scripts to compute the route key.
 SOURCE_CHAIN_ID ?= 31337
@@ -97,6 +120,7 @@ DEST_CHAIN_ID   ?= 31338
 SOURCE_CONNECTOR           ?=
 DEST_CONNECTOR             ?=
 SOURCE_TOKEN               ?=
+SOURCE_WRAPPED_TOKEN_FACTORY ?= $(WRAPPED_TOKEN_FACTORY_SOURCE)
 DEST_WRAPPED_TOKEN_FACTORY ?=
 DEST_WRAPPED_TOKEN         ?=
 
@@ -139,6 +163,18 @@ FORGE := forge
 CAST  := cast
 SLITHER ?= slither
 
+# Extra flags appended to every `forge script` invocation.
+FORGE_SCRIPT_EXTRA_FLAGS ?=
+
+# Extra flags appended to production `forge script` invocations.
+# Chiado public RPC can report a latest block before serving it; skipping
+# Foundry's pre-broadcast fork simulation avoids that flaky RPC path.
+PROD_FORGE_SCRIPT_EXTRA_FLAGS ?= --skip-simulation
+
+# Extra flags for route registration scripts. Defaults to the production flags
+# because public destination RPCs often lag at the latest block during simulation.
+ROUTE_FORGE_SCRIPT_EXTRA_FLAGS ?= $(PROD_FORGE_SCRIPT_EXTRA_FLAGS)
+
 # Convenience alias: forge script with broadcast + given private key
 define forge-script
 	$(FORGE) script $(1) \
@@ -146,6 +182,8 @@ define forge-script
 		--private-key $(PRIVATE_KEY) \
 		--broadcast \
 		--slow \
+		$(FORGE_SCRIPT_EXTRA_FLAGS) \
+		$(3) \
 		-vvv
 endef
 
@@ -305,6 +343,45 @@ define require-bootstrap-vars
 	@test -n "$(DEST_WRAPPED_TOKEN_FACTORY)" || (echo "ERROR: DEST_WRAPPED_TOKEN_FACTORY not set." && exit 1)
 endef
 
+define require-source-route-vars
+	@test -n "$(SOURCE_CONNECTOR)"               || (echo "ERROR: SOURCE_CONNECTOR not set."               && exit 1)
+	@test -n "$(DEST_CONNECTOR)"                 || (echo "ERROR: DEST_CONNECTOR not set."                 && exit 1)
+	@test -n "$(SOURCE_TOKEN)"                   || (echo "ERROR: SOURCE_TOKEN not set."                   && exit 1)
+	@test -n "$(SOURCE_WRAPPED_TOKEN_FACTORY)"   || (echo "ERROR: SOURCE_WRAPPED_TOKEN_FACTORY not set."   && exit 1)
+	@test -n "$(DEST_WRAPPED_TOKEN)"             || (echo "ERROR: DEST_WRAPPED_TOKEN not set."             && exit 1)
+endef
+
+## Propose the same wrapped-token route in the source-chain factory used by depositAndLock.
+.PHONY: propose-source-route
+propose-source-route: require-private-key
+	$(require-source-route-vars)
+	@echo ""
+	@echo ">>> [SOURCE] Proposing wrapped-token route used by depositAndLock"
+	@echo "    Factory: $(SOURCE_WRAPPED_TOKEN_FACTORY)"
+	@SOURCE_CHAIN_ID="$(SOURCE_CHAIN_ID)" \
+	SOURCE_CONNECTOR="$(SOURCE_CONNECTOR)" \
+	SOURCE_TOKEN="$(SOURCE_TOKEN)" \
+	DEST_CHAIN_ID="$(DEST_CHAIN_ID)" \
+	DEST_CONNECTOR="$(DEST_CONNECTOR)" \
+	DEST_WRAPPED_TOKEN_FACTORY="$(SOURCE_WRAPPED_TOKEN_FACTORY)" \
+	DEST_WRAPPED_TOKEN="$(DEST_WRAPPED_TOKEN)" \
+	$(call forge-script,script/bootstrap/ProposeRoutes.s.sol:ProposeRoutes,$(RPC_URL_SOURCE),$(ROUTE_FORGE_SCRIPT_EXTRA_FLAGS))
+
+## Apply the source-chain wrapped-token route after the source factory timelock.
+.PHONY: apply-source-route
+apply-source-route: require-private-key
+	$(require-source-route-vars)
+	@echo ""
+	@echo ">>> [SOURCE] Applying wrapped-token route used by depositAndLock"
+	@echo "    Factory: $(SOURCE_WRAPPED_TOKEN_FACTORY)"
+	@SOURCE_CHAIN_ID="$(SOURCE_CHAIN_ID)" \
+	SOURCE_CONNECTOR="$(SOURCE_CONNECTOR)" \
+	SOURCE_TOKEN="$(SOURCE_TOKEN)" \
+	DEST_CHAIN_ID="$(DEST_CHAIN_ID)" \
+	DEST_CONNECTOR="$(DEST_CONNECTOR)" \
+	DEST_WRAPPED_TOKEN_FACTORY="$(SOURCE_WRAPPED_TOKEN_FACTORY)" \
+	$(call forge-script,script/bootstrap/ApplyRoutes.s.sol:ApplyRoutes,$(RPC_URL_SOURCE),$(ROUTE_FORGE_SCRIPT_EXTRA_FLAGS))
+
 ## Propose a wrapped-token route on the dest chain WrappedTokenFactory. (48-hour timelock starts now.)
 .PHONY: propose-routes
 propose-routes: require-private-key
@@ -321,7 +398,7 @@ propose-routes: require-private-key
 	DEST_CONNECTOR="$(DEST_CONNECTOR)" \
 	DEST_WRAPPED_TOKEN_FACTORY="$(DEST_WRAPPED_TOKEN_FACTORY)" \
 	DEST_WRAPPED_TOKEN="$(DEST_WRAPPED_TOKEN)" \
-	$(call forge-script,script/bootstrap/ProposeRoutes.s.sol:ProposeRoutes,$(RPC_URL_DEST))
+	$(call forge-script,script/bootstrap/ProposeRoutes.s.sol:ProposeRoutes,$(RPC_URL_DEST),$(ROUTE_FORGE_SCRIPT_EXTRA_FLAGS))
 
 ## Apply a previously proposed route (after 48-h timelock). On local Anvil use `make bootstrap`.
 .PHONY: apply-routes
@@ -336,7 +413,7 @@ apply-routes: require-private-key
 	DEST_CHAIN_ID="$(DEST_CHAIN_ID)" \
 	DEST_CONNECTOR="$(DEST_CONNECTOR)" \
 	DEST_WRAPPED_TOKEN_FACTORY="$(DEST_WRAPPED_TOKEN_FACTORY)" \
-	$(call forge-script,script/bootstrap/ApplyRoutes.s.sol:ApplyRoutes,$(RPC_URL_DEST))
+	$(call forge-script,script/bootstrap/ApplyRoutes.s.sol:ApplyRoutes,$(RPC_URL_DEST),$(ROUTE_FORGE_SCRIPT_EXTRA_FLAGS))
 
 ## Full local bootstrap: propose → warp Anvil 48 h → apply. On prod, use propose-routes + apply-routes.
 .PHONY: bootstrap
@@ -518,6 +595,7 @@ deploy-source-connector-prod: require-private-key ## Deploy production connector
 	SNARK_ADAPTER="$(SNARK_ADAPTER_SOURCE)" \
 	ACK_WINDOW_SECONDS="$(ACK_WINDOW_SECONDS_SOURCE)" \
 	WRAPPED_TOKEN_FACTORY="$(WRAPPED_TOKEN_FACTORY_SOURCE)" \
+	REGISTRATION_TIMELOCK="$(REGISTRATION_TIMELOCK)" \
 	ORIGIN_MINT_IMAGE_ID="$(ORIGIN_MINT_IMAGE_ID_SOURCE)" \
 	ORIGIN_BURN_IMAGE_ID="$(ORIGIN_BURN_IMAGE_ID_SOURCE)" \
 	DEST_LOCK_IMAGE_ID="$(DEST_LOCK_IMAGE_ID_SOURCE)" \
@@ -539,6 +617,7 @@ deploy-dest-connector-prod: require-private-key ## Deploy production connector o
 	SNARK_ADAPTER="$(SNARK_ADAPTER_DEST)" \
 	ACK_WINDOW_SECONDS="$(ACK_WINDOW_SECONDS_DEST)" \
 	WRAPPED_TOKEN_FACTORY="$(WRAPPED_TOKEN_FACTORY_DEST)" \
+	REGISTRATION_TIMELOCK="$(REGISTRATION_TIMELOCK)" \
 	ORIGIN_MINT_IMAGE_ID="$(ORIGIN_MINT_IMAGE_ID_DEST)" \
 	ORIGIN_BURN_IMAGE_ID="$(ORIGIN_BURN_IMAGE_ID_DEST)" \
 	DEST_LOCK_IMAGE_ID="$(DEST_LOCK_IMAGE_ID_DEST)" \
@@ -554,6 +633,429 @@ deploy-connectors-prod: deploy-source-connector-prod deploy-dest-connector-prod 
 	@echo "  Production connectors deployed on $(SOURCE_NETWORK) and $(DEST_NETWORK)."
 	@echo "  Run 'make addresses' for a summary."
 	@echo "================================================================"
+
+# =============================================================================
+# Production — individual per-chain RiscZeroAdapter targets
+# =============================================================================
+
+## Deploy RiscZeroAdapter with source-role image IDs on the SOURCE chain.
+## Useful when you only need to (re-)deploy the adapter independently.
+.PHONY: deploy-risc0-adapter-source-prod
+deploy-risc0-adapter-source-prod: require-private-key ## Deploy RiscZeroAdapter on source chain with source image IDs
+	@echo ""
+	@echo ">>> [$(SOURCE_NETWORK)] Deploying RiscZeroAdapter"
+	@echo "    RPC: $(RPC_URL_SOURCE)"
+	@RISC0_VERIFIER="$(RISC0_VERIFIER)" \
+	ORIGIN_MINT_IMAGE_ID="$(ORIGIN_MINT_IMAGE_ID_SOURCE)" \
+	ORIGIN_BURN_IMAGE_ID="$(ORIGIN_BURN_IMAGE_ID_SOURCE)" \
+	DEST_LOCK_IMAGE_ID="$(DEST_LOCK_IMAGE_ID_SOURCE)" \
+	DEST_ACK_IMAGE_ID="$(DEST_ACK_IMAGE_ID_SOURCE)" \
+	DEST_REFUND_CLAIM_IMAGE_ID="$(DEST_REFUND_CLAIM_IMAGE_ID_SOURCE)" \
+	ORIGIN_NON_ACCEPT_IMAGE_ID="$(ORIGIN_NON_ACCEPT_IMAGE_ID_SOURCE)" \
+	$(call forge-script,script/DeployRiscZeroAdapter.s.sol:DeployRiscZeroAdapter,$(RPC_URL_SOURCE))
+
+## Deploy RiscZeroAdapter with dest-role image IDs on the DEST chain.
+.PHONY: deploy-risc0-adapter-dest-prod
+deploy-risc0-adapter-dest-prod: require-private-key ## Deploy RiscZeroAdapter on dest chain with dest image IDs
+	@echo ""
+	@echo ">>> [$(DEST_NETWORK)] Deploying RiscZeroAdapter"
+	@echo "    RPC: $(RPC_URL_DEST)"
+	@RISC0_VERIFIER="$(RISC0_VERIFIER)" \
+	ORIGIN_MINT_IMAGE_ID="$(ORIGIN_MINT_IMAGE_ID_DEST)" \
+	ORIGIN_BURN_IMAGE_ID="$(ORIGIN_BURN_IMAGE_ID_DEST)" \
+	DEST_LOCK_IMAGE_ID="$(DEST_LOCK_IMAGE_ID_DEST)" \
+	DEST_ACK_IMAGE_ID="$(DEST_ACK_IMAGE_ID_DEST)" \
+	DEST_REFUND_CLAIM_IMAGE_ID="$(DEST_REFUND_CLAIM_IMAGE_ID_DEST)" \
+	ORIGIN_NON_ACCEPT_IMAGE_ID="$(ORIGIN_NON_ACCEPT_IMAGE_ID_DEST)" \
+	$(call forge-script,script/DeployRiscZeroAdapter.s.sol:DeployRiscZeroAdapter,$(RPC_URL_DEST))
+
+# =============================================================================
+# Full production deployment  (deploy-prod-full)
+# =============================================================================
+# Deploys the complete on-chain stack for two production chains in one command:
+#
+#   1. RiscZeroAdapter (source) — Groth16Verifier auto-deployed unless RISC0_VERIFIER is set
+#   2. RiscZeroAdapter (dest)   — same
+#   3. Source ERC-20 token      — skipped when SOURCE_TOKEN is already set in .env
+#   4. Source Connector         — WrappedTokenFactory auto-deployed unless WRAPPED_TOKEN_FACTORY_SOURCE is set
+#   5. Destination Connector    — WrappedTokenFactory auto-deployed unless WRAPPED_TOKEN_FACTORY_DEST is set
+#   6. BridgeWrappedToken (dest)— bound exclusively to the dest Connector
+#   7. Route registration       — proposeRoute; on local Anvil auto-warps and applies immediately
+#
+# Required in smart-contracts/.env (or as make VAR=value overrides):
+#   PRIVATE_KEY
+#   SNARK_ADAPTER_SOURCE   pre-deployed SnarkAdapter address on the source chain
+#   SNARK_ADAPTER_DEST     pre-deployed SnarkAdapter address on the dest chain
+#   SOURCE_CHAIN_ID / DEST_CHAIN_ID
+#   RPC_URL_SOURCE / RPC_URL_DEST
+#
+# Optional:
+#   SOURCE_TOKEN                    skip source token deploy; bridge an existing ERC-20
+#   RISC0_VERIFIER                  reuse an existing Groth16Verifier (skip its deploy)
+#   WRAPPED_TOKEN_FACTORY_SOURCE    reuse existing factory on source chain
+#   WRAPPED_TOKEN_FACTORY_DEST      reuse existing factory on dest chain
+#   WRAPPED_TOKEN_NAME / _SYMBOL    name/symbol for the BridgeWrappedToken (default: Wrapped SRC / wSYM)
+#   ACK_WINDOW_SECONDS_SOURCE / _DEST
+#   All *_IMAGE_ID_SOURCE / *_IMAGE_ID_DEST variables
+
+.PHONY: deploy-prod-full
+deploy-prod-full: require-private-key ## Full prod: adapters → tokens → connectors → wrapped-token → bootstrap (two chains)
+	@set -e; \
+	echo ""; \
+	echo "================================================================"; \
+	echo "  PRODUCTION FULL DEPLOYMENT"; \
+	echo "  Source : $(SOURCE_NETWORK) — $(RPC_URL_SOURCE)"; \
+	echo "  Dest   : $(DEST_NETWORK) — $(RPC_URL_DEST)"; \
+	echo "================================================================"; \
+	\
+	src_chain_id=$$($(CAST) chain-id --rpc-url "$(RPC_URL_SOURCE)"); \
+	dst_chain_id=$$($(CAST) chain-id --rpc-url "$(RPC_URL_DEST)"); \
+	\
+	addr_from_log() { \
+		_log="$$1"; _contract="$$2"; \
+		if command -v jq >/dev/null 2>&1; then \
+			jq -r --arg c "$$_contract" \
+				'[.transactions[] | select(.transactionType=="CREATE" and .contractName==$$c)] | last | .contractAddress' \
+				"$$_log"; \
+		elif command -v python3 >/dev/null 2>&1; then \
+			python3 -c "import json,sys; d=json.load(open(sys.argv[1])); txs=[t for t in d.get('transactions',[]) if t.get('transactionType')=='CREATE' and t.get('contractName')==sys.argv[2]]; print(txs[-1]['contractAddress'] if txs else '')" \
+				"$$_log" "$$_contract"; \
+		fi; \
+	}; \
+	\
+	finality_seconds_for() { \
+		_rpc="$$1"; _cid="$$2"; \
+		case "$$_cid" in \
+			1)        echo 14400 ;; \
+			11155111) echo 14400 ;; \
+			100)      echo 14400 ;; \
+			10200)    echo 14400 ;; \
+			137)      echo 14400 ;; \
+			80001)    echo 14400 ;; \
+			42161)    echo 14400 ;; \
+			10)       echo 14400 ;; \
+			8453)     echo 14400 ;; \
+			*) \
+				_latest=$$($(CAST) block-number --rpc-url "$$_rpc" 2>/dev/null || echo 0); \
+				if [ "$$_latest" -gt 20 ] 2>/dev/null; then \
+					_old=$$(( $$_latest - 20 )); \
+					_t_new=$$($(CAST) block latest  --field timestamp --rpc-url "$$_rpc" 2>/dev/null || echo 0); \
+					_t_old=$$($(CAST) block "$$_old" --field timestamp --rpc-url "$$_rpc" 2>/dev/null || echo 0); \
+					_avg=$$(( ($$_t_new - $$_t_old) / 20 )); \
+					_window=$$(( $$_avg * 64 )); \
+					if [ "$$_window" -lt 60 ]   2>/dev/null; then _window=60;   fi; \
+					if [ "$$_window" -gt 7200 ] 2>/dev/null; then _window=7200; fi; \
+					echo "$$_window"; \
+				else \
+					echo 3600; \
+				fi ;; \
+		esac; \
+	}; \
+	retry_script() { \
+		_attempt=0; \
+		while [ "$$_attempt" -lt 3 ]; do \
+			_attempt=$$(( $$_attempt + 1 )); \
+			"$$@" && return 0; \
+			[ "$$_attempt" -lt 3 ] && { echo "  [attempt $$_attempt/3 failed — retrying in 15s...]"; sleep 15; }; \
+		done; \
+		return 1; \
+	}; \
+	\
+	echo ""; \
+	if [ -z "$(RISC0_ADAPTER_SOURCE)" ]; then \
+		echo ">>> [$(SOURCE_NETWORK)] Step 1/9: Deploying RiscZeroAdapter"; \
+		retry_script env \
+			RISC0_VERIFIER="$(RISC0_VERIFIER)" \
+			ORIGIN_MINT_IMAGE_ID="$(ORIGIN_MINT_IMAGE_ID_SOURCE)" \
+			ORIGIN_BURN_IMAGE_ID="$(ORIGIN_BURN_IMAGE_ID_SOURCE)" \
+			DEST_LOCK_IMAGE_ID="$(DEST_LOCK_IMAGE_ID_SOURCE)" \
+			DEST_ACK_IMAGE_ID="$(DEST_ACK_IMAGE_ID_SOURCE)" \
+			DEST_REFUND_CLAIM_IMAGE_ID="$(DEST_REFUND_CLAIM_IMAGE_ID_SOURCE)" \
+			ORIGIN_NON_ACCEPT_IMAGE_ID="$(ORIGIN_NON_ACCEPT_IMAGE_ID_SOURCE)" \
+			$(FORGE) script script/DeployRiscZeroAdapter.s.sol:DeployRiscZeroAdapter \
+				--rpc-url "$(RPC_URL_SOURCE)" --private-key "$(PRIVATE_KEY)" --broadcast --slow $(PROD_FORGE_SCRIPT_EXTRA_FLAGS) -vvv; \
+		risc0_src=$$(addr_from_log \
+			"broadcast/DeployRiscZeroAdapter.s.sol/$$src_chain_id/run-latest.json" "RiscZeroAdapter"); \
+		{ test -n "$$risc0_src" && test "$$risc0_src" != "null"; } || \
+			{ echo "ERROR: Could not extract RISC0_ADAPTER_SOURCE from broadcast log." && exit 1; }; \
+		echo "  -> RISC0_ADAPTER_SOURCE=$$risc0_src"; \
+	else \
+		risc0_src="$(RISC0_ADAPTER_SOURCE)"; \
+		echo ">>> [$(SOURCE_NETWORK)] Step 1/9: Using existing RISC0_ADAPTER_SOURCE=$$risc0_src"; \
+	fi; \
+	\
+	echo ""; \
+	if [ -z "$(RISC0_ADAPTER_DEST)" ]; then \
+		echo ">>> [$(DEST_NETWORK)] Step 2/9: Deploying RiscZeroAdapter"; \
+		retry_script env \
+			RISC0_VERIFIER="$(RISC0_VERIFIER)" \
+			ORIGIN_MINT_IMAGE_ID="$(ORIGIN_MINT_IMAGE_ID_DEST)" \
+			ORIGIN_BURN_IMAGE_ID="$(ORIGIN_BURN_IMAGE_ID_DEST)" \
+			DEST_LOCK_IMAGE_ID="$(DEST_LOCK_IMAGE_ID_DEST)" \
+			DEST_ACK_IMAGE_ID="$(DEST_ACK_IMAGE_ID_DEST)" \
+			DEST_REFUND_CLAIM_IMAGE_ID="$(DEST_REFUND_CLAIM_IMAGE_ID_DEST)" \
+			ORIGIN_NON_ACCEPT_IMAGE_ID="$(ORIGIN_NON_ACCEPT_IMAGE_ID_DEST)" \
+			$(FORGE) script script/DeployRiscZeroAdapter.s.sol:DeployRiscZeroAdapter \
+				--rpc-url "$(RPC_URL_DEST)" --private-key "$(PRIVATE_KEY)" --broadcast --slow $(PROD_FORGE_SCRIPT_EXTRA_FLAGS) -vvv; \
+		risc0_dst=$$(addr_from_log \
+			"broadcast/DeployRiscZeroAdapter.s.sol/$$dst_chain_id/run-latest.json" "RiscZeroAdapter"); \
+		{ test -n "$$risc0_dst" && test "$$risc0_dst" != "null"; } || \
+			{ echo "ERROR: Could not extract RISC0_ADAPTER_DEST from broadcast log." && exit 1; }; \
+		echo "  -> RISC0_ADAPTER_DEST=$$risc0_dst"; \
+	else \
+		risc0_dst="$(RISC0_ADAPTER_DEST)"; \
+		echo ">>> [$(DEST_NETWORK)] Step 2/9: Using existing RISC0_ADAPTER_DEST=$$risc0_dst"; \
+	fi; \
+	\
+	echo ""; \
+	if [ -z "$(SNARK_ADAPTER_SOURCE)" ]; then \
+		echo ">>> [$(SOURCE_NETWORK)] Step 3/9: Auto-deploying SnarkAdapter (SNARK_ADAPTER_SOURCE not set)"; \
+		retry_script $(FORGE) script script/DeploySnarkAdapter.s.sol:DeploySnarkAdapter \
+			--rpc-url "$(RPC_URL_SOURCE)" --private-key "$(PRIVATE_KEY)" --broadcast --slow $(PROD_FORGE_SCRIPT_EXTRA_FLAGS) -vvv; \
+		snark_src=$$(addr_from_log \
+			"broadcast/DeploySnarkAdapter.s.sol/$$src_chain_id/run-latest.json" "SnarkAdapter"); \
+		{ test -n "$$snark_src" && test "$$snark_src" != "null"; } || \
+			{ echo "ERROR: Could not extract SNARK_ADAPTER_SOURCE from broadcast log." && exit 1; }; \
+		echo "  -> SNARK_ADAPTER_SOURCE=$$snark_src"; \
+	else \
+		snark_src="$(SNARK_ADAPTER_SOURCE)"; \
+		echo ">>> [$(SOURCE_NETWORK)] Step 3/9: Using existing SNARK_ADAPTER_SOURCE=$$snark_src"; \
+	fi; \
+	\
+	echo ""; \
+	if [ -z "$(SNARK_ADAPTER_DEST)" ]; then \
+		echo ">>> [$(DEST_NETWORK)] Step 4/9: Auto-deploying SnarkAdapter (SNARK_ADAPTER_DEST not set)"; \
+		retry_script $(FORGE) script script/DeploySnarkAdapter.s.sol:DeploySnarkAdapter \
+			--rpc-url "$(RPC_URL_DEST)" --private-key "$(PRIVATE_KEY)" --broadcast --slow $(PROD_FORGE_SCRIPT_EXTRA_FLAGS) -vvv; \
+		snark_dst=$$(addr_from_log \
+			"broadcast/DeploySnarkAdapter.s.sol/$$dst_chain_id/run-latest.json" "SnarkAdapter"); \
+		{ test -n "$$snark_dst" && test "$$snark_dst" != "null"; } || \
+			{ echo "ERROR: Could not extract SNARK_ADAPTER_DEST from broadcast log." && exit 1; }; \
+		echo "  -> SNARK_ADAPTER_DEST=$$snark_dst"; \
+	else \
+		snark_dst="$(SNARK_ADAPTER_DEST)"; \
+		echo ">>> [$(DEST_NETWORK)] Step 4/9: Using existing SNARK_ADAPTER_DEST=$$snark_dst"; \
+	fi; \
+	\
+	echo ""; \
+	src_token="$(SOURCE_TOKEN)"; \
+	if [ -z "$$src_token" ]; then \
+		echo ">>> [$(SOURCE_NETWORK)] Step 5/9: Deploying source token ($(TOKEN_NAME_SRC) / $(TOKEN_SYMBOL_SRC))"; \
+		tok_out=$$($(FORGE) create script/MockERC20.s.sol:MockERC20 \
+			--rpc-url "$(RPC_URL_SOURCE)" --private-key "$(PRIVATE_KEY)" --broadcast \
+			--constructor-args "$(TOKEN_NAME_SRC)" "$(TOKEN_SYMBOL_SRC)" 2>&1); \
+		echo "$$tok_out"; \
+		src_token=$$(echo "$$tok_out" | grep -E "^Deployed to:" | awk '{print $$NF}'); \
+		test -n "$$src_token" || \
+			{ echo "ERROR: Could not extract source token address from forge output." && exit 1; }; \
+	else \
+		echo ">>> Step 5/9: Using existing source token: $$src_token"; \
+	fi; \
+	echo "  -> SOURCE_TOKEN=$$src_token"; \
+	\
+	echo ""; \
+	if [ "$(AUTO_DETECT_FINALITY)" = "1" ]; then \
+		echo ">>> Auto-detecting block finality window from on-chain data..."; \
+		ack_window_src=$$(finality_seconds_for "$(RPC_URL_SOURCE)" "$$src_chain_id"); \
+		ack_window_dst=$$(finality_seconds_for "$(RPC_URL_DEST)"   "$$dst_chain_id"); \
+		echo "  -> ACK_WINDOW_SECONDS_SOURCE=$$ack_window_src (chain $$src_chain_id)"; \
+		echo "  -> ACK_WINDOW_SECONDS_DEST=$$ack_window_dst   (chain $$dst_chain_id)"; \
+	else \
+		ack_window_src="$(ACK_WINDOW_SECONDS_SOURCE)"; \
+		ack_window_dst="$(ACK_WINDOW_SECONDS_DEST)"; \
+		echo ">>> Using configured ACK_WINDOW_SECONDS_SOURCE=$$ack_window_src, DEST=$$ack_window_dst"; \
+	fi; \
+	\
+	echo ""; \
+	if [ -z "$(SOURCE_CONNECTOR)" ]; then \
+		echo ">>> [$(SOURCE_NETWORK)] Step 6/9: Deploying source Connector"; \
+		retry_script env \
+			RISC0_ADAPTER="$$risc0_src" \
+			SNARK_ADAPTER="$$snark_src" \
+			ACK_WINDOW_SECONDS="$$ack_window_src" \
+			WRAPPED_TOKEN_FACTORY="$(WRAPPED_TOKEN_FACTORY_SOURCE)" \
+			REGISTRATION_TIMELOCK="$(REGISTRATION_TIMELOCK)" \
+			ORIGIN_MINT_IMAGE_ID="$(ORIGIN_MINT_IMAGE_ID_SOURCE)" \
+			ORIGIN_BURN_IMAGE_ID="$(ORIGIN_BURN_IMAGE_ID_SOURCE)" \
+			DEST_LOCK_IMAGE_ID="$(DEST_LOCK_IMAGE_ID_SOURCE)" \
+			DEST_ACK_IMAGE_ID="$(DEST_ACK_IMAGE_ID_SOURCE)" \
+			DEST_REFUND_CLAIM_IMAGE_ID="$(DEST_REFUND_CLAIM_IMAGE_ID_SOURCE)" \
+			ORIGIN_NON_ACCEPT_IMAGE_ID="$(ORIGIN_NON_ACCEPT_IMAGE_ID_SOURCE)" \
+			$(FORGE) script script/DeployConnectorWithAdapters.s.sol:DeployConnectorWithAdapters \
+				--rpc-url "$(RPC_URL_SOURCE)" --private-key "$(PRIVATE_KEY)" --broadcast --slow $(PROD_FORGE_SCRIPT_EXTRA_FLAGS) -vvv; \
+		src_connector=$$(addr_from_log \
+			"broadcast/DeployConnectorWithAdapters.s.sol/$$src_chain_id/run-latest.json" "Connector"); \
+		{ test -n "$$src_connector" && test "$$src_connector" != "null"; } || \
+			{ echo "ERROR: Could not extract SOURCE_CONNECTOR from broadcast log." && exit 1; }; \
+		src_factory="$(WRAPPED_TOKEN_FACTORY_SOURCE)"; \
+		if [ -z "$$src_factory" ]; then \
+			src_factory=$$(addr_from_log \
+				"broadcast/DeployConnectorWithAdapters.s.sol/$$src_chain_id/run-latest.json" "WrappedTokenFactory"); \
+		fi; \
+		{ test -n "$$src_factory" && test "$$src_factory" != "null"; } || \
+			{ echo "ERROR: Could not extract SOURCE_WRAPPED_TOKEN_FACTORY from broadcast log." && exit 1; }; \
+		echo "  -> SOURCE_CONNECTOR=$$src_connector"; \
+		echo "  -> SOURCE_WRAPPED_TOKEN_FACTORY=$$src_factory"; \
+	else \
+		src_connector="$(SOURCE_CONNECTOR)"; \
+		src_factory="$(WRAPPED_TOKEN_FACTORY_SOURCE)"; \
+		if [ -z "$$src_factory" ]; then src_factory="$(SOURCE_WRAPPED_TOKEN_FACTORY)"; fi; \
+		if [ -z "$$src_factory" ]; then \
+			src_factory=$$($(CAST) call "$$src_connector" "wrappedTokenFactory()(address)" --rpc-url "$(RPC_URL_SOURCE)" 2>/dev/null || true); \
+		fi; \
+		if [ -z "$$src_factory" ]; then \
+			src_factory=$$(addr_from_log \
+				"broadcast/DeployConnectorWithAdapters.s.sol/$$src_chain_id/run-latest.json" "WrappedTokenFactory"); \
+		fi; \
+		{ test -n "$$src_factory" && test "$$src_factory" != "null"; } || \
+			{ echo "ERROR: SOURCE_CONNECTOR is set but SOURCE_WRAPPED_TOKEN_FACTORY / WRAPPED_TOKEN_FACTORY_SOURCE is unset and wrappedTokenFactory() could not be read." && exit 1; }; \
+		echo ">>> [$(SOURCE_NETWORK)] Step 6/9: Using existing SOURCE_CONNECTOR=$$src_connector"; \
+		echo "  -> SOURCE_WRAPPED_TOKEN_FACTORY=$$src_factory"; \
+	fi; \
+	\
+	echo ""; \
+	if [ -z "$(DEST_CONNECTOR)" ]; then \
+		echo ">>> [$(DEST_NETWORK)] Step 7/9: Deploying dest Connector"; \
+		retry_script env \
+			RISC0_ADAPTER="$$risc0_dst" \
+			SNARK_ADAPTER="$$snark_dst" \
+			ACK_WINDOW_SECONDS="$$ack_window_dst" \
+			WRAPPED_TOKEN_FACTORY="$(if $(WRAPPED_TOKEN_FACTORY_DEST),$(WRAPPED_TOKEN_FACTORY_DEST),$(DEST_WRAPPED_TOKEN_FACTORY))" \
+			REGISTRATION_TIMELOCK="$(REGISTRATION_TIMELOCK)" \
+			ORIGIN_MINT_IMAGE_ID="$(ORIGIN_MINT_IMAGE_ID_DEST)" \
+			ORIGIN_BURN_IMAGE_ID="$(ORIGIN_BURN_IMAGE_ID_DEST)" \
+			DEST_LOCK_IMAGE_ID="$(DEST_LOCK_IMAGE_ID_DEST)" \
+			DEST_ACK_IMAGE_ID="$(DEST_ACK_IMAGE_ID_DEST)" \
+			DEST_REFUND_CLAIM_IMAGE_ID="$(DEST_REFUND_CLAIM_IMAGE_ID_DEST)" \
+			ORIGIN_NON_ACCEPT_IMAGE_ID="$(ORIGIN_NON_ACCEPT_IMAGE_ID_DEST)" \
+			$(FORGE) script script/DeployConnectorWithAdapters.s.sol:DeployConnectorWithAdapters \
+				--rpc-url "$(RPC_URL_DEST)" --private-key "$(PRIVATE_KEY)" --broadcast --slow $(PROD_FORGE_SCRIPT_EXTRA_FLAGS) -vvv; \
+		dst_connector=$$(addr_from_log \
+			"broadcast/DeployConnectorWithAdapters.s.sol/$$dst_chain_id/run-latest.json" "Connector"); \
+		{ test -n "$$dst_connector" && test "$$dst_connector" != "null"; } || \
+			{ echo "ERROR: Could not extract DEST_CONNECTOR from broadcast log." && exit 1; }; \
+		dst_factory="$(WRAPPED_TOKEN_FACTORY_DEST)"; \
+		if [ -z "$$dst_factory" ]; then dst_factory="$(DEST_WRAPPED_TOKEN_FACTORY)"; fi; \
+		if [ -z "$$dst_factory" ]; then \
+			dst_factory=$$(addr_from_log \
+				"broadcast/DeployConnectorWithAdapters.s.sol/$$dst_chain_id/run-latest.json" "WrappedTokenFactory"); \
+		fi; \
+		{ test -n "$$dst_factory" && test "$$dst_factory" != "null"; } || \
+			{ echo "ERROR: Could not extract DEST_WRAPPED_TOKEN_FACTORY from broadcast log." && exit 1; }; \
+		echo "  -> DEST_CONNECTOR=$$dst_connector"; \
+		echo "  -> DEST_WRAPPED_TOKEN_FACTORY=$$dst_factory"; \
+	else \
+		dst_connector="$(DEST_CONNECTOR)"; \
+		dst_factory="$(WRAPPED_TOKEN_FACTORY_DEST)"; \
+		if [ -z "$$dst_factory" ]; then dst_factory="$(DEST_WRAPPED_TOKEN_FACTORY)"; fi; \
+		{ test -n "$$dst_factory"; } || \
+			{ echo "ERROR: DEST_CONNECTOR is set but neither WRAPPED_TOKEN_FACTORY_DEST nor DEST_WRAPPED_TOKEN_FACTORY is set — add one to .env." && exit 1; }; \
+		echo ">>> [$(DEST_NETWORK)] Step 7/9: Using existing DEST_CONNECTOR=$$dst_connector"; \
+		echo "  -> DEST_WRAPPED_TOKEN_FACTORY=$$dst_factory"; \
+	fi; \
+	\
+	echo ""; \
+	dst_wrapped_token="$(DEST_WRAPPED_TOKEN)"; \
+	if [ -z "$$dst_wrapped_token" ]; then \
+		echo ">>> [$(DEST_NETWORK)] Step 8/9: Deploying BridgeWrappedToken ($(WRAPPED_TOKEN_NAME) / $(WRAPPED_TOKEN_SYMBOL))"; \
+		_n=3; while [ "$$_n" -gt 0 ]; do \
+			if tok_out=$$($(FORGE) create src/tokens/BridgeWrappedToken.sol:BridgeWrappedToken \
+				--rpc-url "$(RPC_URL_DEST)" --private-key "$(PRIVATE_KEY)" --broadcast \
+				--constructor-args "$(WRAPPED_TOKEN_NAME)" "$(WRAPPED_TOKEN_SYMBOL)" "$$dst_connector" 2>&1); then \
+				echo "$$tok_out"; \
+				dst_wrapped_token=$$(echo "$$tok_out" | grep -E "^Deployed to:" | awk '{print $$NF}'); \
+				test -n "$$dst_wrapped_token" && break; \
+				echo "  [forge create completed but DEST_WRAPPED_TOKEN address could not be parsed]"; \
+			else \
+				_status=$$?; \
+				echo "$$tok_out"; \
+				echo "  [forge create failed with exit code $$_status]"; \
+			fi; \
+			_n=$$(( $$_n - 1 )); \
+			[ "$$_n" -gt 0 ] && { echo "  [deploy failed, retrying in 15s...]"; sleep 15; }; \
+		done; \
+		test -n "$$dst_wrapped_token" || \
+			{ echo "ERROR: Could not extract DEST_WRAPPED_TOKEN address after 3 attempts." && exit 1; }; \
+	else \
+		echo ">>> [$(DEST_NETWORK)] Step 8/9: Using existing DEST_WRAPPED_TOKEN=$$dst_wrapped_token"; \
+		wrapped_connector=$$($(CAST) call "$$dst_wrapped_token" "CONNECTOR()(address)" --rpc-url "$(RPC_URL_DEST)" 2>/dev/null || true); \
+		{ test -n "$$wrapped_connector" && test "$$wrapped_connector" != "null"; } || \
+			{ echo "ERROR: Could not read CONNECTOR() from DEST_WRAPPED_TOKEN=$$dst_wrapped_token." && exit 1; }; \
+		if [ "$$(printf '%s' "$$wrapped_connector" | tr '[:upper:]' '[:lower:]')" != "$$(printf '%s' "$$dst_connector" | tr '[:upper:]' '[:lower:]')" ]; then \
+			echo "ERROR: DEST_WRAPPED_TOKEN is bound to CONNECTOR=$$wrapped_connector, but DEST_CONNECTOR=$$dst_connector."; \
+			echo "       Deploy a fresh BridgeWrappedToken for this destination connector and register it in a fresh route/factory."; \
+			exit 1; \
+		fi; \
+	fi; \
+	echo "  -> DEST_WRAPPED_TOKEN=$$dst_wrapped_token"; \
+	\
+	echo ""; \
+	echo ">>> Step 9/9: Registering wrapped-token route"; \
+	retry_script env \
+		SOURCE_CHAIN_ID="$$src_chain_id" \
+		SOURCE_CONNECTOR="$$src_connector" \
+		SOURCE_TOKEN="$$src_token" \
+		DEST_CHAIN_ID="$$dst_chain_id" \
+		DEST_CONNECTOR="$$dst_connector" \
+		DEST_WRAPPED_TOKEN_FACTORY="$$dst_factory" \
+		DEST_WRAPPED_TOKEN="$$dst_wrapped_token" \
+		$(FORGE) script script/bootstrap/ProposeRoutes.s.sol:ProposeRoutes \
+			--rpc-url "$(RPC_URL_DEST)" --private-key "$(PRIVATE_KEY)" --broadcast --slow $(PROD_FORGE_SCRIPT_EXTRA_FLAGS) -vvv; \
+	_timelock="$(REGISTRATION_TIMELOCK)"; \
+	if [ "$${_timelock:-0}" = "0" ]; then \
+		echo ">>> Timelock is zero — applying route immediately..."; \
+		retry_script env \
+			SOURCE_CHAIN_ID="$$src_chain_id" \
+			SOURCE_CONNECTOR="$$src_connector" \
+			SOURCE_TOKEN="$$src_token" \
+			DEST_CHAIN_ID="$$dst_chain_id" \
+			DEST_CONNECTOR="$$dst_connector" \
+			DEST_WRAPPED_TOKEN_FACTORY="$$dst_factory" \
+			$(FORGE) script script/bootstrap/ApplyRoutes.s.sol:ApplyRoutes \
+				--rpc-url "$(RPC_URL_DEST)" --private-key "$(PRIVATE_KEY)" --broadcast --slow $(PROD_FORGE_SCRIPT_EXTRA_FLAGS) -vvv; \
+		echo ">>> Route is live."; \
+	elif echo "$(RPC_URL_DEST)" | grep -qE "127\.0\.0\.1|localhost"; then \
+		echo ">>> [LOCAL] Warping Anvil time $${_timelock}s and applying route..."; \
+		$(CAST) rpc --rpc-url "$(RPC_URL_DEST)" evm_increaseTime "$${_timelock}"; \
+		$(CAST) rpc --rpc-url "$(RPC_URL_DEST)" evm_mine; \
+		retry_script env \
+			SOURCE_CHAIN_ID="$$src_chain_id" \
+			SOURCE_CONNECTOR="$$src_connector" \
+			SOURCE_TOKEN="$$src_token" \
+			DEST_CHAIN_ID="$$dst_chain_id" \
+			DEST_CONNECTOR="$$dst_connector" \
+			DEST_WRAPPED_TOKEN_FACTORY="$$dst_factory" \
+			$(FORGE) script script/bootstrap/ApplyRoutes.s.sol:ApplyRoutes \
+				--rpc-url "$(RPC_URL_DEST)" --private-key "$(PRIVATE_KEY)" --broadcast --slow $(PROD_FORGE_SCRIPT_EXTRA_FLAGS) -vvv; \
+		echo ">>> Route is live."; \
+	else \
+		echo ""; \
+		echo "  NOTE: $${_timelock}s timelock started on $(DEST_NETWORK)."; \
+		echo "  After the timelock elapses, finalize with:"; \
+		echo "    SOURCE_CHAIN_ID=$$src_chain_id SOURCE_CONNECTOR=$$src_connector \\"; \
+		echo "    SOURCE_TOKEN=$$src_token DEST_CHAIN_ID=$$dst_chain_id \\"; \
+		echo "    DEST_CONNECTOR=$$dst_connector DEST_WRAPPED_TOKEN_FACTORY=$$dst_factory \\"; \
+		echo "    make apply-routes"; \
+	fi; \
+	\
+	echo ""; \
+	echo "================================================================"; \
+	echo "  DEPLOYMENT COMPLETE — add these to smart-contracts/.env"; \
+	echo "================================================================"; \
+	echo "  RISC0_ADAPTER_SOURCE=$$risc0_src"; \
+	echo "  RISC0_ADAPTER_DEST=$$risc0_dst"; \
+	echo "  SNARK_ADAPTER_SOURCE=$$snark_src"; \
+	echo "  SNARK_ADAPTER_DEST=$$snark_dst"; \
+	echo "  SOURCE_CONNECTOR=$$src_connector"; \
+	echo "  DEST_CONNECTOR=$$dst_connector"; \
+	echo "  SOURCE_TOKEN=$$src_token"; \
+	echo "  SOURCE_WRAPPED_TOKEN_FACTORY=$$src_factory"; \
+	echo "  WRAPPED_TOKEN_FACTORY_SOURCE=$$src_factory"; \
+	echo "  DEST_WRAPPED_TOKEN_FACTORY=$$dst_factory"; \
+	echo "  DEST_WRAPPED_TOKEN=$$dst_wrapped_token"; \
+	echo "  ACK_WINDOW_SECONDS_SOURCE=$$ack_window_src"; \
+	echo "  ACK_WINDOW_SECONDS_DEST=$$ack_window_dst"; \
+	echo ""
 
 # =============================================================================
 # Inspect deployed addresses from forge broadcast logs
@@ -613,15 +1115,29 @@ help: ## Show available targets
 	@echo "  SEED_RECIPIENT   address to receive test tokens (defaults to PRIVATE_KEY address)"
 	@echo "  SEED_AMOUNT      wei to mint (default: 1 000 × 10^18)"
 	@echo ""
-	@echo "Production deployment:"
-	@echo "  RISC0_ADAPTER_SOURCE / SNARK_ADAPTER_SOURCE"
-	@echo "  RISC0_ADAPTER_DEST   / SNARK_ADAPTER_DEST"
+	@echo "Production deployment (deploy-prod-full / deploy-connectors-prod):"
+	@echo "  SNARK_ADAPTER_SOURCE / SNARK_ADAPTER_DEST   pre-deployed SnarkAdapters (required)"
+	@echo "  RISC0_ADAPTER_SOURCE / RISC0_ADAPTER_DEST   pre-deployed RiscZeroAdapters (auto-deployed by deploy-prod-full)"
+	@echo "  RISC0_VERIFIER       existing Groth16Verifier to reuse (optional; auto-deployed if empty)"
 	@echo "  ACK_WINDOW_SECONDS_SOURCE / ACK_WINDOW_SECONDS_DEST"
 	@echo "  WRAPPED_TOKEN_FACTORY_SOURCE / WRAPPED_TOKEN_FACTORY_DEST  (optional; auto-deployed if empty)"
+	@echo "  REGISTRATION_TIMELOCK  timelock for route registration (default 0 = instant;"
+	@echo "                         set to 172800 once bridge has live users to protect)"
+	@echo "  SOURCE_TOKEN         existing source ERC-20 to bridge (optional; MockERC20 deployed if empty)"
+	@echo "  WRAPPED_TOKEN_NAME / WRAPPED_TOKEN_SYMBOL  BridgeWrappedToken name/symbol (default: Wrapped SRC / wSYM)"
 	@echo "  TOKEN_NAME_SRC / TOKEN_SYMBOL_SRC"
-	@echo "  TOKEN_NAME_DEST / TOKEN_SYMBOL_DEST"
 	@echo "  MINT_AMOUNT      tokens to mint (wei, default 10 000 × 10^18)"
 	@echo "  FUND_AMOUNT      ETH sent by fund-deployer (default: 10ether)"
+	@echo "  AUTO_DETECT_FINALITY  0 (default) = use ACK_WINDOW_SECONDS_SOURCE / _DEST from .env"
+	@echo "                        1 = measure avg block time × 64 blocks for ack window"
+	@echo "  Known chains (auto lookup, no RPC sampling): 1 Ethereum, 11155111 Sepolia,"
+	@echo "    100 Gnosis, 10200 Chiado, 137 Polygon, 42161 Arbitrum, 10 Optimism, 8453 Base"
+	@echo ""
+	@echo "Full prod quick-start (two chains, e.g. Sepolia → Chiado):"
+	@echo "  1. Set PRIVATE_KEY, RPC_URL_SOURCE, RPC_URL_DEST, SOURCE_CHAIN_ID, DEST_CHAIN_ID in .env"
+	@echo "  2. Pre-deploy SnarkAdapters and set SNARK_ADAPTER_SOURCE / SNARK_ADAPTER_DEST"
+	@echo "  3. make deploy-prod-full"
+	@echo "  4. make apply-routes   # after 48-hour timelock (prod only; local auto-applies)"
 	@echo ""
 	@grep -hE '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | \
 		sort | \

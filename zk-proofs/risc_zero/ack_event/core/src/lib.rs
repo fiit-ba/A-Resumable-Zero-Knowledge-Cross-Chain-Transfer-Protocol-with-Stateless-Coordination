@@ -7,8 +7,6 @@ use risc0_steel::ethereum::{
 use serde::{Deserialize, Serialize};
 use std::sync::LazyLock;
 
-pub const MINT_PROOF_ACCEPTED_STATUS: u8 = 2;
-
 sol! {
     interface IConnector {
         event AckReady(
@@ -23,8 +21,7 @@ sol! {
             uint64 timestamp,
             uint8 proofType,
             bytes32 proofHash,
-            bytes32 commitment,
-            bytes proofPayload
+            bytes32 commitment
         );
 
         function getTx(bytes32 _txId)
@@ -55,15 +52,19 @@ sol! {
         bytes32 txId;
         address srcChainConnector;
         address dstChainConnector;
+        uint256 sourceChainId;
+        uint256 destinationChainId;
     }
 }
 
 #[derive(Clone, Serialize, Deserialize)]
 pub struct AckGuestInput {
-    pub evm_input: EthEvmInput,
+    /// EVM input anchored to the event block — used only for the AckReady log query.
+    pub event_evm_input: EthEvmInput,
     pub connector: Address,
     pub tx_id: B256,
     pub source_chain_id: u64,
+    pub destination_chain_id: u64,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -205,11 +206,17 @@ pub fn validate_ack_event(
     Ok(())
 }
 
-pub fn build_public_inputs(event: &NormalizedAckEvent) -> AckProofPublicInputs {
+pub fn build_public_inputs(
+    event: &NormalizedAckEvent,
+    source_chain_id: alloy_primitives::U256,
+    destination_chain_id: alloy_primitives::U256,
+) -> AckProofPublicInputs {
     AckProofPublicInputs {
         txId: event.tx_id,
         srcChainConnector: event.src_chain_connector,
         dstChainConnector: event.dst_chain_connector,
+        sourceChainId: source_chain_id,
+        destinationChainId: destination_chain_id,
     }
 }
 
@@ -217,10 +224,14 @@ pub fn build_public_inputs_from_tx(
     tx_id: B256,
     src_chain_connector: Address,
     dst_chain_connector: Address,
+    source_chain_id: alloy_primitives::U256,
+    destination_chain_id: alloy_primitives::U256,
 ) -> AckProofPublicInputs {
     AckProofPublicInputs {
         txId: tx_id,
         srcChainConnector: src_chain_connector,
         dstChainConnector: dst_chain_connector,
+        sourceChainId: source_chain_id,
+        destinationChainId: destination_chain_id,
     }
 }

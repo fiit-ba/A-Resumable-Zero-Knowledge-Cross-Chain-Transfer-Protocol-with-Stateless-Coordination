@@ -20,8 +20,13 @@ import { normalizeAddress, normalizeBytes32 } from "../core/utils.js";
 // Event classification
 // ---------------------------------------------------------------------------
 
-const SOURCE_EVENT_NAMES = ["DepositLocked", "AckReady", "RefundClaimed"] as const;
-const DEST_EVENT_NAMES = ["FundsReleased", "RefundExecuted"] as const;
+const SOURCE_EVENT_NAMES = [
+  "DepositLocked",
+  "AckReady",
+  "RefundClaimed",
+  "RefundExecuted",
+] as const;
+const DEST_EVENT_NAMES = ["FundsReleased", "DestTxClosed"] as const;
 const ALL_EVENT_NAMES = [...SOURCE_EVENT_NAMES, ...DEST_EVENT_NAMES] as const;
 
 export type DiscoveryEventName = (typeof ALL_EVENT_NAMES)[number];
@@ -191,7 +196,11 @@ async function scanChainForTxId(
           continue;
         }
 
-        const entry: DiscoveredEvent = { eventName, blockNumber: log.blockNumber, connectorAddress };
+        const entry: DiscoveredEvent = {
+          eventName,
+          blockNumber: log.blockNumber,
+          connectorAddress,
+        };
 
         if (eventName === "DepositLocked") {
           try {
@@ -273,7 +282,9 @@ export async function discoverTransferByTxId(
 
   // Phase 1 — scan all profiles in parallel.
   const scanSettled = await Promise.allSettled(
-    profilesToScan.map((p) => scanChainForTxId(p, normalizedTxId, chunkSize, maxLookback, createProvider)),
+    profilesToScan.map((p) =>
+      scanChainForTxId(p, normalizedTxId, chunkSize, maxLookback, createProvider),
+    ),
   );
 
   const chainResults: ChainScanResult[] = [];
@@ -356,7 +367,7 @@ export async function discoverTransferByTxId(
       for (const evt of destChain.events) {
         if (evt.eventName === "FundsReleased")
           executionBlocks.destinationFundsReleased = evt.blockNumber;
-        if (evt.eventName === "RefundExecuted")
+        if (evt.eventName === "DestTxClosed")
           executionBlocks.destinationBurnExecuted = evt.blockNumber;
       }
     }
@@ -364,7 +375,12 @@ export async function discoverTransferByTxId(
     // Phase 3d — probe on-chain statuses.
     const [sourceStatus, destinationStatus] = await Promise.all([
       probeConnectorStatus(srcChain.profileName, sourceConnector, normalizedTxId, createProvider),
-      probeConnectorStatus(destinationProfile, destinationConnector, normalizedTxId, createProvider),
+      probeConnectorStatus(
+        destinationProfile,
+        destinationConnector,
+        normalizedTxId,
+        createProvider,
+      ),
     ]);
 
     const historyHints = {
@@ -372,7 +388,7 @@ export async function discoverTransferByTxId(
       fundsReleased: (destChain?.events ?? []).some((e) => e.eventName === "FundsReleased"),
       ackReady: srcChain.events.some((e) => e.eventName === "AckReady"),
       refundInitiated: srcChain.events.some((e) => e.eventName === "RefundClaimed"),
-      burnExecuted: (destChain?.events ?? []).some((e) => e.eventName === "RefundExecuted"),
+      burnExecuted: (destChain?.events ?? []).some((e) => e.eventName === "DestTxClosed"),
     };
 
     matches.push({

@@ -216,11 +216,11 @@ export interface HistoryFlags {
   depositLocked: boolean;
   fundsReleased: boolean;
   ackReady: boolean;
-  /** Set when source=1, destination=4 and block.timestamp >= ackDeadline. */
+  /** Set when source=1, destination=3 and block.timestamp >= ackDeadline. */
   ackDeadlineExpired?: boolean;
   /**
-   * Set when source=3, destination=0 to distinguish burn-proof from
-   * non-accept-proof. true = RefundExecuted event found on destination (burn
+   * Set when source=2, destination=0 to distinguish burn-proof from
+   * non-accept-proof. true = DestTxClosed event found on destination (burn
    * path); false = no such event (lock was never accepted — non-accept path).
    */
   burnExecuted?: boolean;
@@ -239,7 +239,13 @@ export interface ResumeResult {
   executed?: RelayStageResult;
 }
 
-export type ProofRelayStage = "lock" | "mint" | "ack" | "refund-claim" | "burn-proof" | "non-accept-proof";
+export type ProofRelayStage =
+  | "lock"
+  | "mint"
+  | "ack"
+  | "refund-claim"
+  | "burn-proof"
+  | "non-accept-proof";
 
 export interface ProofRunnerInput {
   stage: ProofRelayStage;
@@ -259,7 +265,13 @@ export interface ProofRunnerInput {
 
 export interface StageDefinition {
   stage: Stage;
-  eventName: "DepositLocked" | "FundsReleased" | "AckReady" | "RefundClaimed" | "RefundExecuted";
+  eventName:
+    | "DepositLocked"
+    | "FundsReleased"
+    | "AckReady"
+    | "RefundClaimed"
+    | "RefundExecuted"
+    | "DestTxClosed";
   expectedStatus: number;
   side: Side;
 }
