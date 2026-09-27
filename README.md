@@ -1,4 +1,4 @@
-# Trustless Universal Protocol for Interoperable Chains Based on Stateless Clients
+# A Resumable Zero-Knowledge Cross-Chain Transfer Protocol with Stateless Coordination
 
 This repository contains a cross-chain transfer prototype built around stateless verification. The core flow combines:
 
