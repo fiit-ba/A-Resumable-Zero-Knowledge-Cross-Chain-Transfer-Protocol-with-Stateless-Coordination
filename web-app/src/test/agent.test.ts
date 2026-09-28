@@ -77,10 +77,7 @@ function assertFetchPathContains(path: string, expectedMethod: string): void {
       : request instanceof Request
         ? request.url
         : String(request);
-  const method =
-    init?.method ??
-    (request instanceof Request ? request.method : undefined) ??
-    "";
+  const method = init?.method ?? (request instanceof Request ? request.method : undefined) ?? "";
   expect(url).toContain(path);
   expect(method.toUpperCase()).toBe(expectedMethod);
 }
@@ -98,7 +95,9 @@ describe("agentApi endpoints", () => {
     vi.mocked(fetch).mockResolvedValueOnce(jsonResponse(MOCK_JOB));
 
     const store = makeStore();
-    const request = store.dispatch(agentApi.endpoints.createJob.initiate({ txId: TX_ID, intent: INTENT }));
+    const request = store.dispatch(
+      agentApi.endpoints.createJob.initiate({ txId: TX_ID, intent: INTENT }),
+    );
     const data = await request.unwrap();
 
     assertFetchPathContains("/jobs", "POST");

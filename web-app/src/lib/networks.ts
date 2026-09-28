@@ -83,7 +83,26 @@ const NETWORKS_BY_CHAIN_ID = new Map<number, NetworkInfo>(
   Object.values(NETWORKS).map((network) => [network.chainId, network]),
 );
 
-export const NETWORK_OPTIONS = Object.keys(NETWORKS).filter((profile) => !profile.startsWith("local-"));
+/** Profiles offered in the transfer form. Local dev chains are reachable via the CLI only. */
+export const NETWORK_OPTIONS = Object.keys(NETWORKS).filter(
+  (profile) => !profile.startsWith("local-"),
+);
+
+export type NetworkKind = "local" | "testnet" | "mainnet";
+
+const TESTNET_PROFILES = new Set(["sepolia", "holesky", "hoodi", "chiado"]);
+
+export function getNetworkKind(profile: string): NetworkKind {
+  if (profile.startsWith("local-")) return "local";
+  if (TESTNET_PROFILES.has(profile)) return "testnet";
+  return "mainnet";
+}
+
+export function getTxExplorerUrl(profile: string, txHash: string): string | null {
+  const base = NETWORKS[profile]?.blockExplorerUrls?.[0];
+  if (!base) return null;
+  return `${base.replace(/\/+$/, "")}/tx/${txHash}`;
+}
 
 export function getChainId(profile: string): number {
   return NETWORKS[profile]?.chainId ?? 0;

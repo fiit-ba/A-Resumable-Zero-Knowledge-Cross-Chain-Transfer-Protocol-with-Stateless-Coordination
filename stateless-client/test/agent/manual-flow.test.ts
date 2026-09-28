@@ -1,45 +1,62 @@
 import Database from "better-sqlite3";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { createJob, getCheckpoint, getJob, setDb, updateJob, upsertCheckpoint } from "../../src/agent/db.js";
-import { confirmJob, prepareJobStage, refreshJob, recordReceipt, updateJobSettings } from "../../src/agent/services/job-service.js";
+import {
+  createJob,
+  getCheckpoint,
+  getJob,
+  setDb,
+  updateJob,
+  upsertCheckpoint,
+} from "../../src/agent/db.js";
+import {
+  confirmJob,
+  prepareJobStage,
+  refreshJob,
+  recordReceipt,
+  updateJobSettings,
+} from "../../src/agent/services/job-service.js";
 import type { RelayProofStage, TransferIntent } from "../../src/agent/contracts.js";
 
 vi.mock("../../src/agent/integrations/relay.js", () => {
   return {
-    buildDirectPayload: vi.fn().mockImplementation((_intent: TransferIntent, txId: string, stage: RelayProofStage) => ({
-      stage,
-      actionKind: "direct",
-      proofPayload: null,
-      contractMethod: stage === "execute-burn" ? "executeBurn" : "initiateRefund",
-      contractArgs: [txId],
-      targetChainId: 31337,
-      targetConnector: "0x2222222222222222222222222222222222222222",
-    })),
+    buildDirectPayload: vi
+      .fn()
+      .mockImplementation((_intent: TransferIntent, txId: string, stage: RelayProofStage) => ({
+        stage,
+        actionKind: "direct",
+        proofPayload: null,
+        contractMethod: stage === "execute-burn" ? "executeBurn" : "initiateRefund",
+        contractArgs: [txId],
+        targetChainId: 31337,
+        targetConnector: "0x2222222222222222222222222222222222222222",
+      })),
     discoverTransferByTxId: vi.fn(),
     getResumeDecision: vi.fn(),
     resolveRepoRoot: vi.fn().mockResolvedValue("/fake/repo"),
-    runPrepareStage: vi.fn().mockImplementation(
-      async (_intent: TransferIntent, txId: string, stage: RelayProofStage) => ({
-        payload: {
-          stage,
-          actionKind: "proof",
-          proofPayload: "0xabc123",
-          contractMethod: "submitProof",
-          contractArgs: [0, "0xabc123", txId],
-          targetChainId: 31337,
-          targetConnector: "0x2222222222222222222222222222222222222222",
-        },
-        verification: {
-          stage: "source-deposit",
-          mode: "colibri",
-          degraded: false,
-          eventName: "DepositLocked",
-          txId,
-          connector: "0x1111111111111111111111111111111111111111",
-          status: 1,
-        },
-      }),
-    ),
+    runPrepareStage: vi
+      .fn()
+      .mockImplementation(
+        async (_intent: TransferIntent, txId: string, stage: RelayProofStage) => ({
+          payload: {
+            stage,
+            actionKind: "proof",
+            proofPayload: "0xabc123",
+            contractMethod: "submitProof",
+            contractArgs: [0, "0xabc123", txId],
+            targetChainId: 31337,
+            targetConnector: "0x2222222222222222222222222222222222222222",
+          },
+          verification: {
+            stage: "source-deposit",
+            mode: "colibri",
+            degraded: false,
+            eventName: "DepositLocked",
+            txId,
+            connector: "0x1111111111111111111111111111111111111111",
+            status: 1,
+          },
+        }),
+      ),
     shouldUsePrunedAckVerification: vi.fn().mockReturnValue(false),
   };
 });
@@ -237,6 +254,16 @@ describe("manual and auto relay job flow", () => {
       expect(updated?.plannerAction).toBe("noop");
     });
     expect(runPrepareStage).not.toHaveBeenCalled();
+  });
+
+  it("rejects a receipt for a stage that was never prepared", () => {
+    const job = createJob(INTENT, TX_ID);
+    updateJob(job.id, { status: "ready_for_signature", currentStage: "lock" });
+    upsertCheckpoint({ jobId: job.id, stage: "lock", payloadJson: "{}" });
+
+    expect(() => recordReceipt(job.id, "ack", "0xhash")).toThrow(/no prepared payload/i);
+    expect(getJob(job.id)?.status).toBe("ready_for_signature");
+    expect(getCheckpoint(job.id, "ack")).toBeUndefined();
   });
 
   it("preserves auto-mode confirm and receipt advance behavior", async () => {

@@ -1,40 +1,43 @@
+import { TxStatus } from "../core/types.js";
 import type {
   ProofPaths,
   ProofRelayStage,
   RelayProofStage,
+  Side,
   Stage,
   StageDefinition,
 } from "../core/types.js";
 
+/** On-chain checkpoints that a relay stage verifies before generating a proof. */
 export const STAGE_DEFINITIONS: Record<Stage, StageDefinition> = {
   "source-deposit": {
     stage: "source-deposit",
     eventName: "DepositLocked",
-    expectedStatus: 1,
+    expectedStatus: TxStatus.DEPOSIT_LOCKED,
     side: "source",
   },
   "destination-funds-released": {
     stage: "destination-funds-released",
     eventName: "FundsReleased",
-    expectedStatus: 3, // MINTED_IN_HOLDING — set by submitLockProof on the destination
+    expectedStatus: TxStatus.MINTED_IN_HOLDING, // set by submitLockProof on the destination
     side: "destination",
   },
   "source-ack-ready": {
     stage: "source-ack-ready",
     eventName: "AckReady",
-    expectedStatus: 0, // NONE — submitMintProof calls _cleanupTx, deleting the source record
+    expectedStatus: TxStatus.NONE, // submitMintProof calls _cleanupTx, deleting the source record
     side: "source",
   },
   "source-refund-initiated": {
     stage: "source-refund-initiated",
     eventName: "RefundClaimed",
-    expectedStatus: 2, // REFUND_INITIATED — set by initiateRefund on the source
+    expectedStatus: TxStatus.REFUND_INITIATED, // set by initiateRefund on the source
     side: "source",
   },
   "destination-burn-executed": {
     stage: "destination-burn-executed",
     eventName: "DestTxClosed",
-    expectedStatus: 0, // NONE — executeBurn calls _cleanupTx, deleting the destination record
+    expectedStatus: TxStatus.NONE, // executeBurn calls _cleanupTx, deleting the destination record
     side: "destination",
   },
 };
@@ -47,7 +50,7 @@ export const STAGE_DEFINITIONS: Record<Stage, StageDefinition> = {
 export interface RelayStageSpec {
   stage: RelayProofStage;
   actionKind: "proof" | "direct";
-  submissionSide: "source" | "destination";
+  submissionSide: Side;
   submissionMethod: string;
   /** Which on-chain Stage to verify before generating proof. Absent for direct stages. */
   verifyStage?: Stage;
@@ -58,7 +61,7 @@ export interface RelayStageSpec {
    * host. Defaults to the side implied by verifyStage. Used by non-accept-proof,
    * whose verifyStage is on the source but whose proof runs against the destination.
    */
-  proofHostSide?: "source" | "destination";
+  proofHostSide?: Side;
   /** Proof host configuration. Absent for direct stages. */
   proofHost?: {
     workspaceKey: keyof ProofPaths;
@@ -88,7 +91,7 @@ export const RELAY_STAGE_REGISTRY: Record<RelayProofStage, RelayStageSpec> = {
     submissionSide: "destination",
     submissionMethod: "submitLockProof",
     verifyStage: "source-deposit",
-    expectedPostSubmitStatus: 3, // MINTED_IN_HOLDING on destination after submitLockProof
+    expectedPostSubmitStatus: TxStatus.MINTED_IN_HOLDING,
     proofHost: {
       workspaceKey: "lockWorkspace",
       dockerScriptKey: "lockDockerScript",
@@ -102,7 +105,7 @@ export const RELAY_STAGE_REGISTRY: Record<RelayProofStage, RelayStageSpec> = {
     submissionSide: "source",
     submissionMethod: "submitMintProof",
     verifyStage: "destination-funds-released",
-    expectedPostSubmitStatus: 0, // NONE — submitMintProof calls _cleanupTx, source record deleted
+    expectedPostSubmitStatus: TxStatus.NONE, // submitMintProof calls _cleanupTx
     proofHost: {
       workspaceKey: "mintWorkspace",
       dockerScriptKey: "mintDockerScript",
@@ -116,7 +119,7 @@ export const RELAY_STAGE_REGISTRY: Record<RelayProofStage, RelayStageSpec> = {
     submissionSide: "destination",
     submissionMethod: "submitAckProof",
     verifyStage: "source-ack-ready",
-    expectedPostSubmitStatus: 0,
+    expectedPostSubmitStatus: TxStatus.NONE, // submitAckProof calls _cleanupTx
     proofHost: {
       workspaceKey: "ackWorkspace",
       dockerScriptKey: "ackDockerScript",
@@ -190,31 +193,20 @@ export const RELAY_STAGE_REGISTRY: Record<RelayProofStage, RelayStageSpec> = {
 // Registry-derived helpers
 // ---------------------------------------------------------------------------
 
+/** Every verifiable on-chain stage, in protocol order. */
+export const VERIFY_STAGES = Object.keys(STAGE_DEFINITIONS) as Stage[];
+
+/** Type guard: true if `value` names a relay stage. */
+export function isRelayStage(value: unknown): value is RelayProofStage {
+  return typeof value === "string" && Object.hasOwn(RELAY_STAGE_REGISTRY, value);
+}
+
+/** Type guard: true if `value` names a verifiable on-chain stage. */
+export function isVerifyStage(value: unknown): value is Stage {
+  return typeof value === "string" && Object.hasOwn(STAGE_DEFINITIONS, value);
+}
+
 /** Type guard: true if the stage requires RISC Zero proof generation. */
 export function isProofRelayStage(stage: RelayProofStage): stage is ProofRelayStage {
   return RELAY_STAGE_REGISTRY[stage].actionKind === "proof";
 }
-
-// ---------------------------------------------------------------------------
-// Legacy exports derived from the registry (kept for backward compatibility)
-// ---------------------------------------------------------------------------
-
-/** Which stages require RISC Zero proof generation vs direct contract call. */
-export const ACTION_KIND_BY_STAGE: Record<RelayProofStage, "proof" | "direct"> = Object.fromEntries(
-  ALL_RELAY_STAGES.map((s) => [s, RELAY_STAGE_REGISTRY[s].actionKind]),
-) as Record<RelayProofStage, "proof" | "direct">;
-
-export const RELAY_STAGE_TO_VERIFY_STAGE: Record<ProofRelayStage, Stage> = Object.fromEntries(
-  ALL_RELAY_STAGES.filter(isProofRelayStage).map((s) => [s, RELAY_STAGE_REGISTRY[s].verifyStage]),
-) as Record<ProofRelayStage, Stage>;
-
-export const RELAY_STAGE_TO_SUBMISSION_METHOD: Record<RelayProofStage, string> = Object.fromEntries(
-  ALL_RELAY_STAGES.map((s) => [s, RELAY_STAGE_REGISTRY[s].submissionMethod]),
-) as Record<RelayProofStage, string>;
-
-export const RELAY_STAGE_TO_PROOF_HOST: Record<
-  ProofRelayStage,
-  NonNullable<RelayStageSpec["proofHost"]>
-> = Object.fromEntries(
-  ALL_RELAY_STAGES.filter(isProofRelayStage).map((s) => [s, RELAY_STAGE_REGISTRY[s].proofHost]),
-) as Record<ProofRelayStage, NonNullable<RelayStageSpec["proofHost"]>>;

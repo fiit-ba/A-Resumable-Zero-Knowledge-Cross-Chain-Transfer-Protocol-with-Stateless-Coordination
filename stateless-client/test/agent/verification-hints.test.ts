@@ -17,10 +17,7 @@ vi.mock("../../src/agent/integrations/relay.js", () => {
   };
 });
 
-import {
-  getResumeDecision,
-  runPrepareStage,
-} from "../../src/agent/integrations/relay.js";
+import { getResumeDecision, runPrepareStage } from "../../src/agent/integrations/relay.js";
 
 const INTENT: TransferIntent = {
   sourceProfile: "sepolia",

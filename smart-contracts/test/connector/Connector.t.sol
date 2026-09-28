@@ -730,12 +730,28 @@ contract ConnectorTest is Test {
         assertEq(uint8(connector.txStatus(txId)), uint8(Enums.TxStatus.REFUND_INITIATED));
     }
 
-    function test_initiateRefund_RevertsWhen_NotOriginator() public {
+    function test_initiateRefund_ByAnyoneAfterDeadline() public {
         bytes32 txId = _doDeposit();
         vm.warp(block.timestamp + _ACK_WINDOW + 1);
 
+        // A third party may start the refund; the event (and later the refund) still names the sender.
+        vm.expectEmit(true, true, true, true);
+        emit ConnectorStorage.RefundClaimed(txId, _ALICE, _AMOUNT, address(connector));
+
         vm.prank(_BOB);
-        vm.expectRevert(abi.encodeWithSelector(Errors.NotTxOriginator.selector, txId, _BOB, _ALICE));
+        connector.initiateRefund(txId);
+
+        assertEq(uint8(connector.txStatus(txId)), uint8(Enums.TxStatus.REFUND_INITIATED));
+    }
+
+    function test_initiateRefund_RevertsWhen_ThirdPartyBeforeDeadline() public {
+        bytes32 txId = _doDeposit();
+        uint64 ackDeadline = connector.getTx(txId).ackDeadline;
+
+        vm.prank(_BOB);
+        vm.expectRevert(
+            abi.encodeWithSelector(Errors.AckWindowNotExpired.selector, ackDeadline, uint64(block.timestamp))
+        );
         connector.initiateRefund(txId);
     }
 

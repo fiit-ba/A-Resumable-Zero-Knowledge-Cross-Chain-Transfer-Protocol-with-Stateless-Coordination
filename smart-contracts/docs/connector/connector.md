@@ -400,8 +400,8 @@ Parameters:
 Prerequisites:
 
 - current status must be `DEPOSIT_LOCKED`
-- caller must be the original `from` address stored in the transfer
 - current time must be at or after `ackDeadline`
+- any caller may initiate; the refund is always paid to the original `from` address
 
 Emits:
 
@@ -410,7 +410,6 @@ Emits:
 Reverts:
 
 - `InvalidStateTransition`
-- `NotTxOriginator`
 - `AckWindowNotExpired`
 
 #### `submitBurnProof(proofType, proofPayload, txId)`
@@ -801,7 +800,6 @@ sequenceDiagram
 | `ZeroAmount` | transfer or received amount was zero |
 | `NotAdmin` | caller is not the connector admin |
 | `InvalidStateTransition` | function was called in the wrong transfer state |
-| `NotTxOriginator` | caller is not the original sender for refund initiation |
 | `AckWindowNotExpired` | refund branch was attempted too early |
 | `AckWindowExpired` | time-sensitive stage was attempted too late |
 | `WrappedTokenNotRegistered` | no wrapped token is registered for the route |

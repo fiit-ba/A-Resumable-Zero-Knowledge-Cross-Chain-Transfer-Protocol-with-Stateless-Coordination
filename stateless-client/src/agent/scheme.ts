@@ -2,6 +2,7 @@ import { execSync } from "node:child_process";
 import { existsSync, writeFileSync, mkdirSync } from "node:fs";
 import { homedir, platform } from "node:os";
 import { join } from "node:path";
+import { errorMessage } from "../core/utils.js";
 
 // ---------------------------------------------------------------------------
 // URL scheme helpers
@@ -133,9 +134,8 @@ end open location
 
     console.log(`[agent] Registered trustless-client:// URL scheme → ${agentPort}`);
   } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
     console.warn(
-      `[agent] URL scheme registration failed (non-fatal): ${msg}\n` +
+      `[agent] URL scheme registration failed (non-fatal): ${errorMessage(err)}\n` +
         `The web app will fall back to showing a manual open-agent button.`,
     );
   }

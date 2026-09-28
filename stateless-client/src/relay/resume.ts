@@ -1,33 +1,8 @@
 import { planRelayResume } from "./planner.js";
-import {
-  runRelayAck,
-  runRelayBurnProof,
-  runRelayExecuteBurn,
-  runRelayLock,
-  runRelayMint,
-  runRelayNonAcceptProof,
-  runRelayRefundClaim,
-  runRelayRefundInitiate,
-  shouldUsePrunedAckVerification,
-} from "./relay.js";
-import type { RelayConfig, RelayStageResult, ResumeAction, ResumeResult } from "../core/types.js";
+import { runRelayStage, shouldUsePrunedAckVerification } from "./relay.js";
+import type { RelayConfig, ResumeResult } from "../core/types.js";
 
-// ---------------------------------------------------------------------------
-// Typed action handler map — replaces per-action if/else chain
-// ---------------------------------------------------------------------------
-
-type RelayActionHandler = (config: RelayConfig) => Promise<RelayStageResult>;
-
-const ACTION_HANDLERS: Partial<Record<ResumeAction, RelayActionHandler>> = {
-  lock: (c) => runRelayLock(c),
-  mint: (c) => runRelayMint(c),
-  "refund-initiate": (c) => runRelayRefundInitiate(c),
-  "refund-claim": (c) => runRelayRefundClaim(c),
-  "execute-burn": (c) => runRelayExecuteBurn(c),
-  "burn-proof": (c) => runRelayBurnProof(c),
-  "non-accept-proof": (c) => runRelayNonAcceptProof(c),
-};
-
+/** Reads both connectors, picks the next valid relay action, and executes it. */
 export async function runRelayResume(config: RelayConfig): Promise<ResumeResult> {
   const decision = await planRelayResume(config);
 
@@ -39,23 +14,17 @@ export async function runRelayResume(config: RelayConfig): Promise<ResumeResult>
     throw new Error(decision.reason);
   }
 
-  // Ack may require the pruned-source-origin verification variant.
-  if (decision.action === "ack") {
-    const ackConfig: RelayConfig = shouldUsePrunedAckVerification(
-      decision.sourceStatus,
-      decision.destinationStatus,
-    )
-      ? { ...config, verificationHints: { ...config.verificationHints, ackVariant: "pruned-source-origin" } }
-      : config;
-    const executed = await runRelayAck(ackConfig);
-    return { decision, executed };
-  }
+  // After the source record is pruned, ack must use the event-only verification variant.
+  const usePrunedAck =
+    decision.action === "ack" &&
+    shouldUsePrunedAckVerification(decision.sourceStatus, decision.destinationStatus);
+  const stageConfig: RelayConfig = usePrunedAck
+    ? {
+        ...config,
+        verificationHints: { ...config.verificationHints, ackVariant: "pruned-source-origin" },
+      }
+    : config;
 
-  const handler = ACTION_HANDLERS[decision.action];
-  if (!handler) {
-    throw new Error(`No handler for action: ${decision.action}`);
-  }
-
-  const executed = await handler(config);
+  const executed = await runRelayStage(stageConfig, decision.action);
   return { decision, executed };
 }

@@ -2,46 +2,77 @@
 
 import { realpathSync } from "node:fs";
 import { fileURLToPath } from "node:url";
-import { resolveRelayConfig, resolveVerificationConfig, type CliOptions } from "./config/config.js";
-import { loadDefaultEnv } from "./config/env.js";
-import type { HappyPathResult, RelayStageResult, ResumeResult, Stage } from "./core/types.js";
-import { runAgentMain } from "./agent/main.js";
 import {
-  runRelayAck,
-  runRelayHappyPath,
-  runRelayLock,
-  runRelayMint,
-  runRelayNonAcceptProof,
-  runVerifyStageCommand,
-} from "./relay/relay.js";
+  EXECUTION_BLOCK_OPTIONS,
+  PROOF_PATH_OPTIONS,
+  resolveRelayConfig,
+  resolveVerificationConfig,
+  type CliOptions,
+} from "./config/config.js";
+import { loadDefaultEnv } from "./config/env.js";
+import { NETWORK_PROFILES } from "./config/profiles.js";
+import type {
+  RelayConfig,
+  RelayProofStage,
+  RelayStageResult,
+  ResumeResult,
+  Stage,
+} from "./core/types.js";
+import { errorMessage } from "./core/utils.js";
+import { runAgentMain } from "./agent/main.js";
+import { runRelayHappyPath, runRelayStage, runVerifyStageCommand } from "./relay/relay.js";
 import { runRelayResume } from "./relay/resume.js";
+import { VERIFY_STAGES, isVerifyStage } from "./relay/stages.js";
 
-const SUPPORTED_COMMANDS = new Set([
-  "verify-stage",
-  "relay-lock",
-  "relay-mint",
-  "relay-ack",
-  "relay-happy-path",
-  "relay-resume",
-  "relay-non-accept-proof",
-  "agent",
-]);
+/** Commands that prepare, sign and submit exactly one relay stage. */
+const SINGLE_STAGE_COMMANDS: Record<string, RelayProofStage> = {
+  "relay-lock": "lock",
+  "relay-mint": "mint",
+  "relay-ack": "ack",
+  "relay-non-accept-proof": "non-accept-proof",
+};
+
+/** Commands that take a signer and run one or more relay stages. */
+const RELAY_COMMANDS: Record<string, (config: RelayConfig, io: CliIo) => Promise<void>> = {
+  ...Object.fromEntries(
+    Object.entries(SINGLE_STAGE_COMMANDS).map(([command, stage]) => [
+      command,
+      async (config: RelayConfig, io: CliIo) =>
+        printRelayResult(await runRelayStage(config, stage), io),
+    ]),
+  ),
+  "relay-happy-path": async (config, io) => {
+    const result = await runRelayHappyPath(config);
+    for (const [stage, stageResult] of Object.entries(result)) {
+      io.log(`${stage}:`);
+      printRelayResult(stageResult, io);
+    }
+  },
+  "relay-resume": async (config, io) => printResumeResult(await runRelayResume(config), io),
+};
+
+const SUPPORTED_COMMANDS = new Set(["verify-stage", "agent", ...Object.keys(RELAY_COMMANDS)]);
+
+/** `--source-network` / `--destination-network` are accepted as aliases for the profile options. */
+const OPTION_ALIASES: Record<string, string> = {
+  "source-network": "source-profile",
+  "destination-network": "destination-profile",
+};
 
 function usage(): string {
+  const relayArgs =
+    "--tx-id <bytes32> --private-key <hex> --proof-backend <local|docker> " +
+    "--source-connector <address> --destination-connector <address> [network and proof options]";
+  const profiles = Object.keys(NETWORK_PROFILES).join("|");
   return [
     "Usage:",
-    "  stateless-client verify-stage --stage <source-deposit|destination-funds-released|source-ack-ready> --tx-id <bytes32> --source-connector <address> --destination-connector <address> [network options]",
-    "  stateless-client relay-lock --tx-id <bytes32> --private-key <hex> --proof-backend <local|docker> --source-connector <address> --destination-connector <address> [network and proof options]",
-    "  stateless-client relay-mint --tx-id <bytes32> --private-key <hex> --proof-backend <local|docker> --source-connector <address> --destination-connector <address> [network and proof options]",
-    "  stateless-client relay-ack --tx-id <bytes32> --private-key <hex> --proof-backend <local|docker> --source-connector <address> --destination-connector <address> [network and proof options]",
-    "  stateless-client relay-happy-path --tx-id <bytes32> --private-key <hex> --proof-backend <local|docker> --source-connector <address> --destination-connector <address> [network and proof options]",
-    "  stateless-client relay-resume --tx-id <bytes32> --private-key <hex> --proof-backend <local|docker> --source-connector <address> --destination-connector <address> [network and proof options]",
-    "  stateless-client relay-non-accept-proof --tx-id <bytes32> --private-key <hex> --proof-backend <local|docker> --source-connector <address> --destination-connector <address> [network and proof options]",
+    `  stateless-client verify-stage --stage <${VERIFY_STAGES.join("|")}> --tx-id <bytes32> --source-connector <address> --destination-connector <address> [network options]`,
+    ...Object.keys(RELAY_COMMANDS).map((command) => `  stateless-client ${command} ${relayArgs}`),
     "  stateless-client agent <command>",
     "",
     "Common network options:",
-    "  --source-profile <local-anvil|local-hardhat|mainnet|sepolia|holesky|hoodi|gnosis|chiado>  (--source-network is an alias)",
-    "  --destination-profile <local-anvil|local-hardhat|mainnet|sepolia|holesky|hoodi|gnosis|chiado>  (--destination-network is an alias)",
+    `  --source-profile <${profiles}>  (--source-network is an alias)`,
+    `  --destination-profile <${profiles}>  (--destination-network is an alias)`,
     "  --source-chain-id <id> --destination-chain-id <id>",
     "  --source-rpc-url <url> --destination-rpc-url <url>",
     "  --source-rpc-urls <csv> --destination-rpc-urls <csv>",
@@ -52,16 +83,11 @@ function usage(): string {
     "",
     "Execution block options:",
     "  --execution-block <tag|number|hex>",
-    "  --lock-execution-block <tag|number|hex>",
-    "  --mint-execution-block <tag|number|hex>",
-    "  --ack-execution-block <tag|number|hex>",
-    "  --refund-claim-execution-block <tag|number|hex>",
-    "  --burn-proof-execution-block <tag|number|hex>",
+    ...Object.values(EXECUTION_BLOCK_OPTIONS).map((option) => `  --${option} <tag|number|hex>`),
     "",
     "Proof path/runtime options:",
     "  --repo-root <path>",
-    "  --lock-workspace <path> --mint-workspace <path> --ack-workspace <path>",
-    "  --lock-docker-script <path> --mint-docker-script <path> --ack-docker-script <path>",
+    ...Object.values(PROOF_PATH_OPTIONS).map((option) => `  --${option} <path>`),
     "  --risc0-prover-mode <local|bonsai>",
     "",
     "Examples:",
@@ -134,28 +160,22 @@ export function parseCliArgs(argv: string[]): ParsedCli {
     }
 
     const equalIndex = withoutPrefix.indexOf("=");
+    const rawKey = equalIndex === -1 ? withoutPrefix : withoutPrefix.slice(0, equalIndex);
+    // Resolve aliases before storing so downstream config sees canonical keys.
+    const key = OPTION_ALIASES[rawKey] ?? rawKey;
+
     if (equalIndex !== -1) {
-      const key = withoutPrefix.slice(0, equalIndex);
-      const value = withoutPrefix.slice(equalIndex + 1);
-      options[key] = value;
+      options[key] = withoutPrefix.slice(equalIndex + 1);
       continue;
     }
 
     const next = argv[i + 1];
     if (next === undefined || next.startsWith("--")) {
-      options[withoutPrefix] = true;
+      options[key] = true;
       continue;
     }
 
-    // Resolve network aliases before storing so downstream config sees canonical keys.
-    const resolved =
-      withoutPrefix === "source-network"
-        ? "source-profile"
-        : withoutPrefix === "destination-network"
-          ? "destination-profile"
-          : withoutPrefix;
-
-    options[resolved] = next;
+    options[key] = next;
     i += 1;
   }
 
@@ -163,17 +183,10 @@ export function parseCliArgs(argv: string[]): ParsedCli {
 }
 
 function parseStage(value: string): Stage {
-  if (
-    value === "source-deposit" ||
-    value === "destination-funds-released" ||
-    value === "source-ack-ready"
-  ) {
+  if (isVerifyStage(value)) {
     return value;
   }
-
-  throw new Error(
-    `Unsupported stage '${value}'. Expected source-deposit, destination-funds-released, or source-ack-ready.`,
-  );
+  throw new Error(`Unsupported stage '${value}'. Expected one of: ${VERIFY_STAGES.join(", ")}.`);
 }
 
 function printRelayResult(result: RelayStageResult, io: CliIo): void {
@@ -201,15 +214,6 @@ function printResumeResult(result: ResumeResult, io: CliIo): void {
   }
 }
 
-function printHappyPathResult(result: HappyPathResult, io: CliIo): void {
-  io.log("lock:");
-  printRelayResult(result.lock, io);
-  io.log("mint:");
-  printRelayResult(result.mint, io);
-  io.log("ack:");
-  printRelayResult(result.ack, io);
-}
-
 async function handleAgentCommand(
   subcommand: string | undefined,
   extraPositionals: string[],
@@ -223,7 +227,9 @@ async function handleAgentCommand(
   }
 
   if (subcommand !== "start") {
-    throw new Error(`Unsupported agent command '${subcommand}'. Run 'stateless-client agent --help'.`);
+    throw new Error(
+      `Unsupported agent command '${subcommand}'. Run 'stateless-client agent --help'.`,
+    );
   }
 
   if (extraPositionals.length > 0) {
@@ -259,68 +265,23 @@ export async function runCli(
     throw new Error(`Unexpected positional argument: ${subcommand}`);
   }
 
-  switch (command) {
-    case "verify-stage": {
-      const stageValue = parsed.options["stage"];
-      if (typeof stageValue !== "string") {
-        throw new Error("Missing required option --stage for verify-stage.");
-      }
-      const stage = parseStage(stageValue);
-      const config = resolveVerificationConfig(parsed.options);
-      const result = await runVerifyStageCommand(config, stage);
-      io.log(`stage: ${result.stage}`);
-      io.log(`verificationMode: ${result.mode}`);
-      io.log(`verificationDegraded: ${result.degraded}`);
-      io.log(`txId: ${result.txId}`);
-      io.log(`status: ${result.status}`);
-      return;
+  if (command === "verify-stage") {
+    const stageValue = parsed.options["stage"];
+    if (typeof stageValue !== "string") {
+      throw new Error("Missing required option --stage for verify-stage.");
     }
-
-    case "relay-lock": {
-      const config = resolveRelayConfig(parsed.options);
-      const result = await runRelayLock(config);
-      printRelayResult(result, io);
-      return;
-    }
-
-    case "relay-mint": {
-      const config = resolveRelayConfig(parsed.options);
-      const result = await runRelayMint(config);
-      printRelayResult(result, io);
-      return;
-    }
-
-    case "relay-ack": {
-      const config = resolveRelayConfig(parsed.options);
-      const result = await runRelayAck(config);
-      printRelayResult(result, io);
-      return;
-    }
-
-    case "relay-happy-path": {
-      const config = resolveRelayConfig(parsed.options);
-      const result = await runRelayHappyPath(config);
-      printHappyPathResult(result, io);
-      return;
-    }
-
-    case "relay-resume": {
-      const config = resolveRelayConfig(parsed.options);
-      const result = await runRelayResume(config);
-      printResumeResult(result, io);
-      return;
-    }
-
-    case "relay-non-accept-proof": {
-      const config = resolveRelayConfig(parsed.options);
-      const result = await runRelayNonAcceptProof(config);
-      printRelayResult(result, io);
-      return;
-    }
-
-    default:
-      throw new Error(`Unhandled command: ${command}`);
+    const stage = parseStage(stageValue);
+    const config = resolveVerificationConfig(parsed.options);
+    const result = await runVerifyStageCommand(config, stage);
+    io.log(`stage: ${result.stage}`);
+    io.log(`verificationMode: ${result.mode}`);
+    io.log(`verificationDegraded: ${result.degraded}`);
+    io.log(`txId: ${result.txId}`);
+    io.log(`status: ${result.status}`);
+    return;
   }
+
+  await RELAY_COMMANDS[command](resolveRelayConfig(parsed.options), io);
 }
 
 async function main(): Promise<void> {
@@ -345,8 +306,7 @@ export function isCliEntrypoint(
 
 if (isCliEntrypoint(process.argv[1])) {
   main().catch((error: unknown) => {
-    const message = error instanceof Error ? error.message : String(error);
-    console.error(`stateless-client failed: ${message}`);
+    console.error(`stateless-client failed: ${errorMessage(error)}`);
     process.exitCode = 1;
   });
 }

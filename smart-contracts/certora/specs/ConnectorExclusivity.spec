@@ -71,7 +71,6 @@ rule exclusivity_submitMintProof_blocks_origin_refund_resolution(
 ) {
     bytes32 txId = createOriginDeposit(eDeposit, from, to, amount);
     require eMint.block.timestamp < certoraTxAckDeadline(txId);
-    require eRefund.msg.sender == from;
     require eRefund.block.timestamp >= certoraTxAckDeadline(txId);
     require eMint.msg.value == 0;
     require eRefund.msg.value == 0;

@@ -10,7 +10,8 @@ import { jobsSlice } from "../features/job-progress/jobsSlice";
 import { agentApi } from "../api/agentApi";
 import type { RelayJob } from "../api/types";
 
-vi.mock("ethers", () => ({
+vi.mock("ethers", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("ethers")>()),
   BrowserProvider: vi.fn(),
   Contract: vi.fn(),
   Interface: vi.fn().mockImplementation(() => ({

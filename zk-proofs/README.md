@@ -1,53 +1,73 @@
-# ZK Proof Workspaces
+# zk-proofs
 
-This directory groups the proof implementations used by the connector relay flows.
+RISC Zero programs that prove facts about one chain so the connector on the other chain can act
+on them. Each guest uses [Steel](https://github.com/boundless-xyz/steel) to read EVM events or
+storage at a specific block, and emits a journal the connector checks against its own transfer
+record.
 
-## Active Proof Path
+## Proof workspaces
 
-The automated scripts in this repository use the RISC Zero workspaces under `zk-proofs/risc_zero/`.
+| Workspace | Proves | Read on | Submitted via |
+| --- | --- | --- | --- |
+| [`lock_event`](risc_zero/lock_event/README.md) | `DepositLocked` | origin | `submitLockProof` on the destination |
+| [`mint_event`](risc_zero/mint_event/README.md) | `FundsReleased` | destination | `submitMintProof` on the origin |
+| [`ack_event`](risc_zero/ack_event/README.md) | `AckReady` | origin | `submitAckProof` on the destination |
+| [`refund_claim_event`](risc_zero/refund_claim_event/README.md) | `RefundClaimed` | origin | `submitRefundClaimProof` on the destination |
+| [`burn_event`](risc_zero/burn_event/README.md) | `DestTxClosed` | destination | `submitBurnProof` on the origin |
+| [`non_accept_event`](risc_zero/non_accept_event/README.md) | `destinationLockAccepted[txId] == false` after `ackDeadline` | destination | `submitNonAcceptanceProof` on the origin |
 
-Those workspaces are:
+Every workspace has the same layout:
 
-- [`risc_zero/lock_event/README.md`](risc_zero/lock_event/README.md): proves `DepositLocked` for destination-side lock submission.
-- [`risc_zero/mint_event/README.md`](risc_zero/mint_event/README.md): proves `FundsReleased` for origin-side mint submission.
-- [`risc_zero/ack_event/README.md`](risc_zero/ack_event/README.md): proves `AckReady` for destination-side acknowledgement.
-- [`risc_zero/refund_claim_event/README.md`](risc_zero/refund_claim_event/README.md): proves `RefundClaimed` for the refund path.
-- [`risc_zero/burn_event/README.md`](risc_zero/burn_event/README.md): proves `DestTxClosed` so the origin side can release refunded funds.
-- [`risc_zero/non_accept_event/README.md`](risc_zero/non_accept_event/README.md): proves that a destination connector never accepted a lock (`destinationLockAccepted` is false) after `ackDeadline`, enabling a non-acceptance refund path via `submitNonAcceptanceProof` on the origin.
+| Path | Contents |
+| --- | --- |
+| `core/` | Input and journal types plus validation shared by host and guest |
+| `methods/guest/` | The zkVM guest program |
+| `host/` | Proving CLI (`<stage>-proof-host`) and `print_image_id` |
+| `scripts/prove-<stage>-docker.sh` | Runs the host inside the shared prover image |
 
-Each RISC Zero workspace follows the same layout:
+> [!IMPORTANT]
+> Connectors pin a RISC Zero image ID per route. Any change to guest code changes its image ID,
+> so redeploy the connector (or its adapters) with the new IDs. Use `print_image_id` or
+> `PROVER_ACTION=print-image-id` to read them.
 
-- `core/`: shared proof input and validation logic
-- `methods/`: the zkVM guest method
-- `host/`: the proving CLI used by scripts and the relay client
-- `scripts/`: Docker helper wrappers
+## Running a proof
 
-## Main Script Integration
+You normally don't run these by hand. The [stateless-client](../stateless-client/README.md)
+picks the right workspace, block, and arguments for each stage.
 
-The repository-level orchestration scripts use these workspaces directly:
+Every workspace depends on `risc0-ethereum` from `smart-contracts/lib` by path, so run
+`make install` in [`smart-contracts/`](../smart-contracts) once before building any of them,
+locally or in Docker.
 
-- `scripts/e2e-happy-path.sh` — happy-path flow (lock → mint → ack)
-- `scripts/e2e-refund-path.sh` — refund flow (lock → refund-initiate → refund-claim → execute-burn → burn-proof)
-
-The stateless relay client also resolves these workspaces when it generates stage payloads.
-
-## Typical Usage
-
-Each workspace README contains a concrete `cargo run` example, but the general pattern is:
+To run one directly with a local RISC Zero toolchain:
 
 ```bash
-cd zk-proofs/risc_zero/<workspace>
-RPC_URL=https://... \
-EXECUTION_BLOCK=latest \
-cargo run -p <host-package> -- <workspace-specific-args>
+cd zk-proofs/risc_zero/lock_event
+RPC_URL=http://127.0.0.1:8545 EXECUTION_BLOCK=latest \
+cargo run -p lock-proof-host --bin lock-proof-host -- \
+  --connector 0x… --tx-id 0x… --source-chain-id 31337 --destination-chain-id 31338
 ```
 
-## Other Trees
+Or without installing the toolchain, inside Docker:
 
-`zk-proofs/stark_zkp/` is present as a parallel layout, but the current automated flows in this repository are wired to the RISC Zero path.
+```bash
+RPC_URL=http://127.0.0.1:8545 CONNECTOR=0x… TX_ID=0x… \
+SOURCE_CHAIN_ID=31337 DEST_CHAIN_ID=31338 \
+bash zk-proofs/risc_zero/lock_event/scripts/prove-lock-docker.sh
+```
 
-## Related Docs
+The per-workspace READMEs list each host's exact inputs.
 
-- [`../README.md`](../README.md)
-- [`../smart-contracts/README.md`](../smart-contracts/README.md)
-- [`../stateless-client/README.md`](../stateless-client/README.md)
+### Docker prover
+
+All six wrappers delegate to [`risc_zero/scripts/docker-prover.sh`](risc_zero/scripts/docker-prover.sh)
+and build from one shared [`risc_zero/Dockerfile.prover`](risc_zero/Dockerfile.prover). The image
+is built on first use (`linux/amd64`, the platform `rzup` supports) and cached, along with a
+per-stage cargo cache volume. The repository root is mounted read-only at `/workspace`, so the
+container sees `smart-contracts/lib` too. `localhost` RPC URLs are rewritten to `host.docker.internal`
+automatically. See the header of `docker-prover.sh` for every tunable (`DOCKER_IMAGE`,
+`DOCKER_REBUILD`, `DOCKER_PLATFORM`, `RISC0_PROVER_MODE`, and more).
+
+To prove remotely on Bonsai instead of the local CPU, use the local toolchain with
+`RISC0_PROVER=bonsai`, `BONSAI_API_URL` and `BONSAI_API_KEY`. The Docker wrapper does not
+forward Bonsai credentials into the container.

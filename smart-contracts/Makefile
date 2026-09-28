@@ -9,7 +9,8 @@
 #   3.  make deploy-all                       # Stage 1: deploy tokens + connectors
 #   4.  make addresses                        # print deployed addresses
 #   5.  # Copy SOURCE_CONNECTOR, DEST_CONNECTOR, SOURCE_TOKEN,
-#       # DEST_WRAPPED_TOKEN_FACTORY, DEST_WRAPPED_TOKEN into .env
+#       # SOURCE_WRAPPED_TOKEN_FACTORY, DEST_WRAPPED_TOKEN_FACTORY, DEST_WRAPPED_TOKEN
+#       # into .env
 #   6.  make bootstrap                        # Stage 2: register wrapped-token route
 #   7.  make seed-test-data                   # Stage 3: mint tokens to test wallet (optional)
 #
@@ -133,16 +134,21 @@ SEED_AMOUNT    ?= 1000000000000000000000
 # Seconds to advance Anvil's clock for the WrappedTokenFactory 48-hour timelock (48h + 1s).
 TIMELOCK_SECONDS := 172801
 
-# Advance Anvil's clock on local nodes; print a warning on prod networks.
+# Advance the clock of both local nodes by the same amount; print a warning on prod networks.
+# Both chains move together because connectors compare the origin's ackDeadline against
+# destination block time, so skewed local clocks make every lock proof look expired.
 define warp-timelock
-if echo "$(RPC_URL_DEST)" | grep -qE "127\.0\.0\.1|localhost"; then \
-	echo ">>> Warping Anvil time by 48h+1s to clear WrappedTokenFactory timelock..."; \
-	cast rpc --rpc-url $(RPC_URL_DEST) evm_increaseTime $(TIMELOCK_SECONDS); \
-	cast rpc --rpc-url $(RPC_URL_DEST) evm_mine; \
+if echo "$(RPC_URL_SOURCE)" | grep -qE "127\.0\.0\.1|localhost" && \
+   echo "$(RPC_URL_DEST)" | grep -qE "127\.0\.0\.1|localhost"; then \
+	echo ">>> Warping local chains by 48h+1s to clear WrappedTokenFactory timelocks..."; \
+	for rpc in $(sort $(RPC_URL_SOURCE) $(RPC_URL_DEST)); do \
+		cast rpc --rpc-url $$rpc evm_increaseTime $(TIMELOCK_SECONDS) >/dev/null; \
+		cast rpc --rpc-url $$rpc evm_mine >/dev/null; \
+	done; \
 else \
 	echo ""; \
 	echo "  NOTE: Production network — 48-hour timelock must elapse naturally."; \
-	echo "  Run 'make apply-routes' again after the timelock expires."; \
+	echo "  Run 'make apply-routes apply-source-route' after the timelock expires."; \
 fi
 endef
 
@@ -190,6 +196,20 @@ endef
 # =============================================================================
 # Build / Test / Clean
 # =============================================================================
+
+# Foundry dependencies, pinned to the tags recorded in foundry.lock. lib/ is
+# git-ignored, so fresh clones fetch them here instead of via git submodules.
+FORGE_STD_VERSION      ?= v1.15.0
+RISC0_ETHEREUM_VERSION ?= v3.0.1
+
+.PHONY: install
+install: ## Fetch Foundry dependencies (forge-std, risc0-ethereum) into lib/
+	@test -d lib/forge-std || git -c advice.detachedHead=false clone --quiet --depth 1 --branch $(FORGE_STD_VERSION) \
+		https://github.com/foundry-rs/forge-std lib/forge-std
+	@test -d lib/risc0-ethereum || git -c advice.detachedHead=false clone --quiet --depth 1 --branch $(RISC0_ETHEREUM_VERSION) \
+		--recurse-submodules --shallow-submodules \
+		https://github.com/risc0/risc0-ethereum lib/risc0-ethereum
+	@echo "Foundry dependencies ready in lib/"
 
 .PHONY: build
 build: ## Compile all contracts
@@ -331,10 +351,12 @@ deploy-source: deploy-source-token deploy-source-connector
 deploy-dest: deploy-dest-token deploy-dest-connector
 
 # =============================================================================
-# Bootstrap  (Stage 2 — register wrapped-token route on dest WrappedTokenFactory)
+# Bootstrap  (Stage 2 — register the wrapped-token route on both WrappedTokenFactories)
 # =============================================================================
-# Set SOURCE_CONNECTOR, DEST_CONNECTOR, SOURCE_TOKEN, DEST_WRAPPED_TOKEN_FACTORY,
-# DEST_WRAPPED_TOKEN in .env (or on the command line) before running these targets.
+# Set SOURCE_CONNECTOR, DEST_CONNECTOR, SOURCE_TOKEN, SOURCE_WRAPPED_TOKEN_FACTORY,
+# DEST_WRAPPED_TOKEN_FACTORY, DEST_WRAPPED_TOKEN in .env (or on the command line) before
+# running these targets. depositAndLock validates the route in the source factory and
+# submitLockProof validates it in the destination factory, so both need it.
 
 define require-bootstrap-vars
 	@test -n "$(SOURCE_CONNECTOR)"           || (echo "ERROR: SOURCE_CONNECTOR not set."           && exit 1)
@@ -417,9 +439,9 @@ apply-routes: require-private-key
 
 ## Full local bootstrap: propose → warp Anvil 48 h → apply. On prod, use propose-routes + apply-routes.
 .PHONY: bootstrap
-bootstrap: propose-routes ## Register wrapped-token route (local: auto time-warp; prod: propose only)
+bootstrap: propose-routes propose-source-route ## Register wrapped-token route on both chains (local: auto time-warp; prod: propose only)
 	@$(call warp-timelock)
-	$(MAKE) apply-routes
+	$(MAKE) apply-routes apply-source-route
 
 # =============================================================================
 # Seed test data  (Stage 3 — mint tokens to a test wallet)
@@ -1108,6 +1130,7 @@ help: ## Show available targets
 	@echo "  SOURCE_CONNECTOR           Connector address on source chain"
 	@echo "  DEST_CONNECTOR             Connector address on dest chain"
 	@echo "  SOURCE_TOKEN               ERC-20 token address on source chain"
+	@echo "  SOURCE_WRAPPED_TOKEN_FACTORY WrappedTokenFactory address on source chain"
 	@echo "  DEST_WRAPPED_TOKEN_FACTORY WrappedTokenFactory address on dest chain"
 	@echo "  DEST_WRAPPED_TOKEN         Wrapped-token address on dest chain"
 	@echo ""

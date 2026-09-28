@@ -244,9 +244,6 @@ contract Connector is ConnectorStorage, IConnector, ReentrancyGuard {
         if (current != Enums.TxStatus.DEPOSIT_LOCKED) {
             revert Errors.InvalidStateTransition(uint8(current), uint8(Enums.TxStatus.REFUND_INITIATED));
         }
-        if (msg.sender != tx_.from) {
-            revert Errors.NotTxOriginator(_txId, msg.sender, tx_.from);
-        }
         if (block.timestamp < tx_.ackDeadline) {
             revert Errors.AckWindowNotExpired(tx_.ackDeadline, uint64(block.timestamp));
         }

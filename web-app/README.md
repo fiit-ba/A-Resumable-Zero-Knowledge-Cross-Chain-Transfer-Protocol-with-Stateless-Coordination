@@ -1,89 +1,64 @@
-# Web App
+# web-app
 
-This package contains the operator-facing React application for starting a transfer, tracking relay progress, and submitting each prepared relay transaction from a browser wallet.
+Operator UI for the cross-chain transfer protocol. It starts a transfer from your wallet, tracks
+each relay stage through the local [stateless-client agent](../stateless-client/README.md), and
+asks the wallet to sign every prepared stage on the correct chain.
 
-## What the App Does
+## What it does
 
-- collects the transfer input and selected source/destination network profiles
-- sends `depositAndLock` through the connected wallet
-- registers the resulting `txId` with the local stateless-client agent
-- polls the local stateless-client agent for the next prepared stage
-- asks the wallet to submit the stage transaction on the correct chain
-- records relay receipts back to the agent so the job can advance
+1. Sends `depositAndLock` on the source chain, approving the token first if needed.
+2. Registers the resulting `txId` with the local agent.
+3. Polls the agent while it verifies and proves the next stage.
+4. Runs on-chain preflight checks (status, ACK window, liquidity, RISC Zero image ID), then asks
+   the wallet to switch chains and submit.
+5. Reports the receipt back so the agent can plan the next stage, until the transfer completes
+   or is refunded.
 
-The app has two primary routes:
+| Route | Page |
+| --- | --- |
+| `/` | Transfer form, active jobs, and developer recovery by `txId` |
+| `/progress/:jobId` | Stage progress with auto and manual relay modes |
 
-- `/`: transfer form
-- `/progress/:jobId`: job progress and per-stage submission UI
+## Run
 
-## Prerequisites
-
-- the local stateless-client agent running on `http://localhost:7549`, or `VITE_AGENT_URL` pointing elsewhere
-- a browser wallet that supports EIP-1193, such as MetaMask
-- access to the configured source and destination networks
-
-## Install and Run
-
-From the repository root:
-
-```bash
-npm install
-npm run dev -w web-app
-```
-
-Or from this directory:
+Requires the local agent (`npm run dev:agent` in `stateless-client/`) and an EIP-1193 wallet
+such as MetaMask.
 
 ```bash
 cd web-app
-npm install
-npm run dev
+npm ci
+npm run dev           # http://localhost:5173
 ```
 
-The Vite dev server starts on its default port unless configured otherwise.
-
-## Environment
-
-Set a custom agent URL when needed:
+The app talks to `http://localhost:7549` by default. Point it elsewhere with:
 
 ```bash
-VITE_AGENT_URL=http://localhost:7549 npm run dev -w web-app
+VITE_AGENT_URL=http://localhost:7549 npm run dev
 ```
 
-By default the app uses `http://localhost:7549`.
+The network picker offers the public profiles `sepolia`, `holesky`, `hoodi`, `gnosis` and
+`chiado`. Their metadata lives in `src/lib/networks.ts`. Local chains are driven through the CLI
+and E2E scripts instead.
 
 ## Scripts
 
 ```bash
-npm run dev
-npm run build
+npm run dev            # Vite dev server
+npm run build          # type-check and production build
+npm run preview        # serve the production build
+npm test               # Vitest + Testing Library
 npm run lint
-npm run preview
-npm run test
+npm run typecheck
+npm run format:check
 ```
 
-## Network Profiles Exposed in the UI
+## Project structure
 
-The app currently exposes these profiles:
-
-- `local-anvil`
-- `local-hardhat`
-- `sepolia`
-- `holesky`
-- `hoodi`
-- `gnosis`
-- `chiado`
-
-The profile metadata lives in `src/lib/networks.ts`.
-
-## Testing
-
-The package uses Vitest and Testing Library for UI and agent-integration tests.
-
-```bash
-npm run test -w web-app
-```
-
-## Related Docs
-
-- [`../README.md`](../README.md)
-- [`../stateless-client/README.md`](../stateless-client/README.md)
+| Path | Contents |
+| --- | --- |
+| `src/pages/` | Route-level pages: data fetching, handlers, and layout |
+| `src/features/job-progress/` | Progress-page components and the active-job slice |
+| `src/features/transfer-start/` | Deposit flow, recovery and active-job panels, and the draft slice |
+| `src/components/` | Shared UI primitives (`Alert`, `Card`, `InfoRow`), `NetworkPicker`, class helpers |
+| `src/lib/` | Framework-free logic: stage metadata, protocol status, stage submission and preflight, wallet helpers, contract error decoding |
+| `src/api/` | RTK Query client for the agent, plus types mirroring `stateless-client/src/agent/contracts.ts` |

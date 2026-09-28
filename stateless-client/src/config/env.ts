@@ -10,7 +10,7 @@ function unquoteEnvValue(value: string): string {
   }
 
   const quote = value[0];
-  if ((quote !== "\"" && quote !== "'") || value[value.length - 1] !== quote) {
+  if ((quote !== '"' && quote !== "'") || value[value.length - 1] !== quote) {
     return value;
   }
 

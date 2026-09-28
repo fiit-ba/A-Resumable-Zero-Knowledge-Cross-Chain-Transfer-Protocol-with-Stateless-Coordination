@@ -1,14 +1,9 @@
-import {
-  Contract,
-  JsonRpcProvider,
-  Wallet,
-  type BlockTag,
-  type ContractTransactionResponse,
-  type Provider,
-} from "ethers";
-import { CONNECTOR_ABI } from "../contracts/abi.js";
+import { Contract, Wallet, type ContractTransactionResponse, type JsonRpcProvider } from "ethers";
+import { CONNECTOR_ABI, describeConnectorRevert } from "../contracts/abi.js";
 import { runProof } from "./proof-runner.js";
 import { RELAY_STAGE_REGISTRY, STAGE_DEFINITIONS, isProofRelayStage } from "./stages.js";
+import { SIDES, connectorReaders, endpointFor, type ConnectorReader } from "./endpoints.js";
+import { TxStatus } from "../core/types.js";
 import type {
   AckVerificationVariant,
   BlockTagInput,
@@ -18,6 +13,7 @@ import type {
   RelayConfig,
   RelayProofStage,
   RelayStageResult,
+  Side,
   Stage,
   StageExecutionBlocks,
   StageVerificationHistoryEntry,
@@ -28,7 +24,7 @@ import type {
   StageVerificationResult,
   VerificationConfig,
 } from "../core/types.js";
-import { normalizeAddress, normalizeBytes32 } from "../core/utils.js";
+import { assertSameAddress, normalizeAddress, normalizeBytes32 } from "../core/utils.js";
 import { verifyAckEventOnly, verifyStage } from "./verification.js";
 
 interface ConnectorTxSnapshot {
@@ -45,96 +41,26 @@ interface ConnectorTxSnapshot {
   status: number;
 }
 
-interface ChainHandles {
-  sourceProvider: JsonRpcProvider;
-  destinationProvider: JsonRpcProvider;
-  sourceReadContract: Contract;
-  destinationReadContract: Contract;
-  sourceWriteContract: Contract;
-  destinationWriteContract: Contract;
-}
+type ConnectorReaders = Record<Side, ConnectorReader>;
 
-function toBlockTag(value: BlockTagInput | undefined): BlockTag | undefined {
-  if (value === undefined) {
-    return undefined;
-  }
-  if (typeof value === "number") {
-    return value;
-  }
-  return value;
-}
+const EXECUTION_BLOCK_BY_STAGE: Record<Stage, keyof StageExecutionBlocks> = {
+  "source-deposit": "sourceDeposit",
+  "destination-funds-released": "destinationFundsReleased",
+  "source-ack-ready": "sourceAckReady",
+  "source-refund-initiated": "sourceRefundInitiated",
+  "destination-burn-executed": "destinationBurnExecuted",
+};
 
-function createProvider(rpcUrl: string, chainId: number, provider?: Provider): JsonRpcProvider {
-  if (provider && provider instanceof JsonRpcProvider) {
-    return provider;
-  }
-  return new JsonRpcProvider(rpcUrl, chainId);
-}
-
-async function assertProviderChainId(
-  provider: JsonRpcProvider,
-  expectedChainId: number,
-  label: string,
-): Promise<void> {
-  const network = await provider.getNetwork();
-  const actual = Number(network.chainId);
-  if (actual !== expectedChainId) {
-    throw new Error(`${label} chain id mismatch: expected ${expectedChainId}, got ${actual}`);
-  }
-}
-
-async function createChainHandles(config: RelayConfig): Promise<ChainHandles> {
-  const sourceProvider = createProvider(config.source.rpcUrls[0], config.source.chainId);
-  const destinationProvider = createProvider(
-    config.destination.rpcUrls[0],
-    config.destination.chainId,
-  );
-
-  await assertProviderChainId(sourceProvider, config.source.chainId, "source");
-  await assertProviderChainId(destinationProvider, config.destination.chainId, "destination");
-
-  const sourceSigner = new Wallet(config.signerPrivateKey, sourceProvider);
-  const destinationSigner = new Wallet(config.signerPrivateKey, destinationProvider);
-
-  return {
-    sourceProvider,
-    destinationProvider,
-    sourceReadContract: new Contract(config.connectors.source, CONNECTOR_ABI, sourceProvider),
-    destinationReadContract: new Contract(
-      config.connectors.destination,
-      CONNECTOR_ABI,
-      destinationProvider,
-    ),
-    sourceWriteContract: new Contract(config.connectors.source, CONNECTOR_ABI, sourceSigner),
-    destinationWriteContract: new Contract(
-      config.connectors.destination,
-      CONNECTOR_ABI,
-      destinationSigner,
-    ),
-  };
-}
-
-function blockForStage(
-  executionBlocks: StageExecutionBlocks,
-  stage: Stage,
-): BlockTagInput | undefined {
-  if (stage === "source-deposit") return executionBlocks.sourceDeposit;
-  if (stage === "destination-funds-released") return executionBlocks.destinationFundsReleased;
-  if (stage === "source-ack-ready") return executionBlocks.sourceAckReady;
-  if (stage === "source-refund-initiated") return executionBlocks.sourceRefundInitiated;
-  if (stage === "destination-burn-executed") return executionBlocks.destinationBurnExecuted;
-  return undefined;
-}
+// ---------------------------------------------------------------------------
+// Verification policy
+// ---------------------------------------------------------------------------
 
 async function verifyStageFromConfig(
   config: VerificationConfig,
   stage: Stage,
   verificationPolicy: StageVerificationPolicy,
 ): Promise<StageVerificationResult> {
-  const stageDef = STAGE_DEFINITIONS[stage];
-  const chain = stageDef.side === "source" ? config.source : config.destination;
-  const connector =
-    stageDef.side === "source" ? config.connectors.source : config.connectors.destination;
+  const { chain, connector } = endpointFor(config, STAGE_DEFINITIONS[stage].side);
 
   return verifyStage({
     stage,
@@ -143,40 +69,35 @@ async function verifyStageFromConfig(
     txId: config.txId,
     expectedSrcConnector: config.connectors.source,
     expectedDstConnector: config.connectors.destination,
-    blockTag: blockForStage(config.executionBlocks, stage),
+    blockTag: config.executionBlocks[EXECUTION_BLOCK_BY_STAGE[stage]],
     verificationPolicy,
   });
 }
 
+/**
+ * After submitMintProof the source record is deleted, so an ack must be proven
+ * from the AckReady event alone rather than from `getTx` state.
+ */
 export function shouldUsePrunedAckVerification(
   sourceStatus: number,
   destinationStatus: number,
 ): boolean {
-  return sourceStatus === 0 && destinationStatus === 3;
+  return sourceStatus === TxStatus.NONE && destinationStatus === TxStatus.MINTED_IN_HOLDING;
 }
 
 function hasPriorDegradedNonLocalProofStage(config: StageSubmissionConfig): boolean {
   const prior = config.verificationHints?.priorProofStageVerifications ?? [];
-  for (const entry of prior) {
-    if (!entry.degraded) {
-      continue;
-    }
-    const stageDef = STAGE_DEFINITIONS[entry.stage];
-    const chain = stageDef.side === "source" ? config.source : config.destination;
-    if (!chain.isLocal) {
-      return true;
-    }
-  }
-  return false;
+  return prior.some(
+    (entry) =>
+      entry.degraded && !endpointFor(config, STAGE_DEFINITIONS[entry.stage].side).chain.isLocal,
+  );
 }
 
 export function deriveVerificationPolicyForStage(
   config: StageSubmissionConfig,
   stage: Stage,
 ): StageVerificationPolicy {
-  const stageDef = STAGE_DEFINITIONS[stage];
-  const chain = stageDef.side === "source" ? config.source : config.destination;
-
+  const { chain } = endpointFor(config, STAGE_DEFINITIONS[stage].side);
   return {
     retryColibriFromScratch: !chain.isLocal && hasPriorDegradedNonLocalProofStage(config),
   };
@@ -192,14 +113,16 @@ function toVerificationHistoryEntry(
   };
 }
 
+// ---------------------------------------------------------------------------
+// On-chain reads and preflight checks
+// ---------------------------------------------------------------------------
+
 async function fetchTxSnapshot(
   contract: Contract,
   txId: string,
   blockTag?: BlockTagInput,
 ): Promise<ConnectorTxSnapshot> {
-  const tx = await contract.getTx(txId, {
-    blockTag: toBlockTag(blockTag),
-  });
+  const tx = await contract.getTx(txId, { blockTag });
 
   return {
     txId: normalizeBytes32(String(tx.txId), "getTx.txId"),
@@ -220,7 +143,7 @@ async function assertAckWindowActive(
   stage: RelayProofStage,
   txSnapshot: ConnectorTxSnapshot,
   provider: JsonRpcProvider,
-  side: "source" | "destination",
+  side: Side,
 ): Promise<void> {
   if (txSnapshot.ackDeadline === 0n) {
     return;
@@ -255,44 +178,67 @@ async function waitForSubmission(
   return receipt.blockNumber;
 }
 
+async function assertProviderChainId(
+  provider: JsonRpcProvider,
+  expectedChainId: number,
+  label: string,
+): Promise<void> {
+  const network = await provider.getNetwork();
+  const actual = Number(network.chainId);
+  if (actual !== expectedChainId) {
+    throw new Error(`${label} chain id mismatch: expected ${expectedChainId}, got ${actual}`);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Proof ↔ chain consistency checks
+// ---------------------------------------------------------------------------
+
+function assertArtifactAddress(label: string, expected: string, actual: string | undefined): void {
+  if (!actual) {
+    throw new Error(`${label} missing in proof artifact`);
+  }
+  assertSameAddress(label, expected, actual);
+}
+
+function assertArtifactValue<T>(label: string, expected: T, actual: T): void {
+  if (actual !== expected) {
+    throw new Error(`${label} mismatch: expected ${expected}, got ${actual}`);
+  }
+}
+
+function assertArtifactTxId(
+  label: string,
+  config: StageSubmissionConfig,
+  artifact: ProofArtifact,
+): void {
+  assertArtifactValue(`${label} txId`, normalizeBytes32(config.txId, "tx-id"), artifact.txId);
+}
+
 function assertLockProofConsistency(
   config: StageSubmissionConfig,
   sourceTx: ConnectorTxSnapshot,
   artifact: ProofArtifact,
 ): void {
-  const expectedTxId = normalizeBytes32(config.txId, "tx-id");
-  if (artifact.txId !== expectedTxId) {
-    throw new Error(`Lock proof txId mismatch: expected ${expectedTxId}, got ${artifact.txId}`);
-  }
-  assertAddressMatch(
+  assertArtifactTxId("Lock proof", config, artifact);
+  const { connectors } = config;
+  assertArtifactAddress(
     "Lock proof srcChainConnector",
-    config.connectors.source,
+    connectors.source,
     artifact.srcChainConnector,
   );
-  assertAddressMatch(
+  assertArtifactAddress(
     "Lock proof dstChainConnector",
-    config.connectors.destination,
+    connectors.destination,
     artifact.dstChainConnector,
   );
-  if (artifact.amount !== sourceTx.amount) {
-    throw new Error(
-      `Lock proof amount mismatch: expected ${sourceTx.amount}, got ${artifact.amount}`,
-    );
-  }
-  assertAddressMatch("Lock proof receiver", sourceTx.to, artifact.receiver);
-  assertAddressMatch("Lock proof sender", sourceTx.from, artifact.sender);
-  assertAddressMatch("Lock proof currencyFrom", sourceTx.currencyFrom, artifact.currencyFrom);
-  assertAddressMatch("Lock proof currencyTo", sourceTx.currencyTo, artifact.currencyTo);
-  if (artifact.sourceChainId !== config.source.chainId) {
-    throw new Error(
-      `Lock proof sourceChainId mismatch: expected ${config.source.chainId}, got ${artifact.sourceChainId}`,
-    );
-  }
-  if (artifact.destChainId !== config.destination.chainId) {
-    throw new Error(
-      `Lock proof destChainId mismatch: expected ${config.destination.chainId}, got ${artifact.destChainId}`,
-    );
-  }
+  assertArtifactValue("Lock proof amount", sourceTx.amount, artifact.amount);
+  assertArtifactAddress("Lock proof receiver", sourceTx.to, artifact.receiver);
+  assertArtifactAddress("Lock proof sender", sourceTx.from, artifact.sender);
+  assertArtifactAddress("Lock proof currencyFrom", sourceTx.currencyFrom, artifact.currencyFrom);
+  assertArtifactAddress("Lock proof currencyTo", sourceTx.currencyTo, artifact.currencyTo);
+  assertArtifactValue("Lock proof sourceChainId", config.source.chainId, artifact.sourceChainId);
+  assertArtifactValue("Lock proof destChainId", config.destination.chainId, artifact.destChainId);
 }
 
 function assertMintProofConsistency(
@@ -300,86 +246,45 @@ function assertMintProofConsistency(
   destinationTx: ConnectorTxSnapshot,
   artifact: ProofArtifact,
 ): void {
-  const expectedTxId = normalizeBytes32(config.txId, "tx-id");
-  if (artifact.txId !== expectedTxId) {
-    throw new Error(`Mint proof txId mismatch: expected ${expectedTxId}, got ${artifact.txId}`);
-  }
-  assertAddressMatch(
+  assertArtifactTxId("Mint proof", config, artifact);
+  assertArtifactAddress(
     "Mint proof dstChainConnector",
     config.connectors.destination,
     artifact.dstChainConnector,
   );
-  if (artifact.amount !== destinationTx.amount) {
-    throw new Error(
-      `Mint proof amount mismatch: expected ${destinationTx.amount}, got ${artifact.amount}`,
-    );
-  }
-  assertAddressMatch("Mint proof receiver", destinationTx.to, artifact.receiver);
+  assertArtifactValue("Mint proof amount", destinationTx.amount, artifact.amount);
+  assertArtifactAddress("Mint proof receiver", destinationTx.to, artifact.receiver);
 }
 
-function assertAckProofConsistency(
-  config: StageSubmissionConfig,
-  artifact: ProofArtifact,
-): void {
-  const expectedTxId = normalizeBytes32(config.txId, "tx-id");
-  if (artifact.txId !== expectedTxId) {
-    throw new Error(`Ack proof txId mismatch: expected ${expectedTxId}, got ${artifact.txId}`);
-  }
-  assertAddressMatch(
+function assertAckProofConsistency(config: StageSubmissionConfig, artifact: ProofArtifact): void {
+  assertArtifactTxId("Ack proof", config, artifact);
+  assertArtifactAddress(
     "Ack proof srcChainConnector",
     config.connectors.source,
     artifact.srcChainConnector,
   );
-  assertAddressMatch(
+  assertArtifactAddress(
     "Ack proof dstChainConnector",
     config.connectors.destination,
     artifact.dstChainConnector,
   );
 }
 
-function assertAddressMatch(label: string, expected: string, actual: string | undefined): void {
-  if (!actual) {
-    throw new Error(`${label} missing in proof artifact`);
-  }
-  const normalizedExpected = normalizeAddress(expected, `${label}.expected`);
-  const normalizedActual = normalizeAddress(actual, `${label}.actual`);
-  if (normalizedExpected.toLowerCase() !== normalizedActual.toLowerCase()) {
-    throw new Error(`${label} mismatch: expected ${normalizedExpected}, got ${normalizedActual}`);
-  }
-}
-
-async function getStatus(contract: Contract, txId: string): Promise<number> {
-  return Number(await contract.txStatus(txId));
-}
-
-export async function runVerifyStageCommand(
-  config: VerificationConfig,
-  stage: Stage,
-): Promise<StageVerificationResult> {
-  return verifyStageFromConfig(config, stage, { retryColibriFromScratch: false });
-}
-
 // ---------------------------------------------------------------------------
-// Handler maps — replace per-stage if/else chains in prepareStageSubmission
+// Per-stage behaviour tables
 // ---------------------------------------------------------------------------
 
-type TimelockPreflightHandler = (
-  config: StageSubmissionConfig,
-  sourceReadContract: Contract,
-  destinationReadContract: Contract,
-  sourceProvider: JsonRpcProvider,
-  destinationProvider: JsonRpcProvider,
-) => Promise<void>;
+type StageHook = (config: StageSubmissionConfig, readers: ConnectorReaders) => Promise<void>;
 
 /** Stages that require an ACK-window check before proof preparation. */
-const TIMELOCK_PREFLIGHT: Partial<Record<ProofRelayStage, TimelockPreflightHandler>> = {
-  mint: async (config, sourceReadContract, _destRC, sourceProvider) => {
+const TIMELOCK_PREFLIGHT: Partial<Record<ProofRelayStage, StageHook>> = {
+  mint: async (config, { source }) => {
     const sourceTx = await fetchTxSnapshot(
-      sourceReadContract,
+      source.contract,
       config.txId,
       config.executionBlocks.sourceDeposit,
     );
-    await assertAckWindowActive("mint", sourceTx, sourceProvider, "source");
+    await assertAckWindowActive("mint", sourceTx, source.provider, "source");
   },
   // No preflight for 'ack': submitAckProof has no ackDeadline guard on-chain because
   // once submitMintProof is accepted the source tx record is deleted, making
@@ -409,10 +314,19 @@ const EXECUTION_BLOCK_RESOLVER: Record<ProofRelayStage, ExecutionBlockResolver> 
 
 type ContractArgsBuilder = (config: StageSubmissionConfig, proof: ProofArtifact) => unknown[];
 
+/** RISC Zero is proof type 0 (`Enums.ProofType.RISC0`). */
+const RISC0_PROOF_TYPE = 0;
+
+const proofOnlyArgs: ContractArgsBuilder = (config, proof) => [
+  RISC0_PROOF_TYPE,
+  proof.proofPayload,
+  config.txId,
+];
+
 /** Maps each proof stage to a function that builds the unsigned contract-call argument list. */
 const CONTRACT_ARGS_BUILDER: Record<ProofRelayStage, ContractArgsBuilder> = {
   lock: (config, proof) => [
-    0,
+    RISC0_PROOF_TYPE,
     proof.proofPayload,
     config.txId,
     String(proof.amount),
@@ -425,33 +339,32 @@ const CONTRACT_ARGS_BUILDER: Record<ProofRelayStage, ContractArgsBuilder> = {
     String(proof.nonce),
     proof.sourceChainId,
   ],
-  mint: (config, proof) => [0, proof.proofPayload, config.txId],
-  ack: (config, proof) => [0, proof.proofPayload, config.txId],
-  "refund-claim": (config, proof) => [0, proof.proofPayload, config.txId],
-  "burn-proof": (config, proof) => [0, proof.proofPayload, config.txId],
-  "non-accept-proof": (config, proof) => [0, proof.proofPayload, config.txId],
+  mint: proofOnlyArgs,
+  ack: proofOnlyArgs,
+  "refund-claim": proofOnlyArgs,
+  "burn-proof": proofOnlyArgs,
+  "non-accept-proof": proofOnlyArgs,
 };
 
 type ProofConsistencyChecker = (
   config: StageSubmissionConfig,
   proof: ProofArtifact,
-  sourceReadContract: Contract,
-  destinationReadContract: Contract,
+  readers: ConnectorReaders,
 ) => Promise<void>;
 
 /** Stages that have extra on-chain consistency checks after proof generation. */
 const PROOF_CONSISTENCY_CHECKER: Partial<Record<ProofRelayStage, ProofConsistencyChecker>> = {
-  lock: async (config, proof, sourceReadContract) => {
+  lock: async (config, proof, { source }) => {
     const sourceTx = await fetchTxSnapshot(
-      sourceReadContract,
+      source.contract,
       config.txId,
       config.executionBlocks.sourceDeposit,
     );
     assertLockProofConsistency(config, sourceTx, proof);
   },
-  mint: async (config, proof, _srcRC, destinationReadContract) => {
+  mint: async (config, proof, { destination }) => {
     const destinationTx = await fetchTxSnapshot(
-      destinationReadContract,
+      destination.contract,
       config.txId,
       config.executionBlocks.destinationFundsReleased,
     );
@@ -460,12 +373,35 @@ const PROOF_CONSISTENCY_CHECKER: Partial<Record<ProofRelayStage, ProofConsistenc
   ack: async (config, proof) => {
     assertAckProofConsistency(config, proof);
   },
-  // refund-claim and burn-proof: no additional consistency checks beyond proof host output.
+  // refund-claim, burn-proof and non-accept-proof: no checks beyond the proof host output.
 };
 
 // ---------------------------------------------------------------------------
 // Core shared preparation API (no private key / signing required)
 // ---------------------------------------------------------------------------
+
+export async function runVerifyStageCommand(
+  config: VerificationConfig,
+  stage: Stage,
+): Promise<StageVerificationResult> {
+  return verifyStageFromConfig(config, stage, { retryColibriFromScratch: false });
+}
+
+function unsignedPayload(
+  config: Pick<StageSubmissionConfig, "source" | "destination" | "connectors">,
+  stage: RelayProofStage,
+  fields: Pick<StageReadyPayload, "actionKind" | "proofPayload" | "contractArgs">,
+): StageReadyPayload {
+  const spec = RELAY_STAGE_REGISTRY[stage];
+  const target = endpointFor(config, spec.submissionSide);
+  return {
+    stage,
+    ...fields,
+    contractMethod: spec.submissionMethod,
+    targetChainId: target.chain.chainId,
+    targetConnector: target.connector,
+  };
+}
 
 /**
  * Builds a wallet-ready payload for a direct-action stage (no proof required).
@@ -475,27 +411,40 @@ export function buildDirectActionPayload(
   config: Pick<StageSubmissionConfig, "source" | "destination" | "connectors" | "txId">,
   stage: "refund-initiate" | "execute-burn",
 ): StageReadyPayload {
-  const spec = RELAY_STAGE_REGISTRY[stage];
-  const targetChainId =
-    spec.submissionSide === "source" ? config.source.chainId : config.destination.chainId;
-  const targetConnector =
-    spec.submissionSide === "source" ? config.connectors.source : config.connectors.destination;
-
-  return {
-    stage,
+  return unsignedPayload(config, stage, {
     actionKind: "direct",
     proofPayload: null,
-    contractMethod: spec.submissionMethod,
     contractArgs: [config.txId],
-    targetChainId,
-    targetConnector,
-  };
+  });
+}
+
+async function verifyForProofStage(
+  config: StageSubmissionConfig,
+  stage: ProofRelayStage,
+  verifyStageKey: Stage,
+): Promise<StageVerificationResult> {
+  const verificationPolicy = deriveVerificationPolicyForStage(config, verifyStageKey);
+  const ackVariant: AckVerificationVariant = config.verificationHints?.ackVariant ?? "standard";
+
+  if (stage === "ack" && ackVariant === "pruned-source-origin") {
+    return verifyAckEventOnly({
+      stage: "source-ack-ready",
+      chain: config.source,
+      connector: config.connectors.source,
+      txId: config.txId,
+      expectedSrcConnector: config.connectors.source,
+      expectedDstConnector: config.connectors.destination,
+      blockTag: config.executionBlocks.sourceAckReady,
+      verificationPolicy,
+    });
+  }
+  return verifyStageFromConfig(config, verifyStageKey, verificationPolicy);
 }
 
 /**
  * Performs the full verified preparation sequence for one relay stage.
  *
- * For proof stages (lock/mint/ack/refund-claim/burn-proof):
+ * For proof stages (lock/mint/ack/refund-claim/burn-proof/non-accept-proof):
  *   1. Stage verification via Colibri (or local RPC fallback)
  *   2. Proof generation
  *   3. Proof consistency checks against on-chain data
@@ -511,92 +460,44 @@ export async function prepareStageSubmission(
   config: StageSubmissionConfig,
   stage: RelayProofStage,
 ): Promise<StageSubmissionResult> {
-  const spec = RELAY_STAGE_REGISTRY[stage];
-
-  // Direct-action stages: no proof generation needed.
-  if (spec.actionKind === "direct") {
-    const payload = buildDirectActionPayload(
-      config,
-      stage as "refund-initiate" | "execute-burn",
-    );
-    return { payload };
+  if (!isProofRelayStage(stage)) {
+    return { payload: buildDirectActionPayload(config, stage) };
   }
 
-  // All remaining stages are proof stages.
-  const proofStage = stage as ProofRelayStage;
+  const spec = RELAY_STAGE_REGISTRY[stage];
   const verifyStageKey = spec.verifyStage as Stage;
-  const stageDef = STAGE_DEFINITIONS[verifyStageKey];
-
-  // Read-only providers for verification and tx-snapshot fetches
-  const sourceProvider = new JsonRpcProvider(config.source.rpcUrls[0], config.source.chainId);
-  const destinationProvider = new JsonRpcProvider(
-    config.destination.rpcUrls[0],
-    config.destination.chainId,
-  );
-  const sourceReadContract = new Contract(config.connectors.source, CONNECTOR_ABI, sourceProvider);
-  const destinationReadContract = new Contract(
-    config.connectors.destination,
-    CONNECTOR_ABI,
-    destinationProvider,
-  );
+  const readers = connectorReaders(config);
 
   // Timelock preflight: do not prepare stages that are already expired.
-  await TIMELOCK_PREFLIGHT[proofStage]?.(
-    config,
-    sourceReadContract,
-    destinationReadContract,
-    sourceProvider,
-    destinationProvider,
-  );
+  await TIMELOCK_PREFLIGHT[stage]?.(config, readers);
 
-  // 1. Stage verification
-  const verificationPolicy = deriveVerificationPolicyForStage(config, verifyStageKey);
-  let verification: StageVerificationResult;
-  const ackVariant: AckVerificationVariant = config.verificationHints?.ackVariant ?? "standard";
-  if (proofStage === "ack" && ackVariant === "pruned-source-origin") {
-    verification = await verifyAckEventOnly({
-      stage: "source-ack-ready",
-      chain: config.source,
-      connector: config.connectors.source,
-      txId: config.txId,
-      expectedSrcConnector: config.connectors.source,
-      expectedDstConnector: config.connectors.destination,
-      blockTag: config.executionBlocks.sourceAckReady,
-      verificationPolicy,
-    });
-  } else {
-    verification = await verifyStageFromConfig(config, verifyStageKey, verificationPolicy);
-  }
+  const verification = await verifyForProofStage(config, stage, verifyStageKey);
 
-  // 2. Resolve execution block for the proof host via the per-stage resolver map.
-  const executionBlock = EXECUTION_BLOCK_RESOLVER[proofStage](
+  const executionBlock = EXECUTION_BLOCK_RESOLVER[stage](
     config.executionBlocks,
     verification.eventBlockNumber,
   );
 
-  // 3. Proof generation
-  // Determine which chain the proof host reads against. Most stages use the same
-  // side as their verifyStage; non-accept-proof overrides this to "destination".
-  const proofHostSide = spec.proofHostSide ?? stageDef.side;
-  const proofRpcUrl =
-    proofHostSide === "source" ? config.source.rpcUrls[0] : config.destination.rpcUrls[0];
-  const proofConnector =
-    proofHostSide === "source" ? config.connectors.source : config.connectors.destination;
+  // The proof host usually reads the same chain it verified; non-accept-proof
+  // overrides this to read the destination.
+  const proofHost = endpointFor(
+    config,
+    spec.proofHostSide ?? STAGE_DEFINITIONS[verifyStageKey].side,
+  );
 
-  // Fetch ackDeadline from the source tx record for non-accept-proof (the proof
-  // host needs it to validate block_timestamp >= ackDeadline in the guest).
-  let ackDeadline: string | undefined;
-  if (proofStage === "non-accept-proof") {
-    const sourceTx = await fetchTxSnapshot(sourceReadContract, config.txId);
-    ackDeadline = sourceTx.ackDeadline.toString();
-  }
+  // The non-accept guest checks block_timestamp >= ackDeadline, so it needs the
+  // deadline from the source transfer record.
+  const ackDeadline =
+    stage === "non-accept-proof"
+      ? (await fetchTxSnapshot(readers.source.contract, config.txId)).ackDeadline.toString()
+      : undefined;
 
   const proof = await runProof({
-    stage: proofStage,
+    stage,
     backend: config.proofBackend,
     txId: config.txId,
-    rpcUrl: proofRpcUrl,
-    connector: proofConnector,
+    rpcUrl: proofHost.chain.rpcUrls[0],
+    connector: proofHost.connector,
     sourceChainId: config.source.chainId,
     destinationChainId: config.destination.chainId,
     ackDeadline,
@@ -606,40 +507,25 @@ export async function prepareStageSubmission(
     risc0ProverMode: config.risc0ProverMode,
   });
 
-  // 4. Proof consistency checks (per-stage, optional)
-  await PROOF_CONSISTENCY_CHECKER[proofStage]?.(
-    config,
-    proof,
-    sourceReadContract,
-    destinationReadContract,
-  );
+  await PROOF_CONSISTENCY_CHECKER[stage]?.(config, proof, readers);
 
-  // 5. Build unsigned payload
-  const targetChainId =
-    spec.submissionSide === "source" ? config.source.chainId : config.destination.chainId;
-  const targetConnector =
-    spec.submissionSide === "source" ? config.connectors.source : config.connectors.destination;
-
-  const contractArgs = CONTRACT_ARGS_BUILDER[proofStage](config, proof);
-
-  const payload: StageReadyPayload = {
-    stage: proofStage,
+  const payload = unsignedPayload(config, stage, {
     actionKind: "proof",
     proofPayload: proof.proofPayload,
-    contractMethod: spec.submissionMethod,
-    contractArgs,
-    targetChainId,
-    targetConnector,
-  };
+    contractArgs: CONTRACT_ARGS_BUILDER[stage](config, proof),
+  });
 
   return { proof, payload, verification };
 }
 
 // ---------------------------------------------------------------------------
-// CLI relay commands — generic helper + thin public wrappers
+// CLI relay commands — prepare, sign and submit with a local private key
 // ---------------------------------------------------------------------------
 
-async function runRelayStage(config: RelayConfig, stage: RelayProofStage): Promise<RelayStageResult> {
+export async function runRelayStage(
+  config: RelayConfig,
+  stage: RelayProofStage,
+): Promise<RelayStageResult> {
   const spec = RELAY_STAGE_REGISTRY[stage];
 
   const { proof, payload, verification } = await prepareStageSubmission(config, stage);
@@ -648,19 +534,32 @@ async function runRelayStage(config: RelayConfig, stage: RelayProofStage): Promi
     throw new Error(`prepareStageSubmission(${stage}) returned an incomplete proof result.`);
   }
 
-  const handles = await createChainHandles(config);
-  const writeContract =
-    spec.submissionSide === "source" ? handles.sourceWriteContract : handles.destinationWriteContract;
-  const readContract =
-    spec.submissionSide === "source" ? handles.sourceReadContract : handles.destinationReadContract;
+  const readers = connectorReaders(config);
+  await Promise.all(
+    SIDES.map((side) =>
+      assertProviderChainId(readers[side].provider, endpointFor(config, side).chain.chainId, side),
+    ),
+  );
 
-  const fn = writeContract[spec.submissionMethod] as (
+  const target = readers[spec.submissionSide];
+  const signer = new Wallet(config.signerPrivateKey, target.provider);
+  const writeContract = new Contract(payload.targetConnector, CONNECTOR_ABI, signer);
+  const submit = writeContract[spec.submissionMethod] as (
     ...args: unknown[]
   ) => Promise<ContractTransactionResponse>;
-  const submitTx = await fn(...payload.contractArgs);
+  let submitTx: ContractTransactionResponse;
+  try {
+    submitTx = await submit(...payload.contractArgs);
+  } catch (error) {
+    const revert = describeConnectorRevert(error);
+    if (revert) {
+      throw new Error(`${spec.submissionMethod} reverted: ${revert}`, { cause: error });
+    }
+    throw error;
+  }
 
   const receiptBlock = await waitForSubmission(submitTx, stage);
-  const resultingStatus = await getStatus(readContract, config.txId);
+  const resultingStatus = Number(await target.contract.txStatus(config.txId));
 
   if (spec.expectedPostSubmitStatus !== null && resultingStatus !== spec.expectedPostSubmitStatus) {
     throw new Error(
@@ -707,58 +606,36 @@ export async function runRelayNonAcceptProof(config: RelayConfig): Promise<Relay
   return runRelayStage(config, "non-accept-proof");
 }
 
-function withExecutionBlockOverrides(
-  config: RelayConfig,
-  overrides: Partial<StageExecutionBlocks>,
-): RelayConfig {
-  return {
-    ...config,
-    executionBlocks: {
-      ...config.executionBlocks,
-      ...overrides,
-    },
-  };
-}
-
-function withVerificationHistory(
-  config: RelayConfig,
-  history: StageVerificationHistoryEntry[],
-): RelayConfig {
-  return {
-    ...config,
-    verificationHints: {
-      ...config.verificationHints,
-      priorProofStageVerifications: history,
-    },
-  };
-}
-
+/**
+ * Runs lock → mint → ack, threading each stage's receipt block and verification
+ * outcome into the next stage's config.
+ */
 export async function runRelayHappyPath(config: RelayConfig): Promise<HappyPathResult> {
-  const lock = await runRelayLock(config);
+  const history: StageVerificationHistoryEntry[] = [];
+  const nextConfig = (overrides: Partial<StageExecutionBlocks>): RelayConfig => ({
+    ...config,
+    executionBlocks: { ...config.executionBlocks, ...overrides },
+    verificationHints: { ...config.verificationHints, priorProofStageVerifications: [...history] },
+  });
+  const record = (result: RelayStageResult) => {
+    if (result.verification) history.push(toVerificationHistoryEntry(result.verification));
+    return result;
+  };
 
-  const mintConfig = withVerificationHistory(
-    withExecutionBlockOverrides(config, {
-      destinationFundsReleased:
-        config.executionBlocks.destinationFundsReleased ?? lock.submission.receiptBlock,
-    }),
-    lock.verification ? [toVerificationHistoryEntry(lock.verification)] : [],
+  const lock = record(await runRelayLock(config));
+  const mint = record(
+    await runRelayMint(
+      nextConfig({
+        destinationFundsReleased:
+          config.executionBlocks.destinationFundsReleased ?? lock.submission.receiptBlock,
+      }),
+    ),
   );
-  const mint = await runRelayMint(mintConfig);
-
-  const ackConfig = withVerificationHistory(
-    withExecutionBlockOverrides(config, {
+  const ack = await runRelayAck(
+    nextConfig({
       sourceAckReady: config.executionBlocks.sourceAckReady ?? mint.submission.receiptBlock,
     }),
-    [
-      ...(lock.verification ? [toVerificationHistoryEntry(lock.verification)] : []),
-      ...(mint.verification ? [toVerificationHistoryEntry(mint.verification)] : []),
-    ],
   );
-  const ack = await runRelayAck(ackConfig);
 
-  return {
-    lock,
-    mint,
-    ack,
-  };
+  return { lock, mint, ack };
 }

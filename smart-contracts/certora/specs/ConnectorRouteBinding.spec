@@ -30,7 +30,6 @@ rule route_binding_submitBurnProof_wrong_source_chain_reverts(
     uint256 wrongSourceChainId
 ) {
     bytes32 txId = createOriginDeposit(eDeposit, from, to, amount);
-    require eRefund.msg.sender == from;
     require eRefund.msg.value == 0;
     require eRefund.block.timestamp >= certoraTxAckDeadline(txId);
     initiateRefund@withrevert(eRefund, txId);
@@ -306,7 +305,6 @@ rule route_binding_risc0_origin_burn_reachable(
     uint256 amount
 ) {
     bytes32 txId = createOriginDeposit(eDeposit, from, to, amount);
-    require eRefund.msg.sender == from;
     require eRefund.msg.value == 0;
     require eRefund.block.timestamp >= certoraTxAckDeadline(txId);
     initiateRefund@withrevert(eRefund, txId);

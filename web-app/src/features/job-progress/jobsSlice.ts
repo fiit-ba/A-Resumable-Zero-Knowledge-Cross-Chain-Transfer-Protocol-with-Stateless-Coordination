@@ -1,4 +1,5 @@
 import { createSlice, type PayloadAction } from "@reduxjs/toolkit";
+import type { RelayJob } from "../../api/types";
 
 /** Active job session stored after deposit succeeds */
 export interface ActiveJobSession {
@@ -8,6 +9,17 @@ export interface ActiveJobSession {
   destProfile: string;
   sourceConnector: string;
   destConnector: string;
+}
+
+export function activeSessionFromJob(job: RelayJob): ActiveJobSession {
+  return {
+    jobId: job.id,
+    txId: job.txId,
+    sourceProfile: job.intent.sourceProfile,
+    destProfile: job.intent.destinationProfile,
+    sourceConnector: job.intent.sourceConnector,
+    destConnector: job.intent.destinationConnector,
+  };
 }
 
 interface JobsState {

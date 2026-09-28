@@ -84,7 +84,10 @@ export const agentApi = createApi({
       query: ({ jobId, stage }) => `/jobs/${jobId}/stages/${stage}`,
       providesTags: (_result, _err, { jobId }) => [{ type: "Job", id: jobId }],
     }),
-    submitReceipt: builder.mutation<RelayJob, { jobId: string; stage: RelayProofStage; txHash: string }>({
+    submitReceipt: builder.mutation<
+      RelayJob,
+      { jobId: string; stage: RelayProofStage; txHash: string }
+    >({
       query: ({ jobId, stage, txHash }) => ({
         url: `/jobs/${jobId}/receipts`,
         method: "POST",

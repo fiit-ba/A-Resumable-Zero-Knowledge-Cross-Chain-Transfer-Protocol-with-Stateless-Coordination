@@ -1,0 +1,161 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  NODE_VERSION: 22
+  FOUNDRY_VERSION: v1.5.1
+
+jobs:
+  contracts:
+    name: Smart contracts
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: smart-contracts
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: foundry-rs/foundry-toolchain@v1
+        with:
+          version: ${{ env.FOUNDRY_VERSION }}
+
+      - name: Install Foundry dependencies (pinned in foundry.lock)
+        run: make install
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: smart-contracts/package-lock.json
+
+      - name: Install Solhint
+        run: npm ci
+
+      - name: Lint (Solhint)
+        run: npm run lint
+
+      - name: Format
+        run: forge fmt --check
+
+      - name: Build
+        run: forge build
+
+      - name: Test
+        run: forge test
+
+      - name: Coverage (must stay at 100%)
+        run: |
+          forge coverage --ir-minimum --no-match-coverage "(test|script|certora)/" --report summary | tee coverage.txt
+          total=$(grep -E '^\| Total' coverage.txt)
+          if echo "$total" | grep -oE '[0-9.]+%' | grep -vqx '100.00%'; then
+            echo "::error::Contract coverage dropped below 100%: $total"
+            exit 1
+          fi
+
+  stateless-client:
+    name: Stateless client
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: stateless-client
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: stateless-client/package-lock.json
+
+      - run: npm ci
+      - name: Typecheck
+        run: npm run typecheck
+      - name: Lint
+        run: npm run lint
+      - name: Format
+        run: npm run format:check
+      - name: Test
+        run: npm test
+      - name: Build
+        run: npm run build
+
+  web-app:
+    name: Web app
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: web-app
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: web-app/package-lock.json
+
+      - run: npm ci
+      - name: Lint
+        run: npm run lint
+      - name: Format
+        run: npm run format:check
+      - name: Test
+        run: npm test
+      - name: Typecheck and build
+        run: npm run build
+
+  proof-core:
+    name: Proof core (${{ matrix.workspace }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { workspace: lock_event, package: lock-proof-core }
+          - { workspace: mint_event, package: mint-proof-core }
+          - { workspace: ack_event, package: ack-proof-core }
+          - { workspace: refund_claim_event, package: refund-claim-proof-core }
+          - { workspace: burn_event, package: burn-proof-core }
+          - { workspace: non_accept_event, package: non-accept-proof-core }
+    steps:
+      - uses: actions/checkout@v4
+
+      # The workspaces reference risc0-ethereum from smart-contracts/lib by path.
+      - name: Install Foundry dependencies
+        run: make -C smart-contracts install
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: zk-proofs/risc_zero/${{ matrix.workspace }}
+
+      # Builds and tests the shared input/journal validation only. The guest and host crates need
+      # the RISC Zero toolchain and are built when generating proofs, not in CI.
+      - name: Test ${{ matrix.package }}
+        working-directory: zk-proofs/risc_zero/${{ matrix.workspace }}
+        run: cargo test -p ${{ matrix.package }} --locked
+
+  scripts:
+    name: Shell scripts
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: ShellCheck (errors, all scripts)
+        run: git ls-files -z '*.sh' | xargs -0 shellcheck -x -S error
+
+      - name: ShellCheck (warnings, prover scripts)
+        run: shellcheck -x -S warning zk-proofs/risc_zero/scripts/*.sh zk-proofs/risc_zero/*/scripts/*.sh

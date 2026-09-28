@@ -11,7 +11,7 @@
  */
 
 import { Contract, JsonRpcProvider } from "ethers";
-import { CONNECTOR_ABI, connectorInterface } from "../contracts/abi.js";
+import { CONNECTOR_ABI, connectorInterface, eventTopic } from "../contracts/abi.js";
 import { NETWORK_PROFILES } from "../config/profiles.js";
 import type { NetworkProfileName, StageExecutionBlocks } from "../core/types.js";
 import { normalizeAddress, normalizeBytes32 } from "../core/utils.js";
@@ -126,19 +126,11 @@ export interface DiscoveryResult {
 // Internals
 // ---------------------------------------------------------------------------
 
-function lazyTopics(): Record<DiscoveryEventName, string> {
-  const out: Partial<Record<DiscoveryEventName, string>> = {};
-  for (const name of ALL_EVENT_NAMES) {
-    const fragment = connectorInterface.getEvent(name);
-    if (!fragment) throw new Error(`Missing ABI event fragment: ${name}`);
-    out[name] = fragment.topicHash;
-  }
-  return out as Record<DiscoveryEventName, string>;
-}
-
 let _topicCache: Record<DiscoveryEventName, string> | undefined;
 function getEventTopics(): Record<DiscoveryEventName, string> {
-  if (!_topicCache) _topicCache = lazyTopics();
+  _topicCache ??= Object.fromEntries(
+    ALL_EVENT_NAMES.map((name) => [name, eventTopic(name)]),
+  ) as Record<DiscoveryEventName, string>;
   return _topicCache;
 }
 

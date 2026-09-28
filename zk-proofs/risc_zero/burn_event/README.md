@@ -34,6 +34,7 @@ PROVER_ACTION=prove \
 RPC_URL=http://127.0.0.1:8546 \
 CONNECTOR=0xDestConnector \
 TX_ID=0xTxId \
+SOURCE_CHAIN_ID=31337 \
 DEST_CHAIN_ID=31338 \
 bash zk-proofs/risc_zero/burn_event/scripts/prove-burn-docker.sh
 ```

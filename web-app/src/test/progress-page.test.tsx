@@ -178,7 +178,9 @@ describe("ProgressPage", () => {
       expect(screen.getByText(/Prepare selected stage/i)).toBeInTheDocument();
       expect(screen.getByRole("button", { name: /Regenerate proof/i })).toBeInTheDocument();
       expect(screen.getByText(/Refresh status/i)).toBeInTheDocument();
-      expect(screen.getByText(/Selected stage differs from planner recommendation/i)).toBeInTheDocument();
+      expect(
+        screen.getByText(/Selected stage differs from planner recommendation/i),
+      ).toBeInTheDocument();
     });
   });
 

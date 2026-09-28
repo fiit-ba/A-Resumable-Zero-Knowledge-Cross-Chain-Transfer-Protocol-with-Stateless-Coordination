@@ -1,5 +1,24 @@
 export type Side = "source" | "destination";
 
+/**
+ * On-chain transfer status, mirroring `Enums.TxStatus` in
+ * smart-contracts/src/libs/Enums.sol. Keep both definitions in sync.
+ */
+export const TxStatus = {
+  /** Default: no record for this txId (never created, or cleaned up after completion). */
+  NONE: 0,
+  /** Origin: funds locked in the connector vault. */
+  DEPOSIT_LOCKED: 1,
+  /** Origin: refund claim active, awaiting a burn or non-acceptance proof. */
+  REFUND_INITIATED: 2,
+  /** Destination: wrapped assets minted into connector holding. */
+  MINTED_IN_HOLDING: 3,
+  /** Destination: refund-claim proof from the origin verified. */
+  REFUND_CLAIM_ACCEPTED: 4,
+} as const;
+
+export type TxStatusValue = (typeof TxStatus)[keyof typeof TxStatus];
+
 export type Stage =
   | "source-deposit"
   | "destination-funds-released"
@@ -200,23 +219,13 @@ export interface StageSubmissionResult {
   verification?: StageVerificationResult;
 }
 
-export type ResumeAction =
-  | "lock"
-  | "mint"
-  | "ack"
-  | "refund-initiate"
-  | "refund-claim"
-  | "execute-burn"
-  | "burn-proof"
-  | "non-accept-proof"
-  | "noop"
-  | "error";
+export type ResumeAction = RelayProofStage | "noop" | "error";
 
 export interface HistoryFlags {
   depositLocked: boolean;
   fundsReleased: boolean;
   ackReady: boolean;
-  /** Set when source=1, destination=3 and block.timestamp >= ackDeadline. */
+  /** Set when source=1 (destination 0 or 3) and the source block time is past ackDeadline. */
   ackDeadlineExpired?: boolean;
   /**
    * Set when source=2, destination=0 to distinguish burn-proof from
@@ -277,51 +286,13 @@ export interface StageDefinition {
 }
 
 // ---------------------------------------------------------------------------
-// Shared types used by the local agent and web app
+// Wallet-facing payloads
 // ---------------------------------------------------------------------------
 
-/** The user's intent passed via the custom URL scheme and stored in each job. */
-export interface TransferIntent {
-  sourceProfile: string;
-  destinationProfile: string;
-  sourceConnector: string;
-  destinationConnector: string;
-  tokenFrom: string;
-  tokenTo: string;
-  /** Amount as a decimal string (bigint-safe JSON). */
-  amount: string;
-  receiver: string;
-}
-
 /**
- * @deprecated Use `JobStatus` from `agent/contracts.ts` instead.
- * This old definition uses legacy status strings ("pending", "running", etc.)
- * that were replaced by the agent's richer state machine.
- */
-export type JobStatus = "pending" | "running" | "proof-ready" | "done" | "error" | "unsupported";
-
-/**
- * @deprecated Use `RelayJob` from `agent/contracts.ts` instead.
- * This definition is kept as a compatibility shim during the refactor.
- */
-export interface RelayJob {
-  id: string;
-  txId: string;
-  currentStage: RelayProofStage | "pending" | "done";
-  status: JobStatus;
-  sourceStatus: number;
-  destinationStatus: number;
-  lastError?: string;
-  latestSubmissionTxHash?: string;
-  intent: TransferIntent;
-  createdAt: number;
-  updatedAt: number;
-}
-
-/**
- * Payload returned by GET /jobs/:id/stages/:stage/proof when the proof is
- * ready. contractArgs are bigint-free (all converted to decimal strings) so
- * they can be safely JSON-serialised and used with ethers.js in the browser.
+ * Unsigned, wallet-ready contract call for one relay stage. contractArgs are
+ * bigint-free (all converted to decimal strings) so they can be safely
+ * JSON-serialised and used with ethers.js in the browser.
  */
 export interface StageReadyPayload {
   stage: RelayProofStage;
