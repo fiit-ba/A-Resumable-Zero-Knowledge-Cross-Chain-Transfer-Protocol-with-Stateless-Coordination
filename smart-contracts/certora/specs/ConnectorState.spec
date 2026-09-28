@@ -41,7 +41,6 @@ rule state_initiateRefund_from_deposit_locked_after_deadline(
 ) {
     bytes32 txId = createOriginDeposit(eDeposit, from, to, amount);
 
-    require eRefund.msg.sender == from;
     require eRefund.msg.value == 0;
     require !certoraReentrancyEntered();
     require eRefund.block.timestamp >= certoraTxAckDeadline(txId);
@@ -68,7 +67,6 @@ rule state_submitBurnProof_from_refund_initiated_cleans(
     uint256 amount
 ) {
     bytes32 txId = createOriginDeposit(eDeposit, from, to, amount);
-    require eRefund.msg.sender == from;
     require eRefund.msg.value == 0;
     require !certoraReentrancyEntered();
     require eRefund.block.timestamp >= certoraTxAckDeadline(txId);
@@ -99,7 +97,6 @@ rule state_submitNonAcceptanceProof_from_refund_initiated_cleans(
     uint256 amount
 ) {
     bytes32 txId = createOriginDeposit(eDeposit, from, to, amount);
-    require eRefund.msg.sender == from;
     require eRefund.msg.value == 0;
     require !certoraReentrancyEntered();
     require eRefund.block.timestamp >= certoraTxAckDeadline(txId);

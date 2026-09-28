@@ -4,6 +4,7 @@ import { fileURLToPath } from "node:url";
 import { openDb } from "./db.js";
 import { registerUrlScheme } from "./scheme.js";
 import { createApp } from "./server.js";
+import { errorMessage } from "../core/utils.js";
 
 export interface AgentRuntimeOptions {
   allowedOrigins?: string;
@@ -13,7 +14,9 @@ export interface AgentRuntimeOptions {
   registerScheme?: boolean;
 }
 
-export function resolveAgentRuntimeOptions(options: AgentRuntimeOptions = {}): Required<AgentRuntimeOptions> {
+export function resolveAgentRuntimeOptions(
+  options: AgentRuntimeOptions = {},
+): Required<AgentRuntimeOptions> {
   return {
     allowedOrigins: options.allowedOrigins ?? process.env["AGENT_ALLOWED_ORIGINS"] ?? "",
     dbPath: options.dbPath ?? "",
@@ -66,8 +69,7 @@ function isAgentEntrypoint(argvPath: string | undefined): boolean {
 
 if (isAgentEntrypoint(process.argv[1])) {
   runAgentMain().catch((err: unknown) => {
-    const message = err instanceof Error ? err.message : String(err);
-    console.error(`[agent] Fatal error: ${message}`);
+    console.error(`[agent] Fatal error: ${errorMessage(err)}`);
     process.exitCode = 1;
   });
 }

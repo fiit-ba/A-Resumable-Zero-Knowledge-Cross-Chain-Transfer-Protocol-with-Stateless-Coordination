@@ -10,7 +10,7 @@ import {
   updateJobSettings,
 } from "./services/job-service.js";
 import { parseSchemeUrl } from "./scheme.js";
-import type { RelayProofStage } from "./contracts.js";
+import type { RelayJob } from "./contracts.js";
 import type {
   CreateJobBody,
   PrepareStageBody,
@@ -18,9 +18,30 @@ import type {
   RecoverJobBody,
   UpdateSettingsBody,
 } from "./types.js";
-import { ALL_RELAY_STAGES } from "../relay/stages.js";
+import { ALL_RELAY_STAGES, isRelayStage } from "../relay/stages.js";
+import { errorMessage } from "../core/utils.js";
 
 const AGENT_VERSION = "0.1.0";
+
+const INVALID_STAGE_ERROR = `Invalid stage. Expected one of: ${ALL_RELAY_STAGES.join(", ")}.`;
+
+// ---------------------------------------------------------------------------
+// Request helpers
+// ---------------------------------------------------------------------------
+
+/** Loads the job named by the `:id` route param, or responds 404 and returns undefined. */
+function requireJob(req: Request, res: Response): RelayJob | undefined {
+  const job = getJob(req.params.id);
+  if (!job) {
+    res.status(404).json({ error: "Job not found" });
+  }
+  return job;
+}
+
+/** Responds 409 Conflict with the error's message — used for rejected state transitions. */
+function sendConflict(res: Response, err: unknown): void {
+  res.status(409).json({ error: errorMessage(err) });
+}
 
 // ---------------------------------------------------------------------------
 // CORS
@@ -30,14 +51,6 @@ const DEFAULT_ALLOWED_ORIGINS = [
   "http://localhost:5173", // Vite dev
   "http://localhost:4173", // Vite preview
 ];
-
-const VALID_STAGES: RelayProofStage[] = [...ALL_RELAY_STAGES];
-
-const VALID_STAGE_SET = new Set<RelayProofStage>(VALID_STAGES);
-
-function parseRelayStage(value: string): RelayProofStage | null {
-  return VALID_STAGE_SET.has(value as RelayProofStage) ? (value as RelayProofStage) : null;
-}
 
 function buildCorsMiddleware(allowedOriginsEnv?: string) {
   const allowed = new Set<string>([
@@ -120,12 +133,8 @@ export function createApp(opts?: { allowedOrigins?: string }): express.Express {
 
   /** GET /jobs/:id — current job state */
   app.get("/jobs/:id", (req: Request, res: Response): void => {
-    const job = getJob(req.params.id);
-    if (!job) {
-      res.status(404).json({ error: "Job not found" });
-      return;
-    }
-    res.json(job);
+    const job = requireJob(req, res);
+    if (job) res.json(job);
   });
 
   /**
@@ -134,15 +143,11 @@ export function createApp(opts?: { allowedOrigins?: string }): express.Express {
    * Returns 202 immediately; poll GET /jobs/:id for status updates.
    */
   app.post("/jobs/:id/confirm", (req: Request, res: Response): void => {
-    const job = getJob(req.params.id);
-    if (!job) {
-      res.status(404).json({ error: "Job not found" });
-      return;
-    }
+    const job = requireJob(req, res);
+    if (!job) return;
 
     confirmJob(job.id).catch((err: unknown) => {
-      const message = err instanceof Error ? err.message : String(err);
-      console.error(`[server] confirmJob error for ${job.id}: ${message}`);
+      console.error(`[server] confirmJob error for ${job.id}: ${errorMessage(err)}`);
     });
 
     // Return current state — client polls for updates
@@ -153,11 +158,8 @@ export function createApp(opts?: { allowedOrigins?: string }): express.Express {
    * PATCH /jobs/:id/settings — update relay mode and post-submit behavior.
    */
   app.patch("/jobs/:id/settings", (req: Request, res: Response): void => {
-    const job = getJob(req.params.id);
-    if (!job) {
-      res.status(404).json({ error: "Job not found" });
-      return;
-    }
+    const job = requireJob(req, res);
+    if (!job) return;
 
     const body = req.body as UpdateSettingsBody;
     if (body.relayMode !== undefined && body.relayMode !== "auto" && body.relayMode !== "manual") {
@@ -178,11 +180,9 @@ export function createApp(opts?: { allowedOrigins?: string }): express.Express {
     }
 
     try {
-      const updated = updateJobSettings(job.id, body);
-      res.json(updated);
+      res.json(updateJobSettings(job.id, body));
     } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
-      res.status(409).json({ error: message });
+      sendConflict(res, err);
     }
   });
 
@@ -190,20 +190,12 @@ export function createApp(opts?: { allowedOrigins?: string }): express.Express {
    * POST /jobs/:id/refresh — refresh planner/source/destination status only.
    */
   app.post("/jobs/:id/refresh", (req: Request, res: Response): void => {
-    const job = getJob(req.params.id);
-    if (!job) {
-      res.status(404).json({ error: "Job not found" });
-      return;
-    }
+    const job = requireJob(req, res);
+    if (!job) return;
 
     refreshJob(job.id)
-      .then((updated) => {
-        res.json(updated);
-      })
-      .catch((err: unknown) => {
-        const message = err instanceof Error ? err.message : String(err);
-        res.status(409).json({ error: message });
-      });
+      .then((updated) => res.json(updated))
+      .catch((err: unknown) => sendConflict(res, err));
   });
 
   /**
@@ -211,28 +203,18 @@ export function createApp(opts?: { allowedOrigins?: string }): express.Express {
    * Returns 202 immediately; poll GET /jobs/:id for status updates.
    */
   app.post("/jobs/:id/prepare", (req: Request, res: Response): void => {
-    const job = getJob(req.params.id);
-    if (!job) {
-      res.status(404).json({ error: "Job not found" });
-      return;
-    }
+    const job = requireJob(req, res);
+    if (!job) return;
 
     const body = req.body as PrepareStageBody;
-    if (body.stage !== undefined && !VALID_STAGE_SET.has(body.stage)) {
-      res
-        .status(400)
-        .json({ error: `Invalid stage. Expected one of: ${VALID_STAGES.join(", ")}.` });
+    if (body.stage !== undefined && !isRelayStage(body.stage)) {
+      res.status(400).json({ error: INVALID_STAGE_ERROR });
       return;
     }
 
     prepareJobStage(job.id, body)
-      .then(() => {
-        res.status(202).json(getJob(job.id));
-      })
-      .catch((err: unknown) => {
-        const message = err instanceof Error ? err.message : String(err);
-        res.status(409).json({ error: message });
-      });
+      .then(() => res.status(202).json(getJob(job.id)))
+      .catch((err: unknown) => sendConflict(res, err));
   });
 
   /**
@@ -244,11 +226,8 @@ export function createApp(opts?: { allowedOrigins?: string }): express.Express {
    * Responds 409 when there is no active stage (pending / completed job).
    */
   app.get("/jobs/:id/stages/current", (req: Request, res: Response): void => {
-    const job = getJob(req.params.id);
-    if (!job) {
-      res.status(404).json({ error: "Job not found" });
-      return;
-    }
+    const job = requireJob(req, res);
+    if (!job) return;
 
     const stage = job.currentStage;
     if (stage === "pending" || stage === "completed") {
@@ -257,11 +236,9 @@ export function createApp(opts?: { allowedOrigins?: string }): express.Express {
     }
 
     try {
-      const details = getStageDetails(job.id, stage as RelayProofStage);
-      res.json(details);
+      res.json(getStageDetails(job.id, stage));
     } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
-      res.status(409).json({ error: message });
+      sendConflict(res, err);
     }
   });
 
@@ -269,26 +246,19 @@ export function createApp(opts?: { allowedOrigins?: string }): express.Express {
    * GET /jobs/:id/stages/:stage — structured stage details for manual flow.
    */
   app.get("/jobs/:id/stages/:stage", (req: Request, res: Response): void => {
-    const job = getJob(req.params.id);
-    if (!job) {
-      res.status(404).json({ error: "Job not found" });
-      return;
-    }
+    const job = requireJob(req, res);
+    if (!job) return;
 
-    const stage = parseRelayStage(req.params.stage);
-    if (!stage) {
-      res
-        .status(400)
-        .json({ error: `Invalid stage. Expected one of: ${VALID_STAGES.join(", ")}.` });
+    const { stage } = req.params;
+    if (!isRelayStage(stage)) {
+      res.status(400).json({ error: INVALID_STAGE_ERROR });
       return;
     }
 
     try {
-      const details = getStageDetails(job.id, stage);
-      res.json(details);
+      res.json(getStageDetails(job.id, stage));
     } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
-      res.status(409).json({ error: message });
+      sendConflict(res, err);
     }
   });
 
@@ -297,11 +267,8 @@ export function createApp(opts?: { allowedOrigins?: string }): express.Express {
    * Advances the job to the next stage or marks it completed.
    */
   app.post("/jobs/:id/receipts", (req: Request, res: Response): void => {
-    const job = getJob(req.params.id);
-    if (!job) {
-      res.status(404).json({ error: "Job not found" });
-      return;
-    }
+    const job = requireJob(req, res);
+    if (!job) return;
 
     const body = req.body as Partial<ReceiptBody>;
     const { stage, txHash } = body;
@@ -311,18 +278,15 @@ export function createApp(opts?: { allowedOrigins?: string }): express.Express {
       return;
     }
 
-    if (!VALID_STAGE_SET.has(stage)) {
-      res
-        .status(400)
-        .json({ error: `Invalid stage. Expected one of: ${VALID_STAGES.join(", ")}.` });
+    if (!isRelayStage(stage)) {
+      res.status(400).json({ error: INVALID_STAGE_ERROR });
       return;
     }
 
     try {
       recordReceipt(job.id, stage, txHash);
     } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
-      res.status(409).json({ error: message });
+      sendConflict(res, err);
       return;
     }
 
@@ -354,13 +318,16 @@ export function createApp(opts?: { allowedOrigins?: string }): express.Express {
     recoverJob(txId, sourceProfileHint, destinationProfileHint)
       .then((result) => {
         if (result.type === "ambiguous") {
-          res.status(409).json({ error: "Ambiguous recovery: multiple candidates found", candidates: result.candidates });
+          res.status(409).json({
+            error: "Ambiguous recovery: multiple candidates found",
+            candidates: result.candidates,
+          });
           return;
         }
         res.status(result.type === "created" ? 201 : 200).json(result.job);
       })
       .catch((err: unknown) => {
-        const message = err instanceof Error ? err.message : String(err);
+        const message = errorMessage(err);
         if (message.includes("No on-chain evidence")) {
           res.status(404).json({ error: message });
         } else {
@@ -387,8 +354,7 @@ export function createApp(opts?: { allowedOrigins?: string }): express.Express {
       try {
         params = parseSchemeUrl(decodeURIComponent(raw));
       } catch (err) {
-        const message = err instanceof Error ? err.message : String(err);
-        res.status(400).json({ error: message });
+        res.status(400).json({ error: errorMessage(err) });
         return;
       }
 

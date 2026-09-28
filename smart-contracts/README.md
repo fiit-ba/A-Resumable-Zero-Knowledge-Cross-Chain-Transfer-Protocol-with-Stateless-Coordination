@@ -34,9 +34,14 @@ For RISC Zero proofs, the connector also enforces route-specific image IDs throu
 
 ```bash
 cd smart-contracts
+make install   # fetch forge-std and risc0-ethereum into lib/ (pinned in foundry.lock)
 forge build
 forge test
 ```
+
+`lib/` is git-ignored, so run `make install` once after cloning. It is a no-op when the
+dependencies are already present. Run `make help` to list every build, analysis, and deployment
+target.
 
 Tests are organized under `test/`:
 
@@ -112,7 +117,7 @@ make slither-strict
 The default local topology in this repository is:
 
 - origin chain: Anvil at `http://127.0.0.1:8545`, chain ID `31337`
-- destination chain: Hardhat at `http://127.0.0.1:8546`, chain ID `31338`
+- destination chain: a second Anvil at `http://127.0.0.1:8546`, chain ID `31338` (profile `local-hardhat`)
 
 The chain IDs must be different. The lock proof includes both chain IDs, and validation fails if both sides use the same value.
 
@@ -136,43 +141,16 @@ make addresses
 `deploy-connectors-prod` deploys both connectors in one command using chain-specific
 adapter addresses and route image IDs (`*_SOURCE`, `*_DEST`).
 
-## Run the Happy-Path E2E Script
+## Local End-to-End Transfer
 
-From the repository root:
+The root [README quick start](../README.md#quick-start) walks through a complete local transfer:
+`make deploy-all`, `make bootstrap`, a `depositAndLock`, then `stateless-client relay-resume`
+for each stage, including the refund path.
 
-```bash
-export PRIVATE_KEY=0x...
-bash scripts/e2e-happy-path.sh
-```
-
-The script deploys the connectors and adapters, executes `depositAndLock`, generates the required proofs, and submits them in order.
-
-Optional flag-based examples:
-
-```bash
-# Swap chain roles
-bash scripts/e2e-happy-path.sh \
-  --source-profile local-hardhat \
-  --destination-profile local-anvil \
-  --private-key 0x...
-
-# Testnet pair
-bash scripts/e2e-happy-path.sh \
-  --source-profile sepolia \
-  --destination-profile hoodi \
-  --private-key 0x...
-```
-
-## Run the Refund E2E Script
-
-From the repository root:
-
-```bash
-export PRIVATE_KEY=0x...
-bash scripts/e2e-refund-path.sh
-```
-
-This script exercises the refund branch, including refund-claim and burn proofs.
+> [!NOTE]
+> `scripts/e2e-happy-path.sh` and `scripts/e2e-refund-path.sh` predate the current contracts.
+> Their deployment step targets removed contracts and constructor signatures, so use the flow
+> above until they are updated.
 
 ## Deployment Scripts
 

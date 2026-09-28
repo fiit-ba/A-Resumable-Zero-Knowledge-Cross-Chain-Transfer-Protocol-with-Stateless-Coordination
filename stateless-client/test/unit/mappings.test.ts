@@ -2,34 +2,57 @@ import { describe, expect, it } from "vitest";
 import {
   ALL_RELAY_STAGES,
   RELAY_STAGE_REGISTRY,
-  RELAY_STAGE_TO_PROOF_HOST,
-  RELAY_STAGE_TO_SUBMISSION_METHOD,
-  RELAY_STAGE_TO_VERIFY_STAGE,
+  VERIFY_STAGES,
   isProofRelayStage,
+  isRelayStage,
+  isVerifyStage,
 } from "../../src/relay/stages.js";
 import type { RelayProofStage } from "../../src/core/types.js";
 
-// ---------------------------------------------------------------------------
-// Legacy export correctness (keep existing coverage)
-// ---------------------------------------------------------------------------
-
 describe("relay stage mappings", () => {
   it("maps relay stages to verification stages", () => {
-    expect(RELAY_STAGE_TO_VERIFY_STAGE.lock).toBe("source-deposit");
-    expect(RELAY_STAGE_TO_VERIFY_STAGE.mint).toBe("destination-funds-released");
-    expect(RELAY_STAGE_TO_VERIFY_STAGE.ack).toBe("source-ack-ready");
+    expect(RELAY_STAGE_REGISTRY.lock.verifyStage).toBe("source-deposit");
+    expect(RELAY_STAGE_REGISTRY.mint.verifyStage).toBe("destination-funds-released");
+    expect(RELAY_STAGE_REGISTRY.ack.verifyStage).toBe("source-ack-ready");
   });
 
   it("maps relay stages to submission methods", () => {
-    expect(RELAY_STAGE_TO_SUBMISSION_METHOD.lock).toBe("submitLockProof");
-    expect(RELAY_STAGE_TO_SUBMISSION_METHOD.mint).toBe("submitMintProof");
-    expect(RELAY_STAGE_TO_SUBMISSION_METHOD.ack).toBe("submitAckProof");
+    expect(RELAY_STAGE_REGISTRY.lock.submissionMethod).toBe("submitLockProof");
+    expect(RELAY_STAGE_REGISTRY.mint.submissionMethod).toBe("submitMintProof");
+    expect(RELAY_STAGE_REGISTRY.ack.submissionMethod).toBe("submitAckProof");
   });
 
   it("maps relay stages to proof hosts", () => {
-    expect(RELAY_STAGE_TO_PROOF_HOST.lock.localPackage).toBe("lock-proof-host");
-    expect(RELAY_STAGE_TO_PROOF_HOST.mint.localPackage).toBe("mint-proof-host");
-    expect(RELAY_STAGE_TO_PROOF_HOST.ack.localPackage).toBe("ack-proof-host");
+    expect(RELAY_STAGE_REGISTRY.lock.proofHost?.localPackage).toBe("lock-proof-host");
+    expect(RELAY_STAGE_REGISTRY.mint.proofHost?.localPackage).toBe("mint-proof-host");
+    expect(RELAY_STAGE_REGISTRY.ack.proofHost?.localPackage).toBe("ack-proof-host");
+  });
+});
+
+describe("stage type guards", () => {
+  it("isRelayStage accepts every registered stage and rejects anything else", () => {
+    for (const stage of ALL_RELAY_STAGES) {
+      expect(isRelayStage(stage), stage).toBe(true);
+    }
+    for (const value of ["", "LOCK", "toString", "source-deposit", 1, null, undefined]) {
+      expect(isRelayStage(value), String(value)).toBe(false);
+    }
+  });
+
+  it("isVerifyStage accepts exactly the verifiable on-chain stages", () => {
+    expect(VERIFY_STAGES).toEqual([
+      "source-deposit",
+      "destination-funds-released",
+      "source-ack-ready",
+      "source-refund-initiated",
+      "destination-burn-executed",
+    ]);
+    for (const stage of VERIFY_STAGES) {
+      expect(isVerifyStage(stage), stage).toBe(true);
+    }
+    for (const value of ["lock", "constructor", 0, undefined]) {
+      expect(isVerifyStage(value), String(value)).toBe(false);
+    }
   });
 });
 
@@ -90,7 +113,10 @@ describe("RELAY_STAGE_REGISTRY invariants", () => {
     for (const stage of ALL_RELAY_STAGES) {
       const spec = RELAY_STAGE_REGISTRY[stage];
       if (spec.actionKind === "direct") {
-        expect(spec.verifyStage, `${stage} direct stage should not have verifyStage`).toBeUndefined();
+        expect(
+          spec.verifyStage,
+          `${stage} direct stage should not have verifyStage`,
+        ).toBeUndefined();
         expect(spec.proofHost, `${stage} direct stage should not have proofHost`).toBeUndefined();
       }
     }
@@ -130,25 +156,6 @@ describe("RELAY_STAGE_REGISTRY invariants", () => {
     }
     for (const s of directStages) {
       expect(isProofRelayStage(s), `${s} should not be proof`).toBe(false);
-    }
-  });
-
-  it("RELAY_STAGE_TO_VERIFY_STAGE derived values match registry", () => {
-    for (const stage of ALL_RELAY_STAGES) {
-      const spec = RELAY_STAGE_REGISTRY[stage];
-      if (spec.actionKind === "proof") {
-        expect(RELAY_STAGE_TO_VERIFY_STAGE[stage as keyof typeof RELAY_STAGE_TO_VERIFY_STAGE]).toBe(
-          spec.verifyStage,
-        );
-      }
-    }
-  });
-
-  it("RELAY_STAGE_TO_SUBMISSION_METHOD derived values match registry", () => {
-    for (const stage of ALL_RELAY_STAGES) {
-      expect(RELAY_STAGE_TO_SUBMISSION_METHOD[stage]).toBe(
-        RELAY_STAGE_REGISTRY[stage].submissionMethod,
-      );
     }
   });
 });

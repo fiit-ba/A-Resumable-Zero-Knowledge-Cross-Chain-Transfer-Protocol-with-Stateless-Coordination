@@ -2,13 +2,14 @@ import { spawn } from "node:child_process";
 import { existsSync, readdirSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { RELAY_STAGE_TO_PROOF_HOST } from "./stages.js";
+import { RELAY_STAGE_REGISTRY } from "./stages.js";
 import type { ProofArtifact, ProofRelayStage, ProofRunnerInput } from "../core/types.js";
 import {
   assert,
   normalizeAddress,
   normalizeBlockTag,
   normalizeBytes32,
+  readPositiveIntEnv,
   toRpcBlockTag,
 } from "../core/utils.js";
 
@@ -20,6 +21,118 @@ interface CommandResult {
 }
 
 const PROOF_LINE_REGEX = /^([A-Za-z][A-Za-z0-9]*):\s*(.+)$/;
+const DEFAULT_PROOF_TIMEOUT_SEC = 30 * 60;
+
+// ---------------------------------------------------------------------------
+// Per-stage proof host inputs
+// ---------------------------------------------------------------------------
+
+type HostInput = "sourceChainId" | "destinationChainId" | "ackDeadline";
+
+/** How one input is passed to the proof host: as a cargo CLI flag or a Docker env var. */
+interface HostInputBinding {
+  input: HostInput;
+  flag: string;
+  env: string;
+}
+
+const SOURCE_CHAIN: HostInputBinding = {
+  input: "sourceChainId",
+  flag: "--source-chain-id",
+  env: "SOURCE_CHAIN_ID",
+};
+const DEST_CHAIN: HostInputBinding = {
+  input: "destinationChainId",
+  flag: "--destination-chain-id",
+  env: "DEST_CHAIN_ID",
+};
+const DEST_CHAIN_SHORT_FLAG: HostInputBinding = { ...DEST_CHAIN, flag: "--dest-chain-id" };
+const ACK_DEADLINE: HostInputBinding = {
+  input: "ackDeadline",
+  flag: "--ack-deadline",
+  env: "ACK_DEADLINE",
+};
+
+/**
+ * Inputs each proof host consumes. Flag and env names intentionally differ
+ * between hosts; they must match the host CLIs and the Docker wrapper scripts
+ * under zk-proofs/risc_zero/*_event.
+ */
+const PROOF_HOST_INPUTS: Record<
+  ProofRelayStage,
+  { bindings: HostInputBinding[]; extraRequired?: HostInput[] }
+> = {
+  lock: { bindings: [SOURCE_CHAIN, DEST_CHAIN] },
+  mint: { bindings: [{ ...DEST_CHAIN, env: "DESTINATION_CHAIN_ID" }] },
+  ack: { bindings: [SOURCE_CHAIN, DEST_CHAIN] },
+  "refund-claim": { bindings: [SOURCE_CHAIN], extraRequired: ["destinationChainId"] },
+  "burn-proof": { bindings: [SOURCE_CHAIN, DEST_CHAIN_SHORT_FLAG] },
+  "non-accept-proof": { bindings: [ACK_DEADLINE, SOURCE_CHAIN, DEST_CHAIN_SHORT_FLAG] },
+};
+
+// ---------------------------------------------------------------------------
+// Per-stage proof output fields
+// ---------------------------------------------------------------------------
+
+type AddressField =
+  | "sender"
+  | "receiver"
+  | "currencyFrom"
+  | "currencyTo"
+  | "srcChainConnector"
+  | "dstChainConnector";
+type BigIntField = "amount" | "originAckDeadline" | "nonce";
+type NumberField = "sourceChainId" | "destChainId";
+
+/** Maps a `key: value` line of proof host output onto a typed ProofArtifact field. */
+type ArtifactField =
+  | { kind: "address"; key: string; target: AddressField }
+  | { kind: "bigint"; key: string; target: BigIntField }
+  | { kind: "number"; key: string; target: NumberField };
+
+const address = (target: AddressField, key: string = target): ArtifactField => ({
+  kind: "address",
+  key,
+  target,
+});
+const bigint = (target: BigIntField, key: string = target): ArtifactField => ({
+  kind: "bigint",
+  key,
+  target,
+});
+const number = (target: NumberField, key: string = target): ArtifactField => ({
+  kind: "number",
+  key,
+  target,
+});
+
+/** Fields each proof host must print besides `proofPayload` and `txId`. */
+const ARTIFACT_FIELDS: Record<ProofRelayStage, ArtifactField[]> = {
+  lock: [
+    bigint("amount"),
+    address("sender"),
+    address("receiver"),
+    address("currencyFrom"),
+    address("currencyTo"),
+    address("srcChainConnector"),
+    address("dstChainConnector"),
+    bigint("originAckDeadline"),
+    bigint("nonce"),
+    number("sourceChainId"),
+    number("destChainId"),
+  ],
+  mint: [bigint("amount"), address("receiver"), address("dstChainConnector")],
+  ack: [address("srcChainConnector"), address("dstChainConnector")],
+  "refund-claim": [],
+  "burn-proof": [],
+  "non-accept-proof": [
+    address("dstChainConnector"),
+    // The non-accept host prints the deadline as `ackDeadline`.
+    bigint("originAckDeadline", "ackDeadline"),
+    number("sourceChainId"),
+    number("destChainId", "destinationChainId"),
+  ],
+};
 
 function runCommand(
   command: string,
@@ -84,15 +197,9 @@ function runCommand(
 }
 
 function resolveProofTimeoutMs(): number {
-  const raw = process.env["STATELESS_CLIENT_PROOF_TIMEOUT_SEC"];
-  if (!raw || !/^\d+$/.test(raw)) {
-    return 30 * 60 * 1000; // 30 minutes
-  }
-  const seconds = Number(raw);
-  if (!Number.isSafeInteger(seconds) || seconds <= 0) {
-    return 30 * 60 * 1000;
-  }
-  return seconds * 1000;
+  return (
+    (readPositiveIntEnv("STATELESS_CLIENT_PROOF_TIMEOUT_SEC") ?? DEFAULT_PROOF_TIMEOUT_SEC) * 1000
+  );
 }
 
 function detectR0vmBinary(): string | undefined {
@@ -198,126 +305,37 @@ export function parseProofArtifact(
     rawOutput: output,
   };
 
-  if (stage === "lock") {
-    artifact.amount = parseBigIntField(requireMetadataField(metadata, "amount", stage), "amount");
-    artifact.sender = normalizeAddress(requireMetadataField(metadata, "sender", stage), "sender");
-    artifact.receiver = normalizeAddress(
-      requireMetadataField(metadata, "receiver", stage),
-      "receiver",
-    );
-    artifact.currencyFrom = normalizeAddress(
-      requireMetadataField(metadata, "currencyFrom", stage),
-      "currencyFrom",
-    );
-    artifact.currencyTo = normalizeAddress(
-      requireMetadataField(metadata, "currencyTo", stage),
-      "currencyTo",
-    );
-    artifact.srcChainConnector = normalizeAddress(
-      requireMetadataField(metadata, "srcChainConnector", stage),
-      "srcChainConnector",
-    );
-    artifact.dstChainConnector = normalizeAddress(
-      requireMetadataField(metadata, "dstChainConnector", stage),
-      "dstChainConnector",
-    );
-    artifact.originAckDeadline = parseBigIntField(
-      requireMetadataField(metadata, "originAckDeadline", stage),
-      "originAckDeadline",
-    );
-    artifact.nonce = parseBigIntField(requireMetadataField(metadata, "nonce", stage), "nonce");
-    artifact.sourceChainId = parseNumberField(
-      requireMetadataField(metadata, "sourceChainId", stage),
-      "sourceChainId",
-    );
-    artifact.destChainId = parseNumberField(
-      requireMetadataField(metadata, "destChainId", stage),
-      "destChainId",
-    );
-  }
-
-  if (stage === "mint") {
-    artifact.amount = parseBigIntField(requireMetadataField(metadata, "amount", stage), "amount");
-    artifact.receiver = normalizeAddress(
-      requireMetadataField(metadata, "receiver", stage),
-      "receiver",
-    );
-    artifact.dstChainConnector = normalizeAddress(
-      requireMetadataField(metadata, "dstChainConnector", stage),
-      "dstChainConnector",
-    );
-  }
-
-  if (stage === "ack") {
-    artifact.srcChainConnector = normalizeAddress(
-      requireMetadataField(metadata, "srcChainConnector", stage),
-      "srcChainConnector",
-    );
-    artifact.dstChainConnector = normalizeAddress(
-      requireMetadataField(metadata, "dstChainConnector", stage),
-      "dstChainConnector",
-    );
-  }
-
-  if (stage === "non-accept-proof") {
-    artifact.dstChainConnector = normalizeAddress(
-      requireMetadataField(metadata, "dstChainConnector", stage),
-      "dstChainConnector",
-    );
-    // ackDeadline is a u64 in the proof output — parse as bigint, store as originAckDeadline.
-    artifact.originAckDeadline = parseBigIntField(
-      requireMetadataField(metadata, "ackDeadline", stage),
-      "ackDeadline",
-    );
-    artifact.sourceChainId = parseNumberField(
-      requireMetadataField(metadata, "sourceChainId", stage),
-      "sourceChainId",
-    );
-    artifact.destChainId = parseNumberField(
-      requireMetadataField(metadata, "destinationChainId", stage),
-      "destinationChainId",
-    );
+  for (const field of ARTIFACT_FIELDS[stage]) {
+    const raw = requireMetadataField(metadata, field.key, stage);
+    switch (field.kind) {
+      case "address":
+        artifact[field.target] = normalizeAddress(raw, field.key);
+        break;
+      case "bigint":
+        artifact[field.target] = parseBigIntField(raw, field.key);
+        break;
+      case "number":
+        artifact[field.target] = parseNumberField(raw, field.key);
+        break;
+    }
   }
 
   return artifact;
 }
 
 function ensureStageChainInputs(input: ProofRunnerInput): void {
-  if (input.stage === "lock") {
-    assert(input.sourceChainId !== undefined, "lock proof requires sourceChainId");
-    assert(input.destinationChainId !== undefined, "lock proof requires destinationChainId");
-  }
-
-  if (input.stage === "mint") {
-    assert(input.destinationChainId !== undefined, "mint proof requires destinationChainId");
-  }
-
-  if (input.stage === "ack") {
-    assert(input.sourceChainId !== undefined, "ack proof requires sourceChainId");
-    assert(input.destinationChainId !== undefined, "ack proof requires destinationChainId");
-  }
-
-  if (input.stage === "burn-proof") {
-    assert(input.sourceChainId !== undefined, "burn-proof requires sourceChainId");
-    assert(input.destinationChainId !== undefined, "burn-proof requires destinationChainId");
-  }
-
-  if (input.stage === "refund-claim") {
-    assert(input.sourceChainId !== undefined, "refund-claim proof requires sourceChainId");
-    assert(input.destinationChainId !== undefined, "refund-claim proof requires destinationChainId");
-  }
-
-  if (input.stage === "non-accept-proof") {
-    assert(input.sourceChainId !== undefined, "non-accept-proof requires sourceChainId");
-    assert(input.destinationChainId !== undefined, "non-accept-proof requires destinationChainId");
-    assert(input.ackDeadline !== undefined, "non-accept-proof requires ackDeadline");
+  const { bindings, extraRequired = [] } = PROOF_HOST_INPUTS[input.stage];
+  for (const required of [...bindings.map((binding) => binding.input), ...extraRequired]) {
+    assert(input[required] !== undefined, `${input.stage} proof requires ${required}`);
   }
 }
 
 export async function runProof(input: ProofRunnerInput): Promise<ProofArtifact> {
   ensureStageChainInputs(input);
 
-  const hostConfig = RELAY_STAGE_TO_PROOF_HOST[input.stage];
+  const hostConfig = RELAY_STAGE_REGISTRY[input.stage].proofHost;
+  assert(hostConfig, `No proof host configured for stage '${input.stage}'`);
+  const { bindings } = PROOF_HOST_INPUTS[input.stage];
   const executionBlock = toRpcBlockTag(normalizeBlockTag(input.executionBlock, "latest"));
   const timeoutMs = resolveProofTimeoutMs();
   console.error(
@@ -361,50 +379,8 @@ export async function runProof(input: ProofRunnerInput): Promise<ProofArtifact> 
       input.txId,
     ];
 
-    if (input.stage === "lock") {
-      args.push(
-        "--source-chain-id",
-        String(input.sourceChainId),
-        "--destination-chain-id",
-        String(input.destinationChainId),
-      );
-    }
-
-    if (input.stage === "mint") {
-      args.push("--destination-chain-id", String(input.destinationChainId));
-    }
-
-    if (input.stage === "ack") {
-      args.push(
-        "--source-chain-id",
-        String(input.sourceChainId),
-        "--destination-chain-id",
-        String(input.destinationChainId),
-      );
-    }
-
-    if (input.stage === "burn-proof") {
-      args.push(
-        "--source-chain-id",
-        String(input.sourceChainId),
-        "--dest-chain-id",
-        String(input.destinationChainId),
-      );
-    }
-
-    if (input.stage === "refund-claim") {
-      args.push("--source-chain-id", String(input.sourceChainId));
-    }
-
-    if (input.stage === "non-accept-proof") {
-      args.push(
-        "--ack-deadline",
-        String(input.ackDeadline),
-        "--source-chain-id",
-        String(input.sourceChainId),
-        "--dest-chain-id",
-        String(input.destinationChainId),
-      );
+    for (const binding of bindings) {
+      args.push(binding.flag, String(input[binding.input]));
     }
 
     result = await runCommand("cargo", args, {
@@ -415,39 +391,9 @@ export async function runProof(input: ProofRunnerInput): Promise<ProofArtifact> 
   } else {
     const scriptPath = input.proofPaths[hostConfig.dockerScriptKey];
 
-    if (input.stage === "lock") {
-      env.PROVER_ACTION = "prove";
-      env.SOURCE_CHAIN_ID = String(input.sourceChainId);
-      env.DEST_CHAIN_ID = String(input.destinationChainId);
-    }
-
-    if (input.stage === "mint") {
-      env.PROVER_ACTION = "prove";
-      env.DESTINATION_CHAIN_ID = String(input.destinationChainId);
-    }
-
-    if (input.stage === "ack") {
-      env.PROVER_ACTION = "prove";
-      env.SOURCE_CHAIN_ID = String(input.sourceChainId);
-      env.DEST_CHAIN_ID = String(input.destinationChainId);
-    }
-
-    if (input.stage === "burn-proof") {
-      env.PROVER_ACTION = "prove";
-      env.SOURCE_CHAIN_ID = String(input.sourceChainId);
-      env.DEST_CHAIN_ID = String(input.destinationChainId);
-    }
-
-    if (input.stage === "refund-claim") {
-      env.PROVER_ACTION = "prove";
-      env.SOURCE_CHAIN_ID = String(input.sourceChainId);
-    }
-
-    if (input.stage === "non-accept-proof") {
-      env.PROVER_ACTION = "prove";
-      env.ACK_DEADLINE = String(input.ackDeadline);
-      env.SOURCE_CHAIN_ID = String(input.sourceChainId);
-      env.DEST_CHAIN_ID = String(input.destinationChainId);
+    env.PROVER_ACTION = "prove";
+    for (const binding of bindings) {
+      env[binding.env] = String(input[binding.input]);
     }
 
     result = await runCommand("bash", [scriptPath], {

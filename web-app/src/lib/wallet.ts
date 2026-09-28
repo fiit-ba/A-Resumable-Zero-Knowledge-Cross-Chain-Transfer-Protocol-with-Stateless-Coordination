@@ -1,4 +1,5 @@
 import { BrowserProvider } from "ethers";
+import { errorMessage } from "./errors";
 import { getAddChainParams, toHexChainId } from "./networks";
 
 interface ProviderRpcErrorShape {
@@ -29,11 +30,6 @@ function extractRpcError(error: unknown): ProviderRpcErrorShape {
   return {};
 }
 
-function toErrorMessage(error: unknown): string {
-  if (error instanceof Error) return error.message;
-  return String(error);
-}
-
 export async function ensureWalletOnChain(
   provider: BrowserProvider,
   targetChainId: number,
@@ -53,9 +49,7 @@ export async function ensureWalletOnChain(
       code === 4902 || Boolean(message && /unrecognized chain|unknown chain/i.test(message));
 
     if (!unknownChain) {
-      throw new Error(
-        `Failed to switch wallet to chain ${targetChainId}: ${toErrorMessage(error)}`,
-      );
+      throw new Error(`Failed to switch wallet to chain ${targetChainId}: ${errorMessage(error)}`);
     }
 
     const addParams = getAddChainParams(targetChainId);
@@ -72,9 +66,7 @@ export async function ensureWalletOnChain(
       if (addDetails.code === 4001) {
         throw new Error("Wallet add-network request was rejected by user.");
       }
-      throw new Error(
-        `Failed to add chain ${targetChainId} to wallet: ${toErrorMessage(addError)}`,
-      );
+      throw new Error(`Failed to add chain ${targetChainId} to wallet: ${errorMessage(addError)}`);
     }
 
     await provider.send("wallet_switchEthereumChain", [{ chainId: targetHex }]);

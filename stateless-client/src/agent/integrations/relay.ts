@@ -13,8 +13,10 @@ import type {
   RelayProofStage,
   ResumeDecision,
   StageExecutionBlocks,
-  StageVerificationHints,
+  StageReadyPayload,
+  StageSubmissionConfig,
   StageSubmissionResult,
+  StageVerificationHints,
 } from "../../core/types.js";
 import type { TransferIntent } from "../contracts.js";
 
@@ -67,19 +69,19 @@ export function buildStageConfig(
   txId: string,
   executionBlocks?: StageExecutionBlocks,
   verificationHints?: StageVerificationHints,
-) {
+): StageSubmissionConfig {
   const repoRoot = discoverRepoRoot(process.cwd());
 
   const source = resolveChainConfig({
     side: "source",
     profileName: intent.sourceProfile,
-    defaultProfileName: "local-anvil" as const,
+    defaultProfileName: "local-anvil",
   });
 
   const destination = resolveChainConfig({
     side: "destination",
     profileName: intent.destinationProfile,
-    defaultProfileName: "local-hardhat" as const,
+    defaultProfileName: "local-hardhat",
   });
 
   const proofBackend = resolveProofBackend();
@@ -120,8 +122,7 @@ export async function getResumeDecision(
   txId: string,
   executionBlocks?: StageExecutionBlocks,
 ): Promise<ResumeDecision> {
-  const config = buildStageConfig(intent, txId, executionBlocks);
-  return planRelayResume(config as Parameters<typeof planRelayResume>[0]);
+  return planRelayResume(buildStageConfig(intent, txId, executionBlocks));
 }
 
 export async function runPrepareStage(
@@ -144,7 +145,6 @@ export function buildDirectPayload(
   txId: string,
   stage: "refund-initiate" | "execute-burn",
   executionBlocks?: StageExecutionBlocks,
-) {
-  const config = buildStageConfig(intent, txId, executionBlocks);
-  return buildDirectActionPayload(config, stage);
+): StageReadyPayload {
+  return buildDirectActionPayload(buildStageConfig(intent, txId, executionBlocks), stage);
 }

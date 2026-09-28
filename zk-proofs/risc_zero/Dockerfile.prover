@@ -14,9 +14,11 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 ENV PATH="/root/.risc0/bin:${PATH}"
-ENV GITHUB_TOKEN="${GITHUB_TOKEN}"
 
 RUN curl -L https://risczero.com/install | bash
-RUN rzup install rust && (rzup install r0vm || echo "Skipping r0vm install (optional)")
+# GITHUB_TOKEN (optional build arg) only lifts GitHub API rate limits. It is used during this
+# step and never persisted as ENV; an empty value would make rzup send bad credentials.
+RUN if [ -z "${GITHUB_TOKEN:-}" ]; then unset GITHUB_TOKEN; fi; \
+    rzup install rust && (rzup install r0vm || echo "Skipping r0vm install (optional)")
 
 WORKDIR /workspace/zk-proofs/risc_zero

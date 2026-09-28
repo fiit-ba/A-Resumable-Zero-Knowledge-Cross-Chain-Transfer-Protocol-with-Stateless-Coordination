@@ -7,38 +7,42 @@ import type { TransferIntent } from "../../src/agent/contracts.js";
 
 vi.mock("../../src/agent/integrations/relay.js", () => {
   return {
-    buildDirectPayload: vi.fn().mockImplementation((_intent: TransferIntent, txId: string, stage: string) => ({
-      stage,
-      actionKind: "direct",
-      proofPayload: null,
-      contractMethod: "initiateRefund",
-      contractArgs: [txId],
-      targetChainId: 31337,
-      targetConnector: "0x2222222222222222222222222222222222222222",
-    })),
+    buildDirectPayload: vi
+      .fn()
+      .mockImplementation((_intent: TransferIntent, txId: string, stage: string) => ({
+        stage,
+        actionKind: "direct",
+        proofPayload: null,
+        contractMethod: "initiateRefund",
+        contractArgs: [txId],
+        targetChainId: 31337,
+        targetConnector: "0x2222222222222222222222222222222222222222",
+      })),
     discoverTransferByTxId: vi.fn(),
     getResumeDecision: vi.fn(),
     resolveRepoRoot: vi.fn().mockResolvedValue("/fake/repo"),
-    runPrepareStage: vi.fn().mockImplementation(async (_intent: TransferIntent, txId: string, stage: string) => ({
-      payload: {
-        stage,
-        actionKind: "proof",
-        proofPayload: "0xproof",
-        contractMethod: "submitProof",
-        contractArgs: [0, "0xproof", txId],
-        targetChainId: 31337,
-        targetConnector: "0x2222222222222222222222222222222222222222",
-      },
-      verification: {
-        stage: "source-deposit",
-        mode: "colibri",
-        degraded: false,
-        eventName: "DepositLocked",
-        txId,
-        connector: "0x1111111111111111111111111111111111111111",
-        status: 1,
-      },
-    })),
+    runPrepareStage: vi
+      .fn()
+      .mockImplementation(async (_intent: TransferIntent, txId: string, stage: string) => ({
+        payload: {
+          stage,
+          actionKind: "proof",
+          proofPayload: "0xproof",
+          contractMethod: "submitProof",
+          contractArgs: [0, "0xproof", txId],
+          targetChainId: 31337,
+          targetConnector: "0x2222222222222222222222222222222222222222",
+        },
+        verification: {
+          stage: "source-deposit",
+          mode: "colibri",
+          degraded: false,
+          eventName: "DepositLocked",
+          txId,
+          connector: "0x1111111111111111111111111111111111111111",
+          status: 1,
+        },
+      })),
     shouldUsePrunedAckVerification: vi.fn().mockReturnValue(false),
   };
 });
@@ -79,15 +83,28 @@ function makeRes() {
 }
 
 function getRouteHandler(app: Express, method: "get" | "post" | "patch", path: string) {
-  const stack = (
-    (app as unknown as { _router?: { stack?: Array<{ route?: { path: string; methods: Record<string, boolean>; stack: Array<{ handle: (...args: unknown[]) => void }> } }> } })
-      ._router?.stack ?? []
-  );
+  const stack =
+    (
+      app as unknown as {
+        _router?: {
+          stack?: Array<{
+            route?: {
+              path: string;
+              methods: Record<string, boolean>;
+              stack: Array<{ handle: (...args: unknown[]) => void }>;
+            };
+          }>;
+        };
+      }
+    )._router?.stack ?? [];
   const layer = stack?.find((entry) => entry.route?.path === path && entry.route.methods[method]);
   if (!layer?.route?.stack?.[0]?.handle) {
     throw new Error(`Route handler not found for ${method.toUpperCase()} ${path}`);
   }
-  return layer.route.stack[0].handle as (req: Record<string, unknown>, res: ReturnType<typeof makeRes>) => void;
+  return layer.route.stack[0].handle as (
+    req: Record<string, unknown>,
+    res: ReturnType<typeof makeRes>,
+  ) => void;
 }
 
 describe("agent server manual endpoints", () => {
@@ -304,7 +321,8 @@ describe("agent server manual endpoints", () => {
     expect((res.payload as { stage: string }).stage).toBe("lock");
     expect((res.payload as { checkpointState: string }).checkpointState).toBe("prepared");
     expect(
-      (res.payload as { preparedPayload: { contractMethod: string } }).preparedPayload.contractMethod,
+      (res.payload as { preparedPayload: { contractMethod: string } }).preparedPayload
+        .contractMethod,
     ).toBe("submitLockProof");
   });
 });

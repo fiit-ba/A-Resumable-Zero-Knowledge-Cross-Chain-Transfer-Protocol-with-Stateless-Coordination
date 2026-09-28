@@ -2,9 +2,12 @@ import fs from "node:fs";
 import path from "node:path";
 import type {
   BlockTagInput,
+  ChainConfig,
+  NetworkProfileName,
   ProofBackend,
   ProofPaths,
   RelayConfig,
+  Side,
   StageExecutionBlocks,
   VerificationConfig,
 } from "../core/types.js";
@@ -12,6 +15,57 @@ import { resolveChainConfig } from "./profiles.js";
 import { normalizeAddress, normalizeBlockTag, normalizeBytes32 } from "../core/utils.js";
 
 export type CliOptions = Record<string, string | boolean | undefined>;
+
+/** Default location of every proof path, relative to zk-proofs/risc_zero. */
+const DEFAULT_PROOF_PATHS: Record<keyof ProofPaths, string> = {
+  lockWorkspace: "lock_event",
+  mintWorkspace: "mint_event",
+  ackWorkspace: "ack_event",
+  refundClaimWorkspace: "refund_claim_event",
+  burnWorkspace: "burn_event",
+  nonAcceptWorkspace: "non_accept_event",
+  lockDockerScript: "lock_event/scripts/prove-lock-docker.sh",
+  mintDockerScript: "mint_event/scripts/prove-mint-docker.sh",
+  ackDockerScript: "ack_event/scripts/prove-ack-docker.sh",
+  refundClaimDockerScript: "refund_claim_event/scripts/prove-refund-claim-docker.sh",
+  burnDockerScript: "burn_event/scripts/prove-burn-docker.sh",
+  nonAcceptDockerScript: "non_accept_event/scripts/prove-non-accept-docker.sh",
+};
+
+/** CLI option that overrides each proof path. */
+export const PROOF_PATH_OPTIONS: Record<keyof ProofPaths, string> = {
+  lockWorkspace: "lock-workspace",
+  mintWorkspace: "mint-workspace",
+  ackWorkspace: "ack-workspace",
+  refundClaimWorkspace: "refund-claim-workspace",
+  burnWorkspace: "burn-workspace",
+  nonAcceptWorkspace: "non-accept-workspace",
+  lockDockerScript: "lock-docker-script",
+  mintDockerScript: "mint-docker-script",
+  ackDockerScript: "ack-docker-script",
+  refundClaimDockerScript: "refund-claim-docker-script",
+  burnDockerScript: "burn-docker-script",
+  nonAcceptDockerScript: "non-accept-docker-script",
+};
+
+/** CLI option that overrides the execution block for each verified stage. */
+export const EXECUTION_BLOCK_OPTIONS: Record<keyof StageExecutionBlocks, string> = {
+  sourceDeposit: "lock-execution-block",
+  destinationFundsReleased: "mint-execution-block",
+  sourceAckReady: "ack-execution-block",
+  sourceRefundInitiated: "refund-claim-execution-block",
+  destinationBurnExecuted: "burn-proof-execution-block",
+  destinationNonAccept: "non-accept-execution-block",
+};
+
+const DEFAULT_PROFILE_BY_SIDE: Record<Side, NetworkProfileName> = {
+  source: "local-anvil",
+  destination: "local-hardhat",
+};
+
+function typedEntries<K extends string, V>(record: Record<K, V>): [K, V][] {
+  return Object.entries(record) as [K, V][];
+}
 
 function getStringOption(options: CliOptions, key: string): string | undefined {
   const value = options[key];
@@ -31,15 +85,11 @@ function requireStringOption(options: CliOptions, key: string): string {
 
 function resolveExecutionBlocks(options: CliOptions): StageExecutionBlocks {
   const global = parseBlockOption(options, "execution-block");
-
-  return {
-    sourceDeposit: parseBlockOption(options, "lock-execution-block", global),
-    destinationFundsReleased: parseBlockOption(options, "mint-execution-block", global),
-    sourceAckReady: parseBlockOption(options, "ack-execution-block", global),
-    sourceRefundInitiated: parseBlockOption(options, "refund-claim-execution-block", global),
-    destinationBurnExecuted: parseBlockOption(options, "burn-proof-execution-block", global),
-    destinationNonAccept: parseBlockOption(options, "non-accept-execution-block", global),
-  };
+  const blocks: StageExecutionBlocks = {};
+  for (const [key, option] of typedEntries(EXECUTION_BLOCK_OPTIONS)) {
+    blocks[key] = parseBlockOption(options, option, global);
+  }
+  return blocks;
 }
 
 function parseBlockOption(
@@ -59,7 +109,7 @@ function isRepoRoot(candidate: string): boolean {
     fs.existsSync(path.join(candidate, "zk-proofs", "risc_zero", "lock_event")) &&
     fs.existsSync(path.join(candidate, "zk-proofs", "risc_zero", "mint_event")) &&
     fs.existsSync(path.join(candidate, "zk-proofs", "risc_zero", "ack_event"))
-    // refund_claim_event and burn_event are optional; their absence degrades gracefully.
+    // The refund-path workspaces are optional; their absence degrades gracefully.
   );
 }
 
@@ -83,114 +133,56 @@ export function discoverRepoRoot(startDir = process.cwd()): string {
   );
 }
 
+function mapProofPaths(resolve: (key: keyof ProofPaths) => string): ProofPaths {
+  const paths = {} as ProofPaths;
+  for (const [key] of typedEntries(DEFAULT_PROOF_PATHS)) {
+    paths[key] = resolve(key);
+  }
+  return paths;
+}
+
 export function defaultProofPaths(repoRoot: string): ProofPaths {
-  const rz = path.join(repoRoot, "zk-proofs", "risc_zero");
-  return {
-    lockWorkspace: path.join(rz, "lock_event"),
-    mintWorkspace: path.join(rz, "mint_event"),
-    ackWorkspace: path.join(rz, "ack_event"),
-    refundClaimWorkspace: path.join(rz, "refund_claim_event"),
-    burnWorkspace: path.join(rz, "burn_event"),
-    nonAcceptWorkspace: path.join(rz, "non_accept_event"),
-    lockDockerScript: path.join(rz, "lock_event", "scripts", "prove-lock-docker.sh"),
-    mintDockerScript: path.join(rz, "mint_event", "scripts", "prove-mint-docker.sh"),
-    ackDockerScript: path.join(rz, "ack_event", "scripts", "prove-ack-docker.sh"),
-    refundClaimDockerScript: path.join(
-      rz,
-      "refund_claim_event",
-      "scripts",
-      "prove-refund-claim-docker.sh",
-    ),
-    burnDockerScript: path.join(rz, "burn_event", "scripts", "prove-burn-docker.sh"),
-    nonAcceptDockerScript: path.join(
-      rz,
-      "non_accept_event",
-      "scripts",
-      "prove-non-accept-docker.sh",
-    ),
-  };
+  const proofsRoot = path.join(repoRoot, "zk-proofs", "risc_zero");
+  return mapProofPaths((key) => path.join(proofsRoot, DEFAULT_PROOF_PATHS[key]));
 }
 
 function resolveProofPaths(options: CliOptions, repoRoot: string): ProofPaths {
   const defaults = defaultProofPaths(repoRoot);
-  return {
-    lockWorkspace: getStringOption(options, "lock-workspace") ?? defaults.lockWorkspace,
-    mintWorkspace: getStringOption(options, "mint-workspace") ?? defaults.mintWorkspace,
-    ackWorkspace: getStringOption(options, "ack-workspace") ?? defaults.ackWorkspace,
-    refundClaimWorkspace:
-      getStringOption(options, "refund-claim-workspace") ?? defaults.refundClaimWorkspace,
-    burnWorkspace: getStringOption(options, "burn-workspace") ?? defaults.burnWorkspace,
-    nonAcceptWorkspace:
-      getStringOption(options, "non-accept-workspace") ?? defaults.nonAcceptWorkspace,
-    lockDockerScript: getStringOption(options, "lock-docker-script") ?? defaults.lockDockerScript,
-    mintDockerScript: getStringOption(options, "mint-docker-script") ?? defaults.mintDockerScript,
-    ackDockerScript: getStringOption(options, "ack-docker-script") ?? defaults.ackDockerScript,
-    refundClaimDockerScript:
-      getStringOption(options, "refund-claim-docker-script") ?? defaults.refundClaimDockerScript,
-    burnDockerScript: getStringOption(options, "burn-docker-script") ?? defaults.burnDockerScript,
-    nonAcceptDockerScript:
-      getStringOption(options, "non-accept-docker-script") ?? defaults.nonAcceptDockerScript,
-  };
+  return mapProofPaths((key) => getStringOption(options, PROOF_PATH_OPTIONS[key]) ?? defaults[key]);
 }
 
-function resolveSharedConfig(options: CliOptions): VerificationConfig {
-  const sourceProfile = getStringOption(options, "source-profile");
-  const destinationProfile = getStringOption(options, "destination-profile");
-
-  const globalProverUrls = getStringOption(options, "prover-urls");
-  const globalBeaconUrls = getStringOption(options, "beacon-urls");
-  const globalCheckpointzUrls = getStringOption(options, "checkpointz-urls");
-
-  const source = resolveChainConfig({
-    side: "source",
-    profileName: sourceProfile,
-    chainId: getStringOption(options, "source-chain-id"),
-    rpcUrl: getStringOption(options, "source-rpc-url"),
-    rpcUrls: getStringOption(options, "source-rpc-urls"),
-    proverUrls: getStringOption(options, "source-prover-urls") ?? globalProverUrls,
-    beaconUrls: getStringOption(options, "source-beacon-urls") ?? globalBeaconUrls,
-    checkpointzUrls: getStringOption(options, "source-checkpointz-urls") ?? globalCheckpointzUrls,
-    defaultProfileName: "local-anvil",
+function resolveSideChainConfig(options: CliOptions, side: Side): ChainConfig {
+  const option = (name: string) => getStringOption(options, `${side}-${name}`);
+  return resolveChainConfig({
+    side,
+    profileName: option("profile"),
+    chainId: option("chain-id"),
+    rpcUrl: option("rpc-url"),
+    rpcUrls: option("rpc-urls"),
+    proverUrls: option("prover-urls") ?? getStringOption(options, "prover-urls"),
+    beaconUrls: option("beacon-urls") ?? getStringOption(options, "beacon-urls"),
+    checkpointzUrls: option("checkpointz-urls") ?? getStringOption(options, "checkpointz-urls"),
+    defaultProfileName: DEFAULT_PROFILE_BY_SIDE[side],
   });
-
-  const destination = resolveChainConfig({
-    side: "destination",
-    profileName: destinationProfile,
-    chainId: getStringOption(options, "destination-chain-id"),
-    rpcUrl: getStringOption(options, "destination-rpc-url"),
-    rpcUrls: getStringOption(options, "destination-rpc-urls"),
-    proverUrls: getStringOption(options, "destination-prover-urls") ?? globalProverUrls,
-    beaconUrls: getStringOption(options, "destination-beacon-urls") ?? globalBeaconUrls,
-    checkpointzUrls:
-      getStringOption(options, "destination-checkpointz-urls") ?? globalCheckpointzUrls,
-    defaultProfileName: "local-hardhat",
-  });
-
-  const txId = normalizeBytes32(requireStringOption(options, "tx-id"), "tx-id");
-
-  const sourceConnector = normalizeAddress(
-    requireStringOption(options, "source-connector"),
-    "source-connector",
-  );
-  const destinationConnector = normalizeAddress(
-    requireStringOption(options, "destination-connector"),
-    "destination-connector",
-  );
-
-  return {
-    source,
-    destination,
-    connectors: {
-      source: sourceConnector,
-      destination: destinationConnector,
-    },
-    txId,
-    executionBlocks: resolveExecutionBlocks(options),
-  };
 }
 
 export function resolveVerificationConfig(options: CliOptions): VerificationConfig {
-  return resolveSharedConfig(options);
+  return {
+    source: resolveSideChainConfig(options, "source"),
+    destination: resolveSideChainConfig(options, "destination"),
+    txId: normalizeBytes32(requireStringOption(options, "tx-id"), "tx-id"),
+    connectors: {
+      source: normalizeAddress(
+        requireStringOption(options, "source-connector"),
+        "source-connector",
+      ),
+      destination: normalizeAddress(
+        requireStringOption(options, "destination-connector"),
+        "destination-connector",
+      ),
+    },
+    executionBlocks: resolveExecutionBlocks(options),
+  };
 }
 
 function resolveProofBackend(options: CliOptions): ProofBackend {
@@ -210,7 +202,7 @@ function resolveRisc0ProverMode(options: CliOptions): "local" | "bonsai" {
 }
 
 export function resolveRelayConfig(options: CliOptions): RelayConfig {
-  const shared = resolveSharedConfig(options);
+  const shared = resolveVerificationConfig(options);
 
   const repoRootOption = getStringOption(options, "repo-root");
   const repoRoot = repoRootOption ? path.resolve(repoRootOption) : discoverRepoRoot(process.cwd());

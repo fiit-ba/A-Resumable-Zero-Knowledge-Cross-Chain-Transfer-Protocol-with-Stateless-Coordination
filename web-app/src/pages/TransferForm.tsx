@@ -1,6 +1,4 @@
-import { useEffect, useId, useRef, useState, type ChangeEvent, type FormEvent } from "react";
-import { BrowserProvider, Contract, Interface, MaxUint256, parseUnits } from "ethers";
-import type { Eip1193Provider } from "ethers";
+import { useState, type FormEvent } from "react";
 import { useNavigate } from "react-router-dom";
 import { useDispatch, useSelector } from "react-redux";
 import type { RootState, AppDispatch } from "../app/store";
@@ -9,430 +7,87 @@ import {
   setDraftField,
   setError,
   setTxStatus,
+  type TransferDraft,
 } from "../features/transfer-start/transferSlice";
-import { setActiveJob } from "../features/job-progress/jobsSlice";
+import { activeSessionFromJob, setActiveJob } from "../features/job-progress/jobsSlice";
+import { useCreateJobMutation, useGetJobsQuery } from "../api/agentApi";
+import type { RelayJob } from "../api/types";
+import { NetworkPicker } from "../components/NetworkPicker";
+import { FIELD_LABEL_CLASS, PAGE_CLASS, TEXT_INPUT_CLASS, buttonClass } from "../components/styles";
+import { Alert } from "../components/ui";
+import { ActiveJobsPanel } from "../features/transfer-start/components/ActiveJobsPanel";
+import { RecoveryPanel } from "../features/transfer-start/components/RecoveryPanel";
 import {
-  useCreateJobMutation,
-  useGetJobsQuery,
-  useRecoverJobMutation,
-  useUpdateJobSettingsMutation,
-} from "../api/agentApi";
-import type { JobStatus, RelayJob, RelayMode } from "../api/types";
-import { CONNECTOR_ABI, ERC20_ABI } from "../lib/abi";
-import { logConnectorGasEstimate, logConnectorGasReceipt } from "../lib/connectorGasLog";
-import type { ConnectorContractMethodLike, ConnectorReceiptLike } from "../lib/connectorGasLog";
-import { decodeContractError } from "../lib/contractErrors";
-import { NETWORK_OPTIONS, NETWORKS, getChainId } from "../lib/networks";
-import { ensureWalletOnChain } from "../lib/wallet";
+  depositAndLock,
+  type AmountMode,
+  type PendingTxInfo,
+} from "../features/transfer-start/depositAndLock";
+import { formatUiError, isUserRejection } from "../lib/errors";
+import { getTxExplorerUrl } from "../lib/networks";
+import { TERMINAL_JOB_STATUSES } from "../lib/stages";
 
-const TX_STATUS_LABELS = {
+const JOBS_POLL_INTERVAL_MS = 10_000;
+
+const SUBMIT_LABELS = {
   idle: "Deposit & Lock",
   approving: "Approving token…",
   depositing: "Sending deposit…",
   registering: "Registering job…",
 } as const;
 
-const TERMINAL_JOB_STATUSES: ReadonlySet<JobStatus> = new Set(["completed", "unsupported"]);
+type AddressField = "sourceConnector" | "destConnector" | "tokenFrom" | "tokenTo";
 
-const JOB_STATUS_LABELS: Record<JobStatus, string> = {
-  awaiting_confirmation: "Awaiting confirmation",
-  preparing_stage: "Preparing",
-  ready_for_signature: "Ready",
-  waiting_for_receipt: "Waiting for receipt",
-  completed: "Completed",
-  failed: "Failed",
-  unsupported: "Unsupported",
-};
+const ADDRESS_FIELD_ROWS: [AddressField, string][][] = [
+  [
+    ["sourceConnector", "Source connector address"],
+    ["destConnector", "Destination connector address"],
+  ],
+  [
+    ["tokenFrom", "Token (from) address"],
+    ["tokenTo", "Token (to) address"],
+  ],
+];
 
-const JOB_STATUS_BADGE_CLASSES: Record<JobStatus, string> = {
-  awaiting_confirmation:
-    "border border-amber-300 bg-amber-100 text-amber-700 dark:border-amber-500/50 dark:bg-amber-500/10 dark:text-amber-300",
-  preparing_stage:
-    "border border-sky-300 bg-sky-100 text-sky-700 dark:border-sky-500/50 dark:bg-sky-500/10 dark:text-sky-300",
-  ready_for_signature:
-    "border border-indigo-300 bg-indigo-100 text-indigo-700 dark:border-indigo-500/50 dark:bg-indigo-500/10 dark:text-indigo-300",
-  waiting_for_receipt:
-    "border border-cyan-300 bg-cyan-100 text-cyan-700 dark:border-cyan-500/50 dark:bg-cyan-500/10 dark:text-cyan-300",
-  completed:
-    "border border-emerald-300 bg-emerald-100 text-emerald-700 dark:border-emerald-500/50 dark:bg-emerald-500/10 dark:text-emerald-300",
-  failed:
-    "border border-rose-300 bg-rose-100 text-rose-700 dark:border-rose-500/50 dark:bg-rose-500/10 dark:text-rose-300",
-  unsupported:
-    "border border-slate-300 bg-slate-100 text-slate-700 dark:border-slate-500/50 dark:bg-slate-500/10 dark:text-slate-300",
-};
-
-const JOB_STAGE_LABELS: Record<RelayJob["currentStage"], string> = {
-  lock: "1/3 - Lock (destination)",
-  mint: "2/3 - Mint (source)",
-  ack: "3/3 - Ack (destination)",
-  "refund-initiate": "Refund - Initiate (source)",
-  "refund-claim": "Refund - Claim proof (destination)",
-  "execute-burn": "Refund - Execute burn (destination)",
-  "burn-proof": "Refund - Burn proof (source)",
-  "non-accept-proof": "Refund - Non-acceptance proof (source)",
-  pending: "Pending",
-  completed: "Completed",
-};
-
-type AmountMode = "wei" | "tokens";
-type NetworkKind = "local" | "testnet" | "mainnet";
-
-interface NetworkPickerProps {
-  idPrefix: string;
-  label: string;
-  value: string;
-  onChange: (profile: string) => void;
-  disabled: boolean;
-}
-
-interface PendingTxInfo {
-  phase: "approval" | "deposit";
-  hash: string;
-}
-
-const TESTNET_PROFILES = new Set(["sepolia", "holesky", "hoodi", "chiado"]);
-
-const NETWORK_KIND_STYLES: Record<
-  NetworkKind,
-  { label: string; dotClass: string; badgeClass: string }
-> = {
-  local: {
-    label: "Local",
-    dotClass: "bg-emerald-500",
-    badgeClass:
-      "border border-emerald-400/50 bg-emerald-100 text-emerald-700 dark:bg-emerald-500/15 dark:text-emerald-300",
+const AMOUNT_MODES: { value: AmountMode; label: string; hint: string; placeholder: string }[] = [
+  {
+    value: "wei",
+    label: "Wei",
+    hint: "Enter smallest unit (e.g. 1 ETH = 1000000000000000000 wei).",
+    placeholder: "1000000000000000000",
   },
-  testnet: {
-    label: "Testnet",
-    dotClass: "bg-sky-500",
-    badgeClass:
-      "border border-sky-400/50 bg-sky-100 text-sky-700 dark:bg-sky-500/15 dark:text-sky-300",
+  {
+    value: "tokens",
+    label: "Tokens",
+    hint: "Enter token amount (e.g. 100). App converts to wei using token decimals().",
+    placeholder: "100",
   },
-  mainnet: {
-    label: "Mainnet",
-    dotClass: "bg-violet-500",
-    badgeClass:
-      "border border-violet-400/50 bg-violet-100 text-violet-700 dark:bg-violet-500/15 dark:text-violet-300",
-  },
-};
-
-const NETWORK_ICON_STYLES: Record<string, { glyph: string; bgClass: string; ringClass: string }> = {
-  "local-anvil": {
-    glyph: "AN",
-    bgClass: "bg-gradient-to-br from-emerald-400 to-teal-500",
-    ringClass: "ring-emerald-300/55 dark:ring-emerald-500/45",
-  },
-  "local-hardhat": {
-    glyph: "HH",
-    bgClass: "bg-gradient-to-br from-lime-400 to-emerald-500",
-    ringClass: "ring-lime-300/55 dark:ring-lime-500/45",
-  },
-  sepolia: {
-    glyph: "SP",
-    bgClass: "bg-gradient-to-br from-sky-400 to-blue-500",
-    ringClass: "ring-sky-300/55 dark:ring-sky-500/45",
-  },
-  holesky: {
-    glyph: "HO",
-    bgClass: "bg-gradient-to-br from-cyan-400 to-sky-600",
-    ringClass: "ring-cyan-300/55 dark:ring-cyan-500/45",
-  },
-  hoodi: {
-    glyph: "HD",
-    bgClass: "bg-gradient-to-br from-indigo-400 to-blue-600",
-    ringClass: "ring-indigo-300/55 dark:ring-indigo-500/45",
-  },
-  gnosis: {
-    glyph: "GN",
-    bgClass: "bg-gradient-to-br from-violet-500 to-purple-600",
-    ringClass: "ring-violet-300/55 dark:ring-violet-500/45",
-  },
-  chiado: {
-    glyph: "CH",
-    bgClass: "bg-gradient-to-br from-fuchsia-400 to-pink-600",
-    ringClass: "ring-fuchsia-300/55 dark:ring-fuchsia-500/45",
-  },
-};
-
-function getNetworkKind(profile: string): NetworkKind {
-  if (profile.startsWith("local-")) return "local";
-  if (TESTNET_PROFILES.has(profile)) return "testnet";
-  return "mainnet";
-}
-
-function NetworkIcon({ profile }: { profile: string }) {
-  const icon = NETWORK_ICON_STYLES[profile];
-  const glyph = icon?.glyph ?? profile.slice(0, 2).toUpperCase();
-  const bgClass = icon?.bgClass ?? "bg-gradient-to-br from-slate-400 to-slate-600";
-  const ringClass = icon?.ringClass ?? "ring-slate-300/55 dark:ring-slate-500/45";
-
-  return (
-    <span
-      aria-hidden
-      className={`relative inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-full ${bgClass} ring-1 ${ringClass} shadow-sm`}
-    >
-      <span className="text-[10px] font-extrabold uppercase tracking-[0.05em] text-white">
-        {glyph}
-      </span>
-    </span>
-  );
-}
-
-function getTxExplorerUrl(profile: string, txHash: string): string | null {
-  const base = NETWORKS[profile]?.blockExplorerUrls?.[0];
-  if (!base) return null;
-  return `${base.replace(/\/+$/, "")}/tx/${txHash}`;
-}
-
-function NetworkPicker({ idPrefix, label, value, onChange, disabled }: NetworkPickerProps) {
-  const [open, setOpen] = useState(false);
-  const rootRef = useRef<HTMLDivElement>(null);
-  const uid = useId();
-  const labelId = `${idPrefix}-${uid}-label`;
-  const valueId = `${idPrefix}-${uid}-value`;
-  const listboxId = `${idPrefix}-${uid}-listbox`;
-
-  const selectedProfile = NETWORKS[value] ? value : NETWORK_OPTIONS[0];
-  const selectedNetwork = NETWORKS[selectedProfile];
-  const selectedKind = NETWORK_KIND_STYLES[getNetworkKind(selectedProfile)];
-
-  useEffect(() => {
-    if (!open) return;
-
-    function handlePointerDown(event: MouseEvent) {
-      if (!rootRef.current?.contains(event.target as Node)) {
-        setOpen(false);
-      }
-    }
-
-    function handleKeyDown(event: KeyboardEvent) {
-      if (event.key === "Escape") setOpen(false);
-    }
-
-    document.addEventListener("mousedown", handlePointerDown);
-    document.addEventListener("keydown", handleKeyDown);
-    return () => {
-      document.removeEventListener("mousedown", handlePointerDown);
-      document.removeEventListener("keydown", handleKeyDown);
-    };
-  }, [open]);
-
-  return (
-    <div ref={rootRef} className="relative flex flex-col gap-1.5">
-      <span id={labelId} className="text-sm text-gray-600 dark:text-gray-400">
-        {label}
-      </span>
-
-      <button
-        type="button"
-        role="combobox"
-        aria-controls={listboxId}
-        aria-expanded={open}
-        aria-haspopup="listbox"
-        aria-labelledby={`${labelId} ${valueId}`}
-        onClick={() => setOpen((prev) => !prev)}
-        disabled={disabled}
-        className="group relative w-full overflow-hidden rounded-xl border border-slate-300/80 bg-gradient-to-br from-white via-white to-slate-100 px-3.5 py-3 text-left shadow-sm transition hover:border-sky-400/70 hover:shadow-lg hover:shadow-sky-500/10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sky-400/60 disabled:cursor-not-allowed disabled:opacity-55 dark:border-slate-700 dark:from-slate-900 dark:via-slate-900 dark:to-slate-800"
-      >
-        <span
-          aria-hidden
-          className="pointer-events-none absolute inset-0 opacity-45 [background:radial-gradient(circle_at_100%_0%,rgba(56,189,248,0.2),transparent_55%)] dark:opacity-80"
-        />
-        <span className="relative flex items-center gap-2.5">
-          <span className="flex min-w-0 flex-1 items-center gap-2.5">
-            <NetworkIcon profile={selectedProfile} />
-            <span className="min-w-0 flex-1">
-              <span
-                id={valueId}
-                className="block text-sm font-semibold leading-5 text-slate-900 dark:text-slate-100"
-              >
-                {selectedNetwork?.name ?? selectedProfile}
-              </span>
-              <span className="mt-0.5 flex flex-wrap items-center gap-1.5">
-                <span className="font-mono text-[11px] text-slate-500 dark:text-slate-400">
-                  {selectedProfile}
-                </span>
-                <span className="rounded-full border border-slate-300 bg-slate-100 px-2 py-0.5 font-mono text-[10px] font-semibold tabular-nums text-slate-700 dark:border-slate-600 dark:bg-slate-800 dark:text-slate-200">
-                  chain {selectedNetwork?.chainId ?? "n/a"}
-                </span>
-                <span
-                  className={`rounded-full px-2 py-0.5 text-[10px] font-semibold uppercase tracking-[0.06em] ${selectedKind.badgeClass}`}
-                >
-                  {selectedKind.label}
-                </span>
-              </span>
-            </span>
-          </span>
-
-          <svg
-            viewBox="0 0 20 20"
-            fill="none"
-            stroke="currentColor"
-            strokeWidth="1.8"
-            className={`h-4 w-4 shrink-0 text-slate-500 transition-transform dark:text-slate-300 ${open ? "rotate-180" : ""}`}
-            aria-hidden
-          >
-            <path d="M5 7.5L10 12.5L15 7.5" strokeLinecap="round" strokeLinejoin="round" />
-          </svg>
-        </span>
-      </button>
-
-      {open && !disabled && (
-        <div className="absolute left-0 right-0 top-full z-30 mt-2 rounded-2xl border border-slate-200 bg-white/95 p-2 shadow-[0_24px_70px_-26px_rgba(15,23,42,0.65)] backdrop-blur dark:border-slate-700 dark:bg-slate-950/95">
-          <ul
-            id={listboxId}
-            role="listbox"
-            aria-labelledby={labelId}
-            className="max-h-72 space-y-1 overflow-y-auto p-1"
-          >
-            {NETWORK_OPTIONS.map((profile) => {
-              const network = NETWORKS[profile];
-              const isSelected = profile === selectedProfile;
-              const kind = NETWORK_KIND_STYLES[getNetworkKind(profile)];
-
-              return (
-                <li key={profile}>
-                  <button
-                    type="button"
-                    role="option"
-                    aria-selected={isSelected}
-                    onClick={() => {
-                      onChange(profile);
-                      setOpen(false);
-                    }}
-                    className={`flex w-full items-center gap-2.5 rounded-xl border px-3 py-2.5 text-left transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sky-400/70 ${
-                      isSelected
-                        ? "border-sky-400/60 bg-sky-50/80 dark:border-sky-500/70 dark:bg-sky-500/10"
-                        : "border-transparent hover:border-slate-300 hover:bg-slate-100/70 dark:hover:border-slate-700 dark:hover:bg-slate-900/80"
-                    }`}
-                  >
-                    <span className="flex min-w-0 flex-1 items-center gap-2.5">
-                      <NetworkIcon profile={profile} />
-                      <span className="min-w-0 flex-1">
-                        <span className="block text-sm font-medium leading-5 text-slate-900 dark:text-slate-100">
-                          {network?.name ?? profile}
-                        </span>
-                        <span className="mt-0.5 flex flex-wrap items-center gap-1.5">
-                          <span className="font-mono text-[11px] text-slate-500 dark:text-slate-400">
-                            {profile}
-                          </span>
-                          <span className="rounded-full border border-slate-300 bg-slate-100 px-2 py-0.5 font-mono text-[10px] font-semibold tabular-nums text-slate-700 dark:border-slate-600 dark:bg-slate-800 dark:text-slate-200">
-                            chain {network?.chainId ?? "n/a"}
-                          </span>
-                          <span
-                            className={`rounded-full px-2 py-0.5 text-[10px] font-semibold uppercase tracking-[0.06em] ${kind.badgeClass}`}
-                          >
-                            {kind.label}
-                          </span>
-                        </span>
-                      </span>
-                    </span>
-
-                    <span
-                      className={`ml-1 flex h-5 w-5 shrink-0 items-center justify-center rounded-full border ${
-                        isSelected
-                          ? "border-sky-500 bg-sky-500 text-white"
-                          : "border-slate-300 text-transparent dark:border-slate-600"
-                      }`}
-                      aria-hidden
-                    >
-                      <svg
-                        viewBox="0 0 20 20"
-                        fill="none"
-                        stroke="currentColor"
-                        strokeWidth="2"
-                        className="h-3 w-3"
-                      >
-                        <path
-                          d="M5.5 10.5L8.5 13.5L14.5 7.5"
-                          strokeLinecap="round"
-                          strokeLinejoin="round"
-                        />
-                      </svg>
-                    </span>
-                  </button>
-                </li>
-              );
-            })}
-          </ul>
-        </div>
-      )}
-    </div>
-  );
-}
+];
 
 export function TransferForm() {
   const dispatch = useDispatch<AppDispatch>();
   const navigate = useNavigate();
   const { draft, txStatus, error } = useSelector((s: RootState) => s.transferStart);
   const [createJob] = useCreateJobMutation();
-  const [recoverJob, { isLoading: recoveringJob }] = useRecoverJobMutation();
-  const [updateJobSettings] = useUpdateJobSettingsMutation();
   const { data: jobsData, isError: jobsListError } = useGetJobsQuery(undefined, {
-    pollingInterval: 10_000,
+    pollingInterval: JOBS_POLL_INTERVAL_MS,
   });
   const [amountMode, setAmountMode] = useState<AmountMode>("wei");
   const [pendingTx, setPendingTx] = useState<PendingTxInfo | null>(null);
-  const [recoverTxId, setRecoverTxId] = useState("");
-  const [recoverMode, setRecoverMode] = useState<RelayMode>("auto");
-  const [recoverError, setRecoverError] = useState<string | null>(null);
 
   const busy = txStatus !== "idle";
   const pendingTxUrl = pendingTx ? getTxExplorerUrl(draft.sourceProfile, pendingTx.hash) : null;
   const activeJobs = [...(jobsData ?? [])]
     .filter((job) => !TERMINAL_JOB_STATUSES.has(job.status))
     .sort((a, b) => b.updatedAt - a.updatedAt);
+  const amountModeConfig = AMOUNT_MODES.find((mode) => mode.value === amountMode)!;
 
-  function field(key: keyof typeof draft) {
-    return (e: ChangeEvent<HTMLInputElement | HTMLSelectElement>) =>
-      dispatch(setDraftField({ key, value: e.target.value.trim() }));
+  function updateField(key: keyof TransferDraft, value: string) {
+    dispatch(setDraftField({ key, value: value.trim() }));
   }
 
-  function handleOpenJob(job: RelayJob) {
-    dispatch(
-      setActiveJob({
-        jobId: job.id,
-        txId: job.txId,
-        sourceProfile: job.intent.sourceProfile,
-        destProfile: job.intent.destinationProfile,
-        sourceConnector: job.intent.sourceConnector,
-        destConnector: job.intent.destinationConnector,
-      }),
-    );
+  function openJob(job: RelayJob) {
+    dispatch(setActiveJob(activeSessionFromJob(job)));
     navigate(`/progress/${job.id}`);
-  }
-
-  async function handleRecoverSubmit(e: FormEvent) {
-    e.preventDefault();
-    setRecoverError(null);
-
-    const txId = recoverTxId.trim();
-    if (!txId) {
-      setRecoverError("txId is required for recovery.");
-      return;
-    }
-
-    try {
-      const recovered = await recoverJob({ txId }).unwrap();
-      if (recovered.relayMode !== recoverMode) {
-        await updateJobSettings({ jobId: recovered.id, relayMode: recoverMode }).unwrap();
-      }
-
-      dispatch(
-        setActiveJob({
-          jobId: recovered.id,
-          txId: recovered.txId,
-          sourceProfile: recovered.intent.sourceProfile,
-          destProfile: recovered.intent.destinationProfile,
-          sourceConnector: recovered.intent.sourceConnector,
-          destConnector: recovered.intent.destinationConnector,
-        }),
-      );
-      navigate(`/progress/${recovered.id}`);
-    } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
-      setRecoverError(message);
-    }
   }
 
   async function handleSubmit(e: FormEvent) {
@@ -440,7 +95,7 @@ export function TransferForm() {
     dispatch(setError(null));
     setPendingTx(null);
 
-    const missing = (Object.keys(draft) as (keyof typeof draft)[]).filter((k) => !draft[k]);
+    const missing = (Object.keys(draft) as (keyof TransferDraft)[]).filter((k) => !draft[k]);
     if (missing.length) {
       dispatch(setError(`Please fill in: ${missing.join(", ")}`));
       return;
@@ -452,268 +107,51 @@ export function TransferForm() {
     }
 
     try {
-      const provider = new BrowserProvider(window.ethereum as unknown as Eip1193Provider);
-      await provider.send("eth_requestAccounts", []);
-
-      const srcChainId = getChainId(draft.sourceProfile);
-      const destinationChainId = getChainId(draft.destProfile);
-      if (!destinationChainId) {
-        dispatch(setError("Unknown destination network. Select a supported destination profile."));
-        return;
-      }
-      if (srcChainId) {
-        await ensureWalletOnChain(provider, srcChainId);
-      }
-
-      const signer = await provider.getSigner();
-      const signerAddress = await signer.getAddress();
-      const token = new Contract(draft.tokenFrom, ERC20_ABI, signer);
-
-      let amountBn: bigint;
-      if (amountMode === "wei") {
-        try {
-          amountBn = BigInt(draft.amount);
-        } catch {
-          dispatch(setError("Amount must be a valid integer when unit is 'wei'."));
-          return;
-        }
-      } else {
-        let tokenDecimals: number;
-        try {
-          tokenDecimals = Number(await token.decimals());
-          if (!Number.isInteger(tokenDecimals) || tokenDecimals < 0 || tokenDecimals > 255) {
-            throw new Error("Invalid token decimals");
-          }
-        } catch {
-          dispatch(
-            setError(
-              "Could not read token decimals() from tokenFrom contract. Check the address and network.",
-            ),
-          );
-          return;
-        }
-        try {
-          amountBn = parseUnits(draft.amount, tokenDecimals);
-        } catch {
-          dispatch(
-            setError(
-              `Amount must be a valid token number for decimals=${tokenDecimals} (examples: 100, 0.5, 1.234).`,
-            ),
-          );
-          return;
-        }
-      }
-      if (amountBn <= 0n) {
-        dispatch(setError("Amount must be greater than 0."));
-        return;
-      }
-
-      let currentAllowance: bigint;
-      try {
-        currentAllowance = BigInt(
-          await (token.allowance!(signerAddress, draft.sourceConnector) as Promise<bigint>),
-        );
-      } catch {
-        dispatch(
-          setError(
-            "Could not read token allowance() from tokenFrom contract. Check the address and selected source network.",
-          ),
-        );
-        return;
-      }
-
-      if (currentAllowance < amountBn) {
-        dispatch(setTxStatus("approving"));
-        const approveTx = await (token.approve!(draft.sourceConnector, MaxUint256) as Promise<{
-          hash: string;
-          wait: () => Promise<unknown>;
-        }>);
-        setPendingTx({ phase: "approval", hash: approveTx.hash });
-        await approveTx.wait();
-      }
-
-      dispatch(setTxStatus("depositing"));
-      const connector = new Contract(draft.sourceConnector, CONNECTOR_ABI, signer);
-      const depositAndLock = connector.depositAndLock as unknown as ConnectorContractMethodLike;
-      const depositArgs = [
-        draft.tokenFrom,
-        draft.tokenTo,
-        draft.receiver,
-        amountBn,
-        draft.destConnector,
-        destinationChainId,
-      ];
-      const sourceNetwork = NETWORKS[draft.sourceProfile];
-
-      await logConnectorGasEstimate({
-        provider,
-        method: "depositAndLock",
-        connectorAddress: draft.sourceConnector,
-        chainId: srcChainId,
-        nativeSymbol: sourceNetwork?.nativeCurrency.symbol,
-        args: depositArgs,
-        estimateGas: depositAndLock.estimateGas
-          ? (...args: unknown[]) => depositAndLock.estimateGas!(...args)
-          : undefined,
+      const { txId, amount } = await depositAndLock(window.ethereum, draft, amountMode, {
+        onPhase: (phase) => dispatch(setTxStatus(phase)),
+        onPendingTx: setPendingTx,
       });
-
-      const depositTx = await depositAndLock(...depositArgs);
-      setPendingTx({ phase: "deposit", hash: depositTx.hash });
-
-      const receipt = (await depositTx.wait()) as
-        | (ConnectorReceiptLike & { logs: { topics: readonly string[]; data: string }[] })
-        | null;
-      if (!receipt) throw new Error("No transaction receipt returned");
-      setPendingTx(null);
-      await logConnectorGasReceipt({
-        provider,
-        method: "depositAndLock",
-        connectorAddress: draft.sourceConnector,
-        chainId: srcChainId,
-        nativeSymbol: sourceNetwork?.nativeCurrency.symbol,
-        txHash: depositTx.hash,
-        receipt,
-      });
-
-      const iface = new Interface(CONNECTOR_ABI);
-      let txId: string | undefined;
-      for (const log of receipt.logs) {
-        try {
-          const parsed = iface.parseLog(log);
-          if (parsed?.name === "DepositLocked") {
-            txId = parsed.args[0] as string;
-            break;
-          }
-        } catch {
-          // Not a matching log
-        }
-      }
-      if (!txId) throw new Error("DepositLocked event not found in receipt");
 
       dispatch(setTxStatus("registering"));
-      const intent = {
-        sourceProfile: draft.sourceProfile,
-        destinationProfile: draft.destProfile,
-        sourceConnector: draft.sourceConnector,
-        destinationConnector: draft.destConnector,
-        tokenFrom: draft.tokenFrom,
-        tokenTo: draft.tokenTo,
-        amount: amountBn.toString(),
-        receiver: draft.receiver,
-      };
-      const job = await createJob({ txId, intent }).unwrap();
-
-      dispatch(
-        setActiveJob({
-          jobId: job.id,
-          txId,
+      const job = await createJob({
+        txId,
+        intent: {
           sourceProfile: draft.sourceProfile,
-          destProfile: draft.destProfile,
+          destinationProfile: draft.destProfile,
           sourceConnector: draft.sourceConnector,
-          destConnector: draft.destConnector,
-        }),
-      );
+          destinationConnector: draft.destConnector,
+          tokenFrom: draft.tokenFrom,
+          tokenTo: draft.tokenTo,
+          amount: amount.toString(),
+          receiver: draft.receiver,
+        },
+      }).unwrap();
+
       dispatch(resetTransfer());
-      navigate(`/progress/${job.id}`);
+      openJob(job);
     } catch (err) {
       setPendingTx(null);
-      const decoded = decodeContractError(err);
-      const message = err instanceof Error ? err.message : String(err);
-      if (/user rejected|rejected by user|action_rejected/i.test(message)) {
-        dispatch(setError("Transaction request was rejected in wallet."));
-      } else {
-        dispatch(setError(decoded ?? message));
-      }
+      dispatch(
+        setError(
+          isUserRejection(err) ? "Transaction request was rejected in wallet." : formatUiError(err),
+        ),
+      );
       dispatch(setTxStatus("idle"));
     }
   }
 
   return (
-    <div className="max-w-2xl mx-auto mt-10 px-5">
-      <h1 className="text-2xl font-semibold text-gray-900 dark:text-gray-100 mb-1">
+    <div className={PAGE_CLASS}>
+      <h1 className="mb-1 text-2xl font-semibold text-gray-900 dark:text-gray-100">
         Cross-Chain Transfer
       </h1>
-      <p className="text-sm text-gray-500 dark:text-gray-400 mb-6">
+      <p className="mb-6 text-sm text-gray-500 dark:text-gray-400">
         Fill in the details below, then deposit to start the trustless relay.
       </p>
 
-      <div className="mb-6 rounded-md border border-gray-200 bg-gray-50 p-4 dark:border-gray-700 dark:bg-gray-900">
-        <h2 className="text-sm font-semibold text-gray-900 dark:text-gray-100">Developer recovery</h2>
-        <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">
-          Recover an existing relay job by txId and jump directly to Progress.
-        </p>
-        <form onSubmit={handleRecoverSubmit} className="mt-3 grid grid-cols-1 gap-3 md:grid-cols-4">
-          <input
-            type="text"
-            placeholder="0x txId"
-            value={recoverTxId}
-            onChange={(e) => setRecoverTxId(e.target.value.trim())}
-            className="md:col-span-2 rounded-md border border-gray-300 bg-white px-3 py-2 font-mono text-sm text-gray-900 focus:outline-none focus:ring-2 focus:ring-violet-500 dark:border-gray-700 dark:bg-gray-950 dark:text-gray-100"
-          />
-          <select
-            value={recoverMode}
-            onChange={(e) => setRecoverMode(e.target.value as RelayMode)}
-            className="rounded-md border border-gray-300 bg-white px-3 py-2 text-sm text-gray-900 focus:outline-none focus:ring-2 focus:ring-violet-500 dark:border-gray-700 dark:bg-gray-950 dark:text-gray-100"
-          >
-            <option value="auto">Auto</option>
-            <option value="manual">Manual</option>
-          </select>
-          <button
-            type="submit"
-            disabled={recoveringJob}
-            className="rounded-md border border-violet-600 bg-violet-600 px-3 py-2 text-sm font-medium text-white hover:bg-violet-700 disabled:cursor-not-allowed disabled:opacity-50"
-          >
-            {recoveringJob ? "Recovering…" : "Recover job"}
-          </button>
-        </form>
-        {recoverError && (
-          <p className="mt-2 text-xs text-red-600 dark:text-red-300">{recoverError}</p>
-        )}
-      </div>
+      <RecoveryPanel onRecovered={openJob} />
 
-      {activeJobs.length > 0 && (
-        <section className="mb-6 rounded-md border border-gray-200 bg-white p-4 dark:border-gray-700 dark:bg-gray-900">
-          <h2 className="text-sm font-semibold text-gray-900 dark:text-gray-100">Active Jobs</h2>
-          <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">
-            Reopen any in-progress or retryable relay job.
-          </p>
-          <div className="mt-3 space-y-2">
-            {activeJobs.map((job) => (
-              <button
-                key={job.id}
-                type="button"
-                onClick={() => handleOpenJob(job)}
-                className="w-full rounded-md border border-gray-200 bg-gray-50 px-3 py-2.5 text-left transition hover:border-violet-400 hover:bg-violet-50/70 focus:outline-none focus:ring-2 focus:ring-violet-500 dark:border-gray-700 dark:bg-gray-950 dark:hover:border-violet-500"
-              >
-                <div className="flex flex-wrap items-center justify-between gap-2">
-                  <span className="font-mono text-sm font-semibold text-gray-900 dark:text-gray-100">
-                    {job.id}
-                  </span>
-                  <span
-                    className={`rounded-full px-2 py-0.5 text-[10px] font-semibold uppercase tracking-[0.04em] ${JOB_STATUS_BADGE_CLASSES[job.status]}`}
-                  >
-                    {JOB_STATUS_LABELS[job.status]}
-                  </span>
-                </div>
-                <p className="mt-1 text-xs text-gray-600 dark:text-gray-300">
-                  Stage: {JOB_STAGE_LABELS[job.currentStage] ?? job.currentStage}
-                </p>
-                <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">
-                  {job.intent.sourceProfile} -&gt; {job.intent.destinationProfile}
-                </p>
-                {job.txId && (
-                  <p
-                    className="mt-1 truncate font-mono text-[11px] text-gray-500 dark:text-gray-400"
-                    title={job.txId}
-                  >
-                    {job.txId}
-                  </p>
-                )}
-              </button>
-            ))}
-          </div>
-        </section>
-      )}
+      {activeJobs.length > 0 && <ActiveJobsPanel jobs={activeJobs} onOpen={openJob} />}
 
       {jobsListError && (
         <p className="mb-6 text-xs text-amber-700 dark:text-amber-300">
@@ -723,35 +161,26 @@ export function TransferForm() {
       )}
 
       {error && (
-        <div
-          role="alert"
-          className="mb-4 rounded-md border border-red-300 bg-red-50 px-4 py-3 text-sm text-red-700 dark:border-red-700 dark:bg-red-950 dark:text-red-300"
-        >
+        <Alert tone="error" role="alert" className="mb-4">
           {error}
-        </div>
+        </Alert>
       )}
 
       {txStatus === "approving" && !pendingTx && (
-        <div
-          role="status"
-          className="mb-4 rounded-md border border-amber-300 bg-amber-50 px-4 py-3 text-sm text-amber-800 dark:border-amber-800 dark:bg-amber-950/60 dark:text-amber-200"
-        >
+        <Alert tone="warning" role="status" className="mb-4">
           Waiting for wallet confirmation. Please approve the token transaction in your wallet
           popup.
-        </div>
+        </Alert>
       )}
 
       {pendingTx && (
-        <div
-          role="status"
-          className="mb-4 rounded-md border border-sky-300 bg-sky-50 px-4 py-3 text-sm text-sky-800 dark:border-sky-800 dark:bg-sky-950/60 dark:text-sky-200"
-        >
+        <Alert tone="pending" role="status" className="mb-4">
           <p>
             {pendingTx.phase === "approval"
               ? "Approval transaction sent. Waiting for on-chain confirmation…"
               : "Deposit transaction sent. Waiting for on-chain confirmation…"}
           </p>
-          <p className="mt-1 font-mono text-xs break-all">{pendingTx.hash}</p>
+          <p className="mt-1 break-all font-mono text-xs">{pendingTx.hash}</p>
           {pendingTxUrl && (
             <a
               href={pendingTxUrl}
@@ -762,141 +191,89 @@ export function TransferForm() {
               View transaction on explorer
             </a>
           )}
-        </div>
+        </Alert>
       )}
 
       <form onSubmit={handleSubmit} noValidate className="space-y-4">
-        {/* Network row */}
         <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
           <NetworkPicker
             idPrefix="source-network"
             label="Source network"
             value={draft.sourceProfile}
-            onChange={(value) => dispatch(setDraftField({ key: "sourceProfile", value }))}
+            onChange={(value) => updateField("sourceProfile", value)}
             disabled={busy}
           />
           <NetworkPicker
             idPrefix="destination-network"
             label="Destination network"
             value={draft.destProfile}
-            onChange={(value) => dispatch(setDraftField({ key: "destProfile", value }))}
+            onChange={(value) => updateField("destProfile", value)}
             disabled={busy}
           />
         </div>
 
-        {/* Connector row */}
-        <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
-          {(
-            [
-              ["sourceConnector", "Source connector address"],
-              ["destConnector", "Destination connector address"],
-            ] as const
-          ).map(([key, label]) => (
-            <label
-              key={key}
-              className="flex flex-col gap-1.5 text-sm text-gray-600 dark:text-gray-400"
-            >
-              {label}
-              <input
-                type="text"
-                placeholder="0x…"
-                value={draft[key]}
-                onChange={field(key)}
-                disabled={busy}
-                className="rounded-md border border-gray-300 bg-white px-3 py-2 font-mono text-sm text-gray-900 focus:outline-none focus:ring-2 focus:ring-violet-500 disabled:opacity-50 dark:border-gray-700 dark:bg-gray-900 dark:text-gray-100"
-              />
-            </label>
-          ))}
-        </div>
+        {ADDRESS_FIELD_ROWS.map((row) => (
+          <div key={row[0][0]} className="grid grid-cols-1 gap-4 md:grid-cols-2">
+            {row.map(([key, label]) => (
+              <label key={key} className={FIELD_LABEL_CLASS}>
+                {label}
+                <input
+                  type="text"
+                  placeholder="0x…"
+                  value={draft[key]}
+                  onChange={(e) => updateField(key, e.target.value)}
+                  disabled={busy}
+                  className={TEXT_INPUT_CLASS}
+                />
+              </label>
+            ))}
+          </div>
+        ))}
 
-        {/* Token row */}
         <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
-          {(
-            [
-              ["tokenFrom", "Token (from) address"],
-              ["tokenTo", "Token (to) address"],
-            ] as const
-          ).map(([key, label]) => (
-            <label
-              key={key}
-              className="flex flex-col gap-1.5 text-sm text-gray-600 dark:text-gray-400"
-            >
-              {label}
-              <input
-                type="text"
-                placeholder="0x…"
-                value={draft[key]}
-                onChange={field(key)}
-                disabled={busy}
-                className="rounded-md border border-gray-300 bg-white px-3 py-2 font-mono text-sm text-gray-900 focus:outline-none focus:ring-2 focus:ring-violet-500 disabled:opacity-50 dark:border-gray-700 dark:bg-gray-900 dark:text-gray-100"
-              />
-            </label>
-          ))}
-        </div>
-
-        {/* Amount / Receiver row */}
-        <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
-          <label className="flex flex-col gap-1.5 text-sm text-gray-600 dark:text-gray-400">
+          <label className={FIELD_LABEL_CLASS}>
             Amount
             <div className="flex items-center gap-4 text-xs text-gray-500 dark:text-gray-400">
-              <label className="inline-flex items-center gap-1.5">
-                <input
-                  type="radio"
-                  name="amount-mode"
-                  value="wei"
-                  checked={amountMode === "wei"}
-                  onChange={() => setAmountMode("wei")}
-                  disabled={busy}
-                  className="h-3.5 w-3.5 accent-violet-600"
-                />
-                Wei
-              </label>
-              <label className="inline-flex items-center gap-1.5">
-                <input
-                  type="radio"
-                  name="amount-mode"
-                  value="tokens"
-                  checked={amountMode === "tokens"}
-                  onChange={() => setAmountMode("tokens")}
-                  disabled={busy}
-                  className="h-3.5 w-3.5 accent-violet-600"
-                />
-                Tokens
-              </label>
+              {AMOUNT_MODES.map(({ value, label }) => (
+                <label key={value} className="inline-flex items-center gap-1.5">
+                  <input
+                    type="radio"
+                    name="amount-mode"
+                    value={value}
+                    checked={amountMode === value}
+                    onChange={() => setAmountMode(value)}
+                    disabled={busy}
+                    className="h-3.5 w-3.5 accent-violet-600"
+                  />
+                  {label}
+                </label>
+              ))}
             </div>
-            <span className="text-xs text-gray-400">
-              {amountMode === "wei"
-                ? "Enter smallest unit (e.g. 1 ETH = 1000000000000000000 wei)."
-                : "Enter token amount (e.g. 100). App converts to wei using token decimals()."}
-            </span>
+            <span className="text-xs text-gray-400">{amountModeConfig.hint}</span>
             <input
               type="text"
-              placeholder={amountMode === "wei" ? "1000000000000000000" : "100"}
+              placeholder={amountModeConfig.placeholder}
               value={draft.amount}
-              onChange={field("amount")}
+              onChange={(e) => updateField("amount", e.target.value)}
               disabled={busy}
-              className="rounded-md border border-gray-300 bg-white px-3 py-2 font-mono text-sm text-gray-900 focus:outline-none focus:ring-2 focus:ring-violet-500 disabled:opacity-50 dark:border-gray-700 dark:bg-gray-900 dark:text-gray-100"
+              className={TEXT_INPUT_CLASS}
             />
           </label>
-          <label className="flex flex-col gap-1.5 text-sm text-gray-600 dark:text-gray-400">
+          <label className={FIELD_LABEL_CLASS}>
             Receiver address
             <input
               type="text"
               placeholder="0x…"
               value={draft.receiver}
-              onChange={field("receiver")}
+              onChange={(e) => updateField("receiver", e.target.value)}
               disabled={busy}
-              className="rounded-md border border-gray-300 bg-white px-3 py-2 font-mono text-sm text-gray-900 focus:outline-none focus:ring-2 focus:ring-violet-500 disabled:opacity-50 dark:border-gray-700 dark:bg-gray-900 dark:text-gray-100"
+              className={TEXT_INPUT_CLASS}
             />
           </label>
         </div>
 
-        <button
-          type="submit"
-          disabled={busy}
-          className="mt-2 rounded-md bg-violet-600 px-5 py-2.5 text-sm font-medium text-white hover:bg-violet-700 disabled:cursor-not-allowed disabled:opacity-50 transition-colors"
-        >
-          {TX_STATUS_LABELS[txStatus as keyof typeof TX_STATUS_LABELS]}
+        <button type="submit" disabled={busy} className={`mt-2 ${buttonClass("primary")}`}>
+          {SUBMIT_LABELS[txStatus]}
         </button>
       </form>
     </div>

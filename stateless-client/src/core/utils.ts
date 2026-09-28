@@ -149,3 +149,46 @@ export function assert(condition: unknown, message: string): asserts condition {
     throw new Error(message);
   }
 }
+
+export function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
+/**
+ * Throws `${label} mismatch` when two addresses differ. Both values are
+ * checksum-normalised first, so casing differences never cause a mismatch.
+ */
+export function assertSameAddress(label: string, expected: string, actual: string): void {
+  const normalizedExpected = normalizeAddress(expected, `${label} (expected)`);
+  const normalizedActual = normalizeAddress(actual, label);
+  if (normalizedExpected !== normalizedActual) {
+    throw new Error(`${label} mismatch: expected ${normalizedExpected}, got ${normalizedActual}`);
+  }
+}
+
+/** Reads the first set env var from `names` as a positive safe integer; invalid values are ignored. */
+export function readPositiveIntEnv(...names: string[]): number | undefined {
+  for (const name of names) {
+    const raw = process.env[name];
+    if (!raw || !DECIMAL_REGEX.test(raw)) {
+      continue;
+    }
+    const parsed = Number(raw);
+    if (Number.isSafeInteger(parsed) && parsed > 0) {
+      return parsed;
+    }
+  }
+  return undefined;
+}
+
+/** Reads `name` as a boolean flag (`1`/`true`/`0`/`false`); anything else yields `defaultValue`. */
+export function readBooleanEnv(name: string, defaultValue: boolean): boolean {
+  const normalized = process.env[name]?.toLowerCase();
+  if (normalized === "1" || normalized === "true") {
+    return true;
+  }
+  if (normalized === "0" || normalized === "false") {
+    return false;
+  }
+  return defaultValue;
+}

@@ -22,10 +22,7 @@ vi.mock("../../src/agent/integrations/relay.js", () => {
 });
 
 import { confirmJob } from "../../src/agent/services/job-service.js";
-import {
-  getResumeDecision,
-  runPrepareStage,
-} from "../../src/agent/integrations/relay.js";
+import { getResumeDecision, runPrepareStage } from "../../src/agent/integrations/relay.js";
 
 const INTENT: TransferIntent = {
   sourceProfile: "local-anvil",

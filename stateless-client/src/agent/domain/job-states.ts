@@ -1,5 +1,5 @@
 import type { JobStatus, RelayProofStage } from "../contracts.js";
-import { ALL_RELAY_STAGES, RELAY_STAGE_REGISTRY } from "../../relay/stages.js";
+import { ALL_RELAY_STAGES, isProofRelayStage } from "../../relay/stages.js";
 
 // ---------------------------------------------------------------------------
 // All known relay stages — derived from the canonical registry
@@ -8,13 +8,11 @@ import { ALL_RELAY_STAGES, RELAY_STAGE_REGISTRY } from "../../relay/stages.js";
 export const STAGE_ORDER: RelayProofStage[] = ALL_RELAY_STAGES;
 
 /** Stages that require RISC Zero proof generation. */
-export const PROOF_STAGES = new Set<RelayProofStage>(
-  ALL_RELAY_STAGES.filter((s) => RELAY_STAGE_REGISTRY[s].actionKind === "proof"),
-);
+export const PROOF_STAGES = new Set<RelayProofStage>(ALL_RELAY_STAGES.filter(isProofRelayStage));
 
 /** Stages that are direct contract calls (no proof needed). */
 export const DIRECT_STAGES = new Set<RelayProofStage>(
-  ALL_RELAY_STAGES.filter((s) => RELAY_STAGE_REGISTRY[s].actionKind === "direct"),
+  ALL_RELAY_STAGES.filter((s) => !isProofRelayStage(s)),
 );
 
 // ---------------------------------------------------------------------------

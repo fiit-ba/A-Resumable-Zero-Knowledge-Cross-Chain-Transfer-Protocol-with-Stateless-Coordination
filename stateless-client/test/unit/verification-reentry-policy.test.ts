@@ -7,7 +7,10 @@ import { CONNECTOR_ABI } from "../../src/contracts/abi.js";
 import type { ColibriBackend, ColibriClient } from "../../src/colibri/adapter.js";
 import { ColibriMethodType } from "../../src/colibri/adapter.js";
 import type { ChainConfig, StageSubmissionConfig } from "../../src/core/types.js";
-import { deriveVerificationPolicyForStage, shouldUsePrunedAckVerification } from "../../src/relay/relay.js";
+import {
+  deriveVerificationPolicyForStage,
+  shouldUsePrunedAckVerification,
+} from "../../src/relay/relay.js";
 import { verifyAckEventOnly, verifyStage } from "../../src/relay/verification.js";
 
 vi.mock("../../src/colibri/adapter.js", async (importOriginal) => {
@@ -56,7 +59,12 @@ const DEST_LOCAL: ChainConfig = {
   chainId: 31337,
 };
 
-function makeAckReadyLog(): { address: string; topics: string[]; data: string; blockNumber: number } {
+function makeAckReadyLog(): {
+  address: string;
+  topics: string[];
+  data: string;
+  blockNumber: number;
+} {
   const event = abi.getEvent("AckReady")!;
   const { topics, data } = abi.encodeEventLog(event, [
     TX_ID,
@@ -71,13 +79,17 @@ function makeAckReadyLog(): { address: string; topics: string[]; data: string; b
     0,
     "0x" + "aa".repeat(32),
     "0x" + "bb".repeat(32),
-    "0x1234",
   ]);
 
   return { address: SRC_CONNECTOR, topics, data, blockNumber: 101 };
 }
 
-function makeFundsReleasedLog(): { address: string; topics: string[]; data: string; blockNumber: number } {
+function makeFundsReleasedLog(): {
+  address: string;
+  topics: string[];
+  data: string;
+  blockNumber: number;
+} {
   const event = abi.getEvent("FundsReleased")!;
   const { topics, data } = abi.encodeEventLog(event, [
     TX_ID,
@@ -170,11 +182,13 @@ describe("deriveVerificationPolicyForStage", () => {
         ackWorkspace: "ack",
         refundClaimWorkspace: "refund-claim",
         burnWorkspace: "burn",
+        nonAcceptWorkspace: "non-accept",
         lockDockerScript: "lock.sh",
         mintDockerScript: "mint.sh",
         ackDockerScript: "ack.sh",
         refundClaimDockerScript: "refund-claim.sh",
         burnDockerScript: "burn.sh",
+        nonAcceptDockerScript: "non-accept.sh",
       },
       risc0ProverMode: "local",
       verificationHints: {
@@ -190,18 +204,24 @@ describe("deriveVerificationPolicyForStage", () => {
   }
 
   it("forces retry-from-scratch on later non-local proof stages after prior degraded non-local stage", () => {
-    const policy = deriveVerificationPolicyForStage(baseConfig(DEST_NON_LOCAL), "destination-funds-released");
+    const policy = deriveVerificationPolicyForStage(
+      baseConfig(DEST_NON_LOCAL),
+      "destination-funds-released",
+    );
     expect(policy.retryColibriFromScratch).toBe(true);
   });
 
   it("does not force retry-from-scratch for local stages", () => {
-    const policy = deriveVerificationPolicyForStage(baseConfig(DEST_LOCAL), "destination-funds-released");
+    const policy = deriveVerificationPolicyForStage(
+      baseConfig(DEST_LOCAL),
+      "destination-funds-released",
+    );
     expect(policy.retryColibriFromScratch).toBe(false);
   });
 
-  it("uses the same pruned-ack predicate for status 0/4", () => {
-    expect(shouldUsePrunedAckVerification(0, 4)).toBe(true);
-    expect(shouldUsePrunedAckVerification(2, 4)).toBe(false);
+  it("uses the same pruned-ack predicate for status 0/3", () => {
+    expect(shouldUsePrunedAckVerification(0, 3)).toBe(true);
+    expect(shouldUsePrunedAckVerification(2, 3)).toBe(false);
   });
 });
 
@@ -214,7 +234,7 @@ describe("verifyStage retry-first policy (non-sticky mode)", () => {
       if (method === "eth_getLogs") {
         return [makeFundsReleasedLog()];
       }
-      return makeGetTxResult(4);
+      return makeGetTxResult(3);
     });
 
     const result = await verifyStage({
@@ -258,7 +278,12 @@ describe("verifyAckEventOnly pruned ack", () => {
     expect(result.mode).toBe("colibri");
     expect(result.degraded).toBe(false);
     expect(rpc).toHaveBeenCalledTimes(1);
-    expect(rpc).toHaveBeenNthCalledWith(1, "eth_getLogs", expect.any(Array), ColibriMethodType.PROOFABLE);
+    expect(rpc).toHaveBeenNthCalledWith(
+      1,
+      "eth_getLogs",
+      expect.any(Array),
+      ColibriMethodType.PROOFABLE,
+    );
     expect(mockProvider.getLogs).not.toHaveBeenCalled();
   });
 

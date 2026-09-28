@@ -58,6 +58,7 @@ function makeDepositLockedLog(
     srcConnector, // srcChainConnector
     dstConnector, // dstChainConnector
     0n, // timestamp (uint64)
+    0n, // ackDeadline (uint64)
     0n, // nonce
     SOURCE_CHAIN_ID, // sourceChainId
     DESTINATION_CHAIN_ID, // destinationChainId
@@ -277,9 +278,7 @@ describe("verifyStage() — Chiado 503 does not enter rpc-fallback", () => {
 
     // Method-support probe throws sync-backwards — should degrade to rpc-fallback.
     getMethodSupport.mockRejectedValue(
-      new Error(
-        "last sync state is higher than the required period, but we cannot sync backwards",
-      ),
+      new Error("last sync state is higher than the required period, but we cannot sync backwards"),
     );
 
     const log = makeDepositLockedLog(CONNECTOR_ADDR, TX_ID, SRC_CONNECTOR, DST_CONNECTOR);

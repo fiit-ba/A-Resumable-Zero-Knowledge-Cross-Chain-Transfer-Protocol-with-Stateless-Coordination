@@ -8,6 +8,7 @@
  */
 
 import type {
+  EnrichedStagePayload,
   PlannerAction,
   PostSubmitBehavior,
   RelayJob,
@@ -27,7 +28,13 @@ import {
   upsertCheckpoint,
   getCheckpoint,
 } from "../db.js";
-import { canConfirm, canReceiveReceipt, DIRECT_STAGES, isTerminal } from "../domain/job-states.js";
+import {
+  canConfirm,
+  canReceiveReceipt,
+  DIRECT_STAGES,
+  isTerminal,
+  PROOF_STAGES,
+} from "../domain/job-states.js";
 import {
   buildDirectPayload,
   discoverTransferByTxId,
@@ -42,35 +49,33 @@ import type {
   TransferDiscoveryMatch,
 } from "../integrations/relay.js";
 import type { RecoveryCandidate } from "../types.js";
-import type { Stage } from "../../core/types.js";
-import { ALL_RELAY_STAGES, RELAY_STAGE_REGISTRY } from "../../relay/stages.js";
+import type { ResumeDecision, StageVerificationHistoryEntry } from "../../core/types.js";
+import { errorMessage } from "../../core/utils.js";
+import { isRelayStage, isVerifyStage } from "../../relay/stages.js";
 
 // ---------------------------------------------------------------------------
-// Stage preparation — stage lists derived from the canonical registry
+// Helpers
 // ---------------------------------------------------------------------------
 
-const CHECKPOINT_PROOF_STAGES: RelayProofStage[] = ALL_RELAY_STAGES.filter(
-  (s) => RELAY_STAGE_REGISTRY[s].actionKind === "proof",
-);
-
-const VERIFIED_STAGE_VALUES: Stage[] = [
-  "source-deposit",
-  "destination-funds-released",
-  "source-ack-ready",
-  "source-refund-initiated",
-  "destination-burn-executed",
-];
-
-function isVerifiedStage(value: unknown): value is Stage {
-  return typeof value === "string" && VERIFIED_STAGE_VALUES.includes(value as Stage);
+function requireJob(jobId: string): RelayJob {
+  const job = getJob(jobId);
+  if (!job) throw new Error(`Job not found: ${jobId}`);
+  return job;
 }
 
-function isRelayProofStage(value: unknown): value is RelayProofStage {
-  return typeof value === "string" && ALL_RELAY_STAGES.includes(value as RelayProofStage);
+function failJob(jobId: string, lastError: string): void {
+  updateJob(jobId, { status: "failed", lastError });
+}
+
+/** Runs a detached task, logging (not throwing) any failure. The HTTP layer has already replied. */
+function runInBackground(label: string, task: Promise<void>): void {
+  task.catch((err: unknown) => {
+    console.error(`[job-service] ${label}: ${errorMessage(err)}`);
+  });
 }
 
 function plannerActionToStage(action: PlannerAction): RelayProofStage | undefined {
-  return isRelayProofStage(action) ? action : undefined;
+  return isRelayStage(action) ? action : undefined;
 }
 
 function plannerReasonWithMismatch(
@@ -89,12 +94,10 @@ function plannerReasonWithMismatch(
   return `${base} Requested '${requestedStage}' without force override.`;
 }
 
-function collectPriorProofStageVerifications(
-  jobId: string,
-): NonNullable<StageVerificationHints["priorProofStageVerifications"]> {
-  const entries: NonNullable<StageVerificationHints["priorProofStageVerifications"]> = [];
+function collectPriorProofStageVerifications(jobId: string): StageVerificationHistoryEntry[] {
+  const entries: StageVerificationHistoryEntry[] = [];
 
-  for (const stage of CHECKPOINT_PROOF_STAGES) {
+  for (const stage of PROOF_STAGES) {
     const checkpoint = getCheckpoint(jobId, stage);
     if (!checkpoint?.verificationJson) {
       continue;
@@ -107,7 +110,7 @@ function collectPriorProofStageVerifications(
         verifiedStage?: unknown;
       };
       if (
-        !isVerifiedStage(parsed.verifiedStage) ||
+        !isVerifyStage(parsed.verifiedStage) ||
         (parsed.mode !== "colibri" && parsed.mode !== "rpc-fallback") ||
         typeof parsed.degraded !== "boolean"
       ) {
@@ -130,7 +133,7 @@ function collectPriorProofStageVerifications(
 function buildStageVerificationHints(
   jobId: string,
   stage: RelayProofStage,
-  decision?: Awaited<ReturnType<typeof getResumeDecision>>,
+  decision?: ResumeDecision,
 ): StageVerificationHints | undefined {
   const priorProofStageVerifications = collectPriorProofStageVerifications(jobId);
   const hints: StageVerificationHints = {};
@@ -158,44 +161,67 @@ async function ensureRepoRootAvailable(jobId: string): Promise<boolean> {
     await resolveRepoRoot();
     return true;
   } catch {
-    updateJob(jobId, {
-      status: "failed",
-      lastError: "Cannot locate repository root. Run from inside the repo or pass --repo-root.",
-    });
+    failJob(jobId, "Cannot locate repository root. Run from inside the repo or pass --repo-root.");
     return false;
   }
 }
 
-async function readPlannerDecision(job: RelayJob): Promise<Awaited<ReturnType<typeof getResumeDecision>>> {
+function readPlannerDecision(job: RelayJob): Promise<ResumeDecision> {
   const recoveryMeta = getJobRecoveryMetadata(job.id);
   return getResumeDecision(job.intent, job.txId, recoveryMeta?.executionBlocks);
 }
 
+/** Reads the planner decision, marking the job failed (and returning undefined) on RPC errors. */
+async function readPlannerDecisionOrFail(job: RelayJob): Promise<ResumeDecision | undefined> {
+  try {
+    return await readPlannerDecision(job);
+  } catch (err) {
+    failJob(job.id, errorMessage(err));
+    return undefined;
+  }
+}
+
 function persistPlannerDecision(
   jobId: string,
-  decision: Awaited<ReturnType<typeof getResumeDecision>>,
-  overrides?: {
-    plannerReason?: string;
-  },
+  decision: ResumeDecision,
+  plannerReason: string = decision.reason,
 ): void {
   updateJob(jobId, {
     sourceStatus: decision.sourceStatus,
     destinationStatus: decision.destinationStatus,
     plannerAction: decision.action,
-    plannerReason: overrides?.plannerReason ?? decision.reason,
+    plannerReason,
   });
+}
+
+/**
+ * Settles the job when the planner reports `noop` (completed) or `error` (failed);
+ * otherwise returns the stage the planner wants to run next.
+ */
+function plannedStageOrSettle(
+  jobId: string,
+  decision: ResumeDecision,
+): RelayProofStage | undefined {
+  if (decision.action === "noop") {
+    updateJob(jobId, { status: "completed", currentStage: "completed" });
+    return undefined;
+  }
+  if (decision.action === "error") {
+    failJob(jobId, decision.reason);
+    return undefined;
+  }
+  return decision.action;
 }
 
 async function runStagePreparation(
   jobId: string,
   stage: RelayProofStage,
-  decision?: Awaited<ReturnType<typeof getResumeDecision>>,
+  decision?: ResumeDecision,
   opts?: {
     regenerate?: boolean;
   },
 ): Promise<void> {
-  const job = getJob(jobId);
-  if (!job) throw new Error(`Job not found: ${jobId}`);
+  const job = requireJob(jobId);
 
   // Resume: reuse an existing checkpoint payload whenever one is present.
   // We intentionally reuse even when completedAt is set (i.e. the user already submitted this
@@ -212,32 +238,27 @@ async function runStagePreparation(
   updateJob(jobId, { status: "preparing_stage", currentStage: stage });
 
   // Thread execution blocks from recovery metadata (if this is a recovered job).
-  const recoveryMeta = getJobRecoveryMetadata(jobId);
-  const executionBlocks = recoveryMeta?.executionBlocks;
-  const verificationHints = buildStageVerificationHints(jobId, stage, decision);
+  const executionBlocks = getJobRecoveryMetadata(jobId)?.executionBlocks;
 
   try {
-    let enrichedPayload: Record<string, unknown>;
-    let verificationSummary: Record<string, unknown> | undefined;
+    let enrichedPayload: EnrichedStagePayload;
+    let verificationSummary: VerificationSummary | undefined;
 
     if (DIRECT_STAGES.has(stage)) {
       // Direct action: no proof generation needed — build payload immediately.
-      const payload = buildDirectPayload(
+      enrichedPayload = buildDirectPayload(
         job.intent,
         job.txId,
         stage as "refund-initiate" | "execute-burn",
         executionBlocks,
       );
-      enrichedPayload = { ...payload };
-      verificationSummary = undefined;
     } else {
-      // Proof stage: run full preparation pipeline.
       const { payload, verification } = await runPrepareStage(
         job.intent,
         job.txId,
         stage,
         executionBlocks,
-        verificationHints,
+        buildStageVerificationHints(jobId, stage, decision),
       );
       enrichedPayload = {
         ...payload,
@@ -246,14 +267,12 @@ async function runStagePreparation(
         verificationDegradeReason: verification?.degradeReason,
         verifiedStage: verification?.stage,
       };
-      verificationSummary = verification
-        ? {
-            mode: verification.mode,
-            degraded: verification.degraded,
-            degradeReason: verification.degradeReason,
-            verifiedStage: verification.stage,
-          }
-        : undefined;
+      verificationSummary = verification && {
+        mode: verification.mode,
+        degraded: verification.degraded,
+        degradeReason: verification.degradeReason,
+        verifiedStage: verification.stage,
+      };
     }
 
     upsertCheckpoint({
@@ -266,18 +285,16 @@ async function runStagePreparation(
     updateJob(jobId, {
       status: "ready_for_signature",
       currentStage: stage,
-      verificationSummary: verificationSummary as Parameters<
-        typeof updateJob
-      >[1]["verificationSummary"],
+      verificationSummary,
       lastError: null,
     });
   } catch (err) {
-    const message = err instanceof Error ? err.message : String(err);
+    const message = errorMessage(err);
     console.error(`[job-service] stage preparation failed for ${jobId} (${stage}): ${message}`);
     if (err instanceof Error && err.stack) {
       console.error(err.stack);
     }
-    updateJob(jobId, { status: "failed", lastError: message });
+    failJob(jobId, message);
   }
 }
 
@@ -297,32 +314,32 @@ export interface PrepareJobStageOptions {
 }
 
 export function updateJobSettings(jobId: string, input: UpdateJobSettingsInput): RelayJob {
-  const job = getJob(jobId);
-  if (!job) throw new Error(`Job not found: ${jobId}`);
+  requireJob(jobId);
 
   updateJob(jobId, {
     relayMode: input.relayMode,
     postSubmitBehavior: input.postSubmitBehavior,
   });
 
-  return getJob(jobId)!;
+  return requireJob(jobId);
 }
 
 export async function refreshJob(jobId: string): Promise<RelayJob> {
-  const job = getJob(jobId);
-  if (!job) throw new Error(`Job not found: ${jobId}`);
-
-  const decision = await readPlannerDecision(job);
+  const decision = await readPlannerDecision(requireJob(jobId));
   persistPlannerDecision(jobId, decision);
-  return getJob(jobId)!;
+  return requireJob(jobId);
 }
 
+/**
+ * Prepares the requested stage, or the planner's recommendation when none is given.
+ * A requested stage that differs from the planner's is still prepared; the
+ * mismatch is recorded in `plannerReason`.
+ */
 export async function prepareJobStage(
   jobId: string,
   options: PrepareJobStageOptions = {},
 ): Promise<void> {
-  const job = getJob(jobId);
-  if (!job) throw new Error(`Job not found: ${jobId}`);
+  const job = requireJob(jobId);
 
   if (isTerminal(job.status)) {
     throw new Error(`Job ${jobId} is in terminal state ${job.status} and cannot prepare stages.`);
@@ -332,46 +349,35 @@ export async function prepareJobStage(
     return;
   }
 
-  let decision: Awaited<ReturnType<typeof getResumeDecision>>;
-  try {
-    decision = await readPlannerDecision(job);
-  } catch (err) {
-    const message = err instanceof Error ? err.message : String(err);
-    updateJob(jobId, { status: "failed", lastError: message });
-    return;
-  }
+  const decision = await readPlannerDecisionOrFail(job);
+  if (!decision) return;
 
-  const plannerStage = plannerActionToStage(decision.action);
-  const requestedStage = options.stage ?? plannerStage;
-  const plannerReason = requestedStage
-    ? plannerReasonWithMismatch(decision.action, decision.reason, requestedStage, options.force)
-    : decision.reason;
-  persistPlannerDecision(jobId, decision, { plannerReason });
+  const requestedStage = options.stage ?? plannerActionToStage(decision.action);
+  persistPlannerDecision(
+    jobId,
+    decision,
+    requestedStage
+      ? plannerReasonWithMismatch(decision.action, decision.reason, requestedStage, options.force)
+      : decision.reason,
+  );
 
   if (!requestedStage) {
-    if (decision.action === "noop") {
-      updateJob(jobId, { status: "completed", currentStage: "completed" });
-      return;
-    }
-    updateJob(jobId, { status: "failed", lastError: decision.reason });
+    plannedStageOrSettle(jobId, decision);
     return;
   }
 
-  runStagePreparation(jobId, requestedStage, decision, {
-    regenerate: options.regenerate,
-  }).catch((err: unknown) => {
-    const message = err instanceof Error ? err.message : String(err);
-    console.error(`[job-service] manual prepare error for ${jobId} stage ${requestedStage}: ${message}`);
-  });
+  runInBackground(
+    `manual prepare error for ${jobId} stage ${requestedStage}`,
+    runStagePreparation(jobId, requestedStage, decision, { regenerate: options.regenerate }),
+  );
 }
 
 /**
  * Confirms a pending job and kicks off stage preparation.
- * Returns the updated job or throws if the job is not in a confirmable state.
+ * Throws if the job is not in a confirmable state.
  */
 export async function confirmJob(jobId: string): Promise<void> {
-  const job = getJob(jobId);
-  if (!job) throw new Error(`Job not found: ${jobId}`);
+  const job = requireJob(jobId);
 
   if (isTerminal(job.status)) {
     throw new Error(`Job ${jobId} is in terminal state ${job.status} and cannot be confirmed.`);
@@ -387,38 +393,19 @@ export async function confirmJob(jobId: string): Promise<void> {
     return;
   }
 
-  let decision: Awaited<ReturnType<typeof getResumeDecision>>;
-  try {
-    decision = await readPlannerDecision(job);
-  } catch (err) {
-    const message = err instanceof Error ? err.message : String(err);
-    updateJob(jobId, { status: "failed", lastError: message });
-    return;
-  }
+  const decision = await readPlannerDecisionOrFail(job);
+  if (!decision) return;
 
   persistPlannerDecision(jobId, decision);
 
-  if (decision.action === "noop") {
-    updateJob(jobId, { status: "completed", currentStage: "completed" });
-    return;
-  }
-
-  if (decision.action === "error") {
-    updateJob(jobId, { status: "failed", lastError: decision.reason });
-    return;
-  }
-
-  const stage = plannerActionToStage(decision.action);
-  if (!stage) {
-    updateJob(jobId, { status: "failed", lastError: decision.reason });
-    return;
-  }
+  const stage = plannedStageOrSettle(jobId, decision);
+  if (!stage) return;
 
   // Fire-and-forget — HTTP handler already returned 202
-  runStagePreparation(jobId, stage, decision).catch((err: unknown) => {
-    const message = err instanceof Error ? err.message : String(err);
-    console.error(`[job-service] stage preparation error for ${jobId}: ${message}`);
-  });
+  runInBackground(
+    `stage preparation error for ${jobId}`,
+    runStagePreparation(jobId, stage, decision),
+  );
 }
 
 /**
@@ -426,8 +413,7 @@ export async function confirmJob(jobId: string): Promise<void> {
  * stage using the planner (not a fixed stage sequence).
  */
 export function recordReceipt(jobId: string, stage: RelayProofStage, txHash: string): void {
-  const job = getJob(jobId);
-  if (!job) throw new Error(`Job not found: ${jobId}`);
+  const job = requireJob(jobId);
 
   if (!canReceiveReceipt(job.status)) {
     throw new Error(
@@ -435,14 +421,23 @@ export function recordReceipt(jobId: string, stage: RelayProofStage, txHash: str
     );
   }
 
-  // Mark this stage complete
+  // A receipt must follow a prepared payload. Otherwise the stage would be left with an
+  // empty checkpoint that later preparation would mistake for a prepared payload.
+  const checkpoint = getCheckpoint(jobId, stage);
+  if (!checkpoint) {
+    throw new Error(
+      `Job ${jobId} has no prepared payload for stage '${stage}'. Prepare the stage before recording a receipt.`,
+    );
+  }
+
   updateJob(jobId, { status: "waiting_for_receipt" });
 
+  // Mark this stage complete
   upsertCheckpoint({
     jobId,
     stage,
-    payloadJson: getCheckpoint(jobId, stage)?.payloadJson ?? "{}",
-    verificationJson: getCheckpoint(jobId, stage)?.verificationJson,
+    payloadJson: checkpoint.payloadJson,
+    verificationJson: checkpoint.verificationJson,
     completedAt: Date.now(),
     submissionTxHash: txHash,
   });
@@ -450,104 +445,69 @@ export function recordReceipt(jobId: string, stage: RelayProofStage, txHash: str
   updateJob(jobId, { latestSubmissionTxHash: txHash });
 
   // Planner-driven: consult chain state to find the next action
-  processPostReceipt(jobId).catch((err: unknown) => {
-    const message = err instanceof Error ? err.message : String(err);
-    console.error(`[job-service] post-receipt advance error for ${jobId}: ${message}`);
-  });
+  runInBackground(`post-receipt advance error for ${jobId}`, processPostReceipt(jobId));
 }
 
 async function processPostReceipt(jobId: string): Promise<void> {
   const job = getJob(jobId);
   if (!job) return;
 
-  let decision: Awaited<ReturnType<typeof getResumeDecision>>;
-  try {
-    decision = await readPlannerDecision(job);
-  } catch (err) {
-    const message = err instanceof Error ? err.message : String(err);
-    updateJob(jobId, { status: "failed", lastError: message });
-    return;
-  }
+  const decision = await readPlannerDecisionOrFail(job);
+  if (!decision) return;
 
   persistPlannerDecision(jobId, decision);
 
   const latest = getJob(jobId);
   if (!latest) return;
 
-  if (decision.action === "noop") {
-    updateJob(jobId, { status: "completed", currentStage: "completed" });
-    return;
-  }
-
-  if (decision.action === "error") {
-    updateJob(jobId, { status: "failed", lastError: decision.reason });
-    return;
-  }
-
-  if (latest.relayMode === "manual" && latest.postSubmitBehavior === "pause") {
-    const pausedNext = plannerActionToStage(decision.action);
-    updateJob(jobId, {
-      status: "awaiting_confirmation",
-      currentStage: pausedNext ?? latest.currentStage,
-    });
-    return;
-  }
-
-  const next = plannerActionToStage(decision.action);
-  if (!next) {
-    updateJob(jobId, { status: "failed", lastError: decision.reason });
-    return;
-  }
+  const next = plannedStageOrSettle(jobId, decision);
+  if (!next) return;
 
   updateJob(jobId, { currentStage: next, status: "awaiting_confirmation" });
 
-  runStagePreparation(jobId, next, decision).catch((err: unknown) => {
-    const message = err instanceof Error ? err.message : String(err);
-    console.error(`[job-service] stage-preparation error for ${jobId} stage ${next}: ${message}`);
-  });
+  // Manual mode with "pause" waits for the user to confirm the next stage.
+  if (latest.relayMode === "manual" && latest.postSubmitBehavior === "pause") {
+    return;
+  }
+
+  runInBackground(
+    `stage-preparation error for ${jobId} stage ${next}`,
+    runStagePreparation(jobId, next, decision),
+  );
 }
 
 export function getStageDetails(jobId: string, stage: RelayProofStage): StageDetails {
-  const job = getJob(jobId);
-  if (!job) throw new Error(`Job not found: ${jobId}`);
+  const job = requireJob(jobId);
 
-  const checkpoint = getCheckpoint(jobId, stage);
-  if (!checkpoint) {
-    return {
-      stage,
-      checkpointState: "missing",
-      plannerAction: job.plannerAction,
-      plannerReason: job.plannerReason,
-      plannerMismatch: Boolean(job.plannerAction && job.plannerAction !== stage),
-    };
-  }
-
-  let preparedPayload: StageDetails["preparedPayload"];
-  let verificationSummary: VerificationSummary | undefined;
-  try {
-    preparedPayload = JSON.parse(checkpoint.payloadJson) as StageDetails["preparedPayload"];
-  } catch {
-    preparedPayload = undefined;
-  }
-  if (checkpoint.verificationJson) {
-    try {
-      verificationSummary = JSON.parse(checkpoint.verificationJson) as VerificationSummary;
-    } catch {
-      verificationSummary = undefined;
-    }
-  }
-
-  return {
+  const plannerFields = {
     stage,
-    checkpointState: checkpoint.completedAt ? "submitted" : "prepared",
     plannerAction: job.plannerAction,
     plannerReason: job.plannerReason,
     plannerMismatch: Boolean(job.plannerAction && job.plannerAction !== stage),
-    preparedPayload,
-    verificationSummary,
+  };
+
+  const checkpoint = getCheckpoint(jobId, stage);
+  if (!checkpoint) {
+    return { ...plannerFields, checkpointState: "missing" };
+  }
+
+  return {
+    ...plannerFields,
+    checkpointState: checkpoint.completedAt ? "submitted" : "prepared",
+    preparedPayload: parseJsonOrUndefined<EnrichedStagePayload>(checkpoint.payloadJson),
+    verificationSummary: parseJsonOrUndefined<VerificationSummary>(checkpoint.verificationJson),
     submissionTxHash: checkpoint.submissionTxHash,
     completedAt: checkpoint.completedAt,
   };
+}
+
+function parseJsonOrUndefined<T>(json: string | undefined): T | undefined {
+  if (!json) return undefined;
+  try {
+    return JSON.parse(json) as T;
+  } catch {
+    return undefined;
+  }
 }
 
 // ---------------------------------------------------------------------------

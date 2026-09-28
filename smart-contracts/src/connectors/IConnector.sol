@@ -60,6 +60,8 @@ interface IConnector {
     function submitMintProof(Enums.ProofType proofType, bytes calldata proofPayload, bytes32 txId) external;
 
     /// @notice Initiates refund flow for a transfer once destination acknowledgement is not received in time.
+    /// @dev Callable by anyone once `ackDeadline` has passed, so any relayer can move an expired
+    ///      transfer onto the refund path. The refund is always paid to the original sender.
     /// @param txId Transfer identifier.
     function initiateRefund(bytes32 txId) external;
 

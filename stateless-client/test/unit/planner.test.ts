@@ -76,6 +76,18 @@ describe("computeResumeDecision", () => {
     expect(d.reason).toMatch(/expired/i);
   });
 
+  it("1/0 + ackDeadlineExpired -> refund-initiate, since the destination would reject the lock", () => {
+    const d = computeResumeDecision(1, 0, { ...NO_HISTORY, ackDeadlineExpired: true });
+    expect(d.action).toBe("refund-initiate");
+    expect(d.reason).toMatch(/expired before the destination accepted/i);
+  });
+
+  it("1/0 within the ACK window -> lock", () => {
+    expect(computeResumeDecision(1, 0, { ...NO_HISTORY, ackDeadlineExpired: false }).action).toBe(
+      "lock",
+    );
+  });
+
   it("2/3 -> refund-claim", () => {
     const d = computeResumeDecision(2, 3, NO_HISTORY);
     expect(d.action).toBe("refund-claim");

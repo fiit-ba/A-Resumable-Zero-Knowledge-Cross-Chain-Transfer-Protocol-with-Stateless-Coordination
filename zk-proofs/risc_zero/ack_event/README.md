@@ -33,5 +33,6 @@ RPC_URL=http://127.0.0.1:8545 \
 CONNECTOR=0xSourceConnector \
 TX_ID=0xTxId \
 SOURCE_CHAIN_ID=31337 \
+DEST_CHAIN_ID=31338 \
 bash zk-proofs/risc_zero/ack_event/scripts/prove-ack-docker.sh
 ```

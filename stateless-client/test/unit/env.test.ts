@@ -18,7 +18,7 @@ describe("env loading", () => {
         "# comment",
         "STATELESS_CLIENT_PROOF_TIMEOUT_SEC=2100",
         "export STATELESS_CLIENT_RISC0_PROVER_MODE=bonsai",
-        "QUOTED_VALUE=\"hello world\"",
+        'QUOTED_VALUE="hello world"',
         "EXISTING_VALUE=file",
       ].join("\n"),
       "utf8",

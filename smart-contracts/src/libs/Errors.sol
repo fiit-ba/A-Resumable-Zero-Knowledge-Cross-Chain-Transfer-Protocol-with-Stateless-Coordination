@@ -34,7 +34,6 @@ library Errors {
     error InvalidStateTransition(uint8 currentStatus, uint8 requiredStatus);
     error TxAlreadyExists(bytes32 txId);
     error TxNotFound(bytes32 txId);
-    error NotTxOriginator(bytes32 txId, address caller, address originator);
     error NotAdmin();
 
     /*//////////////////////////////////////////////////////////////

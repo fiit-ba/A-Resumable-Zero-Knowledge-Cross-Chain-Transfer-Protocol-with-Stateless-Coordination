@@ -103,7 +103,9 @@ function migrate(db: AgentDatabase): void {
     db.exec(`ALTER TABLE jobs ADD COLUMN relay_mode TEXT NOT NULL DEFAULT 'auto'`);
   }
   if (!jobCols.includes("post_submit_behavior")) {
-    db.exec(`ALTER TABLE jobs ADD COLUMN post_submit_behavior TEXT NOT NULL DEFAULT 'auto_prepare'`);
+    db.exec(
+      `ALTER TABLE jobs ADD COLUMN post_submit_behavior TEXT NOT NULL DEFAULT 'auto_prepare'`,
+    );
   }
   if (!jobCols.includes("planner_action")) {
     db.exec(`ALTER TABLE jobs ADD COLUMN planner_action TEXT`);
@@ -275,10 +277,7 @@ function checkpointRow(row: Record<string, unknown>): StageCheckpoint {
   };
 }
 
-export function upsertCheckpoint(
-  checkpoint: StageCheckpoint,
-  db: AgentDatabase = openDb(),
-): void {
+export function upsertCheckpoint(checkpoint: StageCheckpoint, db: AgentDatabase = openDb()): void {
   db.prepare(
     `
     INSERT INTO stage_checkpoints
@@ -331,9 +330,9 @@ export function getJobRecoveryMetadata(
   jobId: string,
   db: AgentDatabase = openDb(),
 ): JobRecoveryMetadata | undefined {
-  const row = db
-    .prepare(`SELECT recovery_metadata_json FROM jobs WHERE id = ?`)
-    .get(jobId) as Record<string, unknown> | undefined;
+  const row = db.prepare(`SELECT recovery_metadata_json FROM jobs WHERE id = ?`).get(jobId) as
+    | Record<string, unknown>
+    | undefined;
   if (!row || typeof row.recovery_metadata_json !== "string") return undefined;
   return JSON.parse(row.recovery_metadata_json) as JobRecoveryMetadata;
 }
