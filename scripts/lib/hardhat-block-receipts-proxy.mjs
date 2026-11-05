@@ -61,11 +61,25 @@ async function rpcCall(method, params) {
 }
 
 // ---------------------------------------------------------------------------
+// Fetch a block given as a number, tag, or EIP-1898 object ({ blockHash } or
+// { blockNumber }); the burn-proof host asks by hash.
+// ---------------------------------------------------------------------------
+async function getBlock(blockParam) {
+  if (blockParam && typeof blockParam === "object") {
+    if (blockParam.blockHash) {
+      return rpcCall("eth_getBlockByHash", [blockParam.blockHash, false]);
+    }
+    return rpcCall("eth_getBlockByNumber", [blockParam.blockNumber, false]);
+  }
+  return rpcCall("eth_getBlockByNumber", [blockParam, false]);
+}
+
+// ---------------------------------------------------------------------------
 // Synthesise eth_getBlockReceipts via individual eth_getTransactionReceipt.
 // ---------------------------------------------------------------------------
 async function getBlockReceipts(blockParam) {
   // 1. Fetch the block to get its transaction hashes.
-  const blockResp = await rpcCall("eth_getBlockByNumber", [blockParam, false]);
+  const blockResp = await getBlock(blockParam);
   if (blockResp.error) return { error: blockResp.error };
   if (!blockResp.result) return { result: [] };
 

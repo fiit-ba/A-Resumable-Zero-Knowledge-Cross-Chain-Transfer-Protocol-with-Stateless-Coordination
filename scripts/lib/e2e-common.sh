@@ -396,13 +396,14 @@ ensure_stateless_client_ready() {
 # ── eth_getBlockReceipts capability probe + proxy ────────────────────────────
 BURN_PROOF_PROXY_PID=""
 
+# Ask the way the burn-proof host does: receipts by block hash, as an EIP-1898 object.
 probe_block_receipts_support() {
     local rpc_url="$1"
-    local latest_block
-    latest_block="$(cast rpc --rpc-url "$rpc_url" eth_blockNumber 2>/dev/null || echo "0x0")"
+    local latest_hash
+    latest_hash="$(cast block latest --field hash --rpc-url "$rpc_url" 2>/dev/null || true)"
     local result
     result="$(curl -sS -H "content-type: application/json" \
-        --data "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"eth_getBlockReceipts\",\"params\":[\"$latest_block\"]}" \
+        --data "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"eth_getBlockReceipts\",\"params\":[{\"blockHash\":\"$latest_hash\"}]}" \
         "$rpc_url" 2>/dev/null || true)"
     if printf '%s' "$result" | grep -q '"result":\['; then
         return 0
