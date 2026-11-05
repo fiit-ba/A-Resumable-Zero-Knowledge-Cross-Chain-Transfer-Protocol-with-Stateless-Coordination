@@ -52,6 +52,11 @@ npx tsx src/cli.ts relay-resume \
   such as `--lock-execution-block` take precedence.
 - **Proof paths:** by default these are discovered from the repository root. Override them with
   `--repo-root` or per-workspace `--<stage>-workspace` / `--<stage>-docker-script`.
+- **Test proofs:** `--proof-backend test` runs no proof host. Each stage reads from the chain
+  the values its guest would commit and submits them as a SnarkJS payload with zero proof points.
+  It carries no proof, so it works only against a SnarkAdapter that wraps the always-true mock
+  verifier (`make deploy-prod-full` without `SNARK_VERIFIER` or `SNARK_ADAPTER_*`, or
+  `make deploy-all`). Use it on local chains only.
 
 `--help` prints the full, generated option list.
 

@@ -36,7 +36,8 @@ export type RelayProofStage =
   | "burn-proof"
   | "non-accept-proof";
 
-export type ProofBackend = "local" | "docker";
+/** `test` makes SnarkJS test proofs from chain data instead of running a proof host. */
+export type ProofBackend = "local" | "docker" | "test";
 
 export type VerificationMode = "colibri" | "rpc-fallback";
 export type AckVerificationVariant = "standard" | "pruned-source-origin";
@@ -258,7 +259,7 @@ export type ProofRelayStage =
 
 export interface ProofRunnerInput {
   stage: ProofRelayStage;
-  backend: ProofBackend;
+  backend: Exclude<ProofBackend, "test">;
   txId: string;
   rpcUrl: string;
   connector: string;

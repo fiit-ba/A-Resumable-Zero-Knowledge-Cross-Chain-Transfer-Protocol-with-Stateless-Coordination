@@ -61,7 +61,7 @@ const OPTION_ALIASES: Record<string, string> = {
 
 function usage(): string {
   const relayArgs =
-    "--tx-id <bytes32> --private-key <hex> --proof-backend <local|docker> " +
+    "--tx-id <bytes32> --private-key <hex> --proof-backend <local|docker|test> " +
     "--source-connector <address> --destination-connector <address> [network and proof options]";
   const profiles = Object.keys(NETWORK_PROFILES).join("|");
   return [

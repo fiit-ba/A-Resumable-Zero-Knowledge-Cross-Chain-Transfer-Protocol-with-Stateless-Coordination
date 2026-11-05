@@ -1,6 +1,7 @@
 import { Contract, Wallet, type ContractTransactionResponse, type JsonRpcProvider } from "ethers";
 import { CONNECTOR_ABI, describeConnectorRevert } from "../contracts/abi.js";
 import { runProof } from "./proof-runner.js";
+import { buildTestProof } from "./test-proof.js";
 import { RELAY_STAGE_REGISTRY, STAGE_DEFINITIONS, isProofRelayStage } from "./stages.js";
 import { SIDES, connectorReaders, endpointFor, type ConnectorReader } from "./endpoints.js";
 import { TxStatus } from "../core/types.js";
@@ -316,9 +317,16 @@ type ContractArgsBuilder = (config: StageSubmissionConfig, proof: ProofArtifact)
 
 /** RISC Zero is proof type 0 (`Enums.ProofType.RISC0`). */
 const RISC0_PROOF_TYPE = 0;
+/** SnarkJS is proof type 1 (`Enums.ProofType.SNARKJS`); test proofs use it. */
+const SNARKJS_PROOF_TYPE = 1;
+
+/** Test proofs are SnarkJS payloads; the proof hosts make RISC Zero proofs. */
+function proofTypeOf(proof: ProofArtifact): number {
+  return proof.backend === "test" ? SNARKJS_PROOF_TYPE : RISC0_PROOF_TYPE;
+}
 
 const proofOnlyArgs: ContractArgsBuilder = (config, proof) => [
-  RISC0_PROOF_TYPE,
+  proofTypeOf(proof),
   proof.proofPayload,
   config.txId,
 ];
@@ -326,7 +334,7 @@ const proofOnlyArgs: ContractArgsBuilder = (config, proof) => [
 /** Maps each proof stage to a function that builds the unsigned contract-call argument list. */
 const CONTRACT_ARGS_BUILDER: Record<ProofRelayStage, ContractArgsBuilder> = {
   lock: (config, proof) => [
-    RISC0_PROOF_TYPE,
+    proofTypeOf(proof),
     proof.proofPayload,
     config.txId,
     String(proof.amount),
@@ -446,7 +454,7 @@ async function verifyForProofStage(
  *
  * For proof stages (lock/mint/ack/refund-claim/burn-proof/non-accept-proof):
  *   1. Stage verification via Colibri (or local RPC fallback)
- *   2. Proof generation
+ *   2. Proof generation (or a test proof from chain data with `--proof-backend test`)
  *   3. Proof consistency checks against on-chain data
  *   4. Unsigned contract-call payload construction
  *
@@ -492,20 +500,31 @@ export async function prepareStageSubmission(
       ? (await fetchTxSnapshot(readers.source.contract, config.txId)).ackDeadline.toString()
       : undefined;
 
-  const proof = await runProof({
-    stage,
-    backend: config.proofBackend,
-    txId: config.txId,
-    rpcUrl: proofHost.chain.rpcUrls[0],
-    connector: proofHost.connector,
-    sourceChainId: config.source.chainId,
-    destinationChainId: config.destination.chainId,
-    ackDeadline,
-    executionBlock,
-    repoRoot: config.repoRoot,
-    proofPaths: config.proofPaths,
-    risc0ProverMode: config.risc0ProverMode,
-  });
+  const proof =
+    config.proofBackend === "test"
+      ? await buildTestProof({
+          stage,
+          txId: config.txId,
+          sourceChainId: config.source.chainId,
+          destinationChainId: config.destination.chainId,
+          ackDeadline,
+          executionBlock,
+          readers,
+        })
+      : await runProof({
+          stage,
+          backend: config.proofBackend,
+          txId: config.txId,
+          rpcUrl: proofHost.chain.rpcUrls[0],
+          connector: proofHost.connector,
+          sourceChainId: config.source.chainId,
+          destinationChainId: config.destination.chainId,
+          ackDeadline,
+          executionBlock,
+          repoRoot: config.repoRoot,
+          proofPaths: config.proofPaths,
+          risc0ProverMode: config.risc0ProverMode,
+        });
 
   await PROOF_CONSISTENCY_CHECKER[stage]?.(config, proof, readers);
 
