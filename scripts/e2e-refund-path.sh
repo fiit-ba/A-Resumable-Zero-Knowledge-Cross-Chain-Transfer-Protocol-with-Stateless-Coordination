@@ -1,18 +1,22 @@
 #!/usr/bin/env bash
 # scripts/e2e-refund-path.sh
 #
-# E2E refund-path relay flow:
-#   1. Deploy contracts (source + destination)
-#   2. Deposit on source chain and generate lock proof  (relay-resume → lock)
-#   3. Warp both chains past the ACK deadline
-#   4. Drive refund-initiate → refund-claim → execute-burn → burn-proof via relay-resume
+# E2E refund-path relay flow (the destination accepted the lock, the ack never came):
+#   1. Deploy both chains with `make deploy-prod-full`; set the finality delays
+#   2. Deposit on the source chain and relay the lock proof (relay-resume → lock)
+#   3. Move both chains to the ACK deadline
+#   4. relay-resume → refund-initiate, then refund-claim: with a source finality delay the
+#      destination must refuse the claim (FinalityNotReached) until the destination clock has
+#      moved past it
+#   5. relay-resume → execute-burn → burn-proof, then check statuses and balances
 #
 # Prerequisite: source and destination profiles must support time-warp
 # (local-anvil or local-hardhat).  Public/testnet profiles abort immediately
 # with a capability error rather than wasting time on long-running work.
 #
-# Flags: identical to e2e-happy-path.sh plus refund-specific options.
-#   --ack-window <seconds>   ACK deadline window (default: 3600)
+# Flags: identical to e2e-happy-path.sh plus the finality delays.
+#   --source-finality-delay <seconds>   (default: 0, check off)
+#   --ack-window <seconds>              ACK deadline window (default: 3600)
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -43,14 +47,21 @@ Network selection:
 
 Signing and amounts:
   --private-key <hex>                Signer private key (or set PRIVATE_KEY env var)
+  --receiver <address>               Receiver on the destination (default: the signer)
   --amount <wei>                     Token amount for deposit (default: 1 ether)
-  --ack-window <seconds>             ACK window in seconds (default: 60)
+  --ack-window <seconds>             ACK window in seconds (default: 3600)
+
+Finality:
+  --source-finality-delay <seconds>       Source network delay held by the destination connector;
+                                          the refund claim must wait it out (default: 0, off)
+  --destination-finality-delay <seconds>  Destination network delay held by the source connector
+                                          (used by e2e-non-accept-path.sh; default: 0, off)
 
 Proof runtime:
-  --proof-backend <local|docker>     Proof runner (default: local)
+  --proof-backend <local|docker|test> Proof runner (default: local); test = SnarkJS test proofs
   --risc0-prover-mode <local|bonsai> RISC0 prover mode (default: local)
 
-Deployment reuse:
+Deployment reuse (both sides; the token route and finality delays stay as deployed):
   --reuse-source, --reuse-dest
   --source-connector <addr>, --destination-connector <addr>
 
@@ -58,64 +69,25 @@ Misc:
   -h, --help
 
 Examples:
-  $0
-  $0 --source-profile local-anvil --destination-profile local-hardhat
+  $0 --proof-backend test --source-finality-delay 3600
   $0 --source-profile local-hardhat --destination-profile local-anvil
 "
-
-# ── Capability gate ──────────────────────────────────────────────────────────
-assert_time_warp_capable() {
-    local src_method dest_method
-    src_method="$(profile_time_warp_method "$SOURCE_NETWORK_PROFILE")"
-    dest_method="$(profile_time_warp_method "$DEST_NETWORK_PROFILE")"
-
-    if [[ "$src_method" == "none" || "$dest_method" == "none" ]]; then
-        echo "ERROR: Refund path requires local time-warp support on both chains." >&2
-        echo "  source profile '$SOURCE_NETWORK_PROFILE' -> time-warp: $src_method" >&2
-        echo "  dest profile '$DEST_NETWORK_PROFILE' -> time-warp: $dest_method" >&2
-        echo "Use local-anvil or local-hardhat for both profiles." >&2
-        exit 1
-    fi
-}
 
 # ── Parse args, apply defaults, validate ────────────────────────────────────
 e2e_parse_args "$@"
 e2e_apply_profile_defaults
-
-# Fast-fail capability check before long-running work.
 assert_time_warp_capable
-
 e2e_validate_prerequisites
 ensure_stateless_client_ready
 
 # ── Deploy contracts ─────────────────────────────────────────────────────────
-deploy_source_contracts
-deploy_destination_contracts
-deploy_destination_refund_verifiers
+deploy_contracts
+set_finality_delays
 
-# Cross-wire connectors if freshly deployed.
-if [[ "$REUSE_SOURCE_DEPLOYMENTS" != "1" || "$REUSE_DEST_DEPLOYMENTS" != "1" ]]; then
-    echo "Linking source and destination connectors..."
-    set_dest_tx="$(send_tx_async "$SOURCE_RPC" \
-        "$SOURCE_CONNECTOR" "setDestinationConnector(address)" "$DEST_CONNECTOR")"
-    wait_for_tx_receipt_block "$SOURCE_RPC" "$set_dest_tx" >/dev/null
-
-    set_src_tx="$(send_tx_async "$DEST_RPC" \
-        "$DEST_CONNECTOR" "setSourceConnector(address)" "$SOURCE_CONNECTOR")"
-    wait_for_tx_receipt_block "$DEST_RPC" "$set_src_tx" >/dev/null
-fi
-
-# ── Mint tokens and deposit ──────────────────────────────────────────────────
-echo "Minting $AMOUNT_WEI source tokens to $DEPLOYER_ADDRESS..."
-mint_tx="$(send_tx_async "$SOURCE_RPC" \
-    "$SOURCE_TOKEN" "mint(address,uint256)" "$DEPLOYER_ADDRESS" "$AMOUNT_WEI")"
-wait_for_tx_receipt_block "$SOURCE_RPC" "$mint_tx" >/dev/null
-
-SOURCE_BALANCE_BEFORE="$(query_erc20_balance "$SOURCE_RPC" "$SOURCE_TOKEN" "$DEPLOYER_ADDRESS")"
-DEST_BALANCE_BEFORE="$(query_erc20_balance "$DEST_RPC" "$DEST_TOKEN" "$DEPLOYER_ADDRESS")"
-echo "Balances before: source=$SOURCE_BALANCE_BEFORE dest=$DEST_BALANCE_BEFORE"
-
+# ── Deposit ──────────────────────────────────────────────────────────────────
+align_chain_clocks
 perform_deposit
+SOURCE_BALANCE_LOCKED="$(query_erc20_balance "$SOURCE_RPC" "$SOURCE_TOKEN" "$DEPLOYER_ADDRESS")"
 
 # ── lock stage ──────────────────────────────────────────────────────────────
 lock_exec_block="${LOCK_EXECUTION_BLOCK:-$SOURCE_DEPOSIT_BLOCK}"
@@ -127,20 +99,12 @@ echo "Running relay-resume for lock..."
 run_relay_resume_for_action "lock" --lock-execution-block "$lock_exec_block"
 LOCK_SUBMIT_TX="$LAST_SUBMISSION_TX_HASH"
 DEST_FUNDS_RELEASED_BLOCK="$LAST_SUBMISSION_BLOCK"
+DEST_HELD_BEFORE_BURN="$(query_erc20_balance "$DEST_RPC" "$DEST_TOKEN" "$DEST_CONNECTOR")"
 
-# ── Warp both chains past the ACK deadline ───────────────────────────────────
-# Read the ack deadline from the source connector for the deposited tx.
-echo "Reading ack deadline for $TX_ID..."
-ACK_DEADLINE="$(cast call "$SOURCE_CONNECTOR" "ackDeadline(bytes32)(uint256)" "$TX_ID" --rpc-url "$SOURCE_RPC" 2>/dev/null || true)"
-if [[ ! "$ACK_DEADLINE" =~ ^[0-9]+$ || "$ACK_DEADLINE" == "0" ]]; then
-    # Fallback: current timestamp + window * 2 to be safe.
-    CURRENT_TS="$(get_chain_timestamp "$SOURCE_RPC")"
-    ACK_DEADLINE=$(( CURRENT_TS + ACK_WINDOW_SECONDS * 2 ))
-    echo "Could not read on-chain ack deadline; using computed deadline $ACK_DEADLINE."
-fi
-WARP_TARGET=$(( ACK_DEADLINE + 60 ))
-echo "Ack deadline: $ACK_DEADLINE — warping both chains to $WARP_TARGET..."
-warp_both_chains_past "$WARP_TARGET"
+# ── Move both chains to the ACK deadline ─────────────────────────────────────
+# Warp to the deadline, not past it, so the refund proof still falls inside the finality delay.
+echo "Ack deadline: $ACK_DEADLINE — warping both chains to it..."
+warp_both_chains_past "$ACK_DEADLINE"
 
 # ── refund-initiate stage ────────────────────────────────────────────────────
 echo "Running relay-resume for refund-initiate..."
@@ -154,6 +118,13 @@ refund_claim_exec_block="$(normalize_execution_block_tag "$refund_claim_exec_blo
 echo "Refund-claim execution block: $refund_claim_exec_block"
 wait_for_successor_execution_block "$SOURCE_RPC" "$refund_claim_exec_block" "source-refund-initiated"
 
+if [[ "$SOURCE_FINALITY_DELAY" != "0" ]]; then
+    echo "Running relay-resume for refund-claim before the ${SOURCE_FINALITY_DELAY}s source finality delay..."
+    expect_finality_not_reached "refund-claim" --refund-claim-execution-block "$refund_claim_exec_block"
+    echo "Moving the destination clock past the source finality delay..."
+    advance_chain_time "$DEST_RPC" "$SOURCE_FINALITY_DELAY"
+fi
+
 echo "Running relay-resume for refund-claim..."
 run_relay_resume_for_action "refund-claim" --refund-claim-execution-block "$refund_claim_exec_block"
 REFUND_CLAIM_TX="$LAST_SUBMISSION_TX_HASH"
@@ -163,6 +134,7 @@ echo "Running relay-resume for execute-burn..."
 run_relay_resume_for_action "execute-burn"
 EXECUTE_BURN_TX="$LAST_SUBMISSION_TX_HASH"
 DEST_BURN_EXECUTED_BLOCK="$LAST_SUBMISSION_BLOCK"
+DEST_HELD_AFTER_BURN="$(query_erc20_balance "$DEST_RPC" "$DEST_TOKEN" "$DEST_CONNECTOR")"
 
 # ── burn-proof stage (may need eth_getBlockReceipts proxy) ───────────────────
 burn_proof_exec_block="${BURN_PROOF_EXECUTION_BLOCK:-$DEST_BURN_EXECUTED_BLOCK}"
@@ -180,7 +152,6 @@ run_relay_resume_for_action "burn-proof" \
     --destination-rpc-url "$DEST_RPC_FOR_BURN" \
     --burn-proof-execution-block "$burn_proof_exec_block"
 BURN_PROOF_TX="$LAST_SUBMISSION_TX_HASH"
-SOURCE_FINAL_STATUS="$LAST_RESULTING_STATUS"
 
 # ── Final assertions ─────────────────────────────────────────────────────────
 SOURCE_STATUS_FINAL="$(query_tx_status "$SOURCE_RPC" "$SOURCE_CONNECTOR" "$TX_ID")"
@@ -194,7 +165,12 @@ if [[ "$DEST_STATUS_FINAL" != "0" ]]; then
 fi
 
 SOURCE_BALANCE_AFTER="$(query_erc20_balance "$SOURCE_RPC" "$SOURCE_TOKEN" "$DEPLOYER_ADDRESS")"
-DEST_BALANCE_AFTER="$(query_erc20_balance "$DEST_RPC" "$DEST_TOKEN" "$DEPLOYER_ADDRESS")"
+if (( SOURCE_BALANCE_AFTER - SOURCE_BALANCE_LOCKED != AMOUNT_WEI )); then
+    echo "Sender went $SOURCE_BALANCE_LOCKED -> $SOURCE_BALANCE_AFTER on the source, expected +$AMOUNT_WEI back" >&2; exit 1
+fi
+if (( DEST_HELD_BEFORE_BURN - DEST_HELD_AFTER_BURN != AMOUNT_WEI )); then
+    echo "executeBurn took $DEST_HELD_BEFORE_BURN -> $DEST_HELD_AFTER_BURN held wrapped tokens, expected -$AMOUNT_WEI" >&2; exit 1
+fi
 
 echo ""
 echo "Done — refund path complete."
@@ -210,9 +186,9 @@ echo "execute-burn tx:             $EXECUTE_BURN_TX (dest block $DEST_BURN_EXECU
 echo "burn-proof tx:               $BURN_PROOF_TX"
 echo "sourceStatus (final):        $SOURCE_STATUS_FINAL  (expected 0 = NONE)"
 echo "destStatus (final):          $DEST_STATUS_FINAL    (expected 0 = NONE)"
-echo "source balance:              $SOURCE_BALANCE_BEFORE -> $SOURCE_BALANCE_AFTER"
-echo "dest balance:                $DEST_BALANCE_BEFORE -> $DEST_BALANCE_AFTER"
+echo "source balance:              $SOURCE_BALANCE_LOCKED (after deposit) -> $SOURCE_BALANCE_AFTER"
+echo "held wrapped (dest):         $DEST_HELD_BEFORE_BURN -> $DEST_HELD_AFTER_BURN"
 echo ""
 echo "Reuse env:"
-echo "  REUSE_SOURCE_DEPLOYMENTS=1 EXISTING_SOURCE_CONNECTOR=$SOURCE_CONNECTOR EXISTING_SOURCE_TOKEN=$SOURCE_TOKEN EXISTING_SOURCE_RISC0_ADAPTER=${SOURCE_RISC0_ADAPTER:-}"
-echo "  REUSE_DEST_DEPLOYMENTS=1 EXISTING_DEST_CONNECTOR=$DEST_CONNECTOR EXISTING_DEST_TOKEN=$DEST_TOKEN EXISTING_DEST_RISC0_ADAPTER=${DEST_RISC0_ADAPTER:-}"
+echo "  REUSE_SOURCE_DEPLOYMENTS=1 EXISTING_SOURCE_CONNECTOR=$SOURCE_CONNECTOR EXISTING_SOURCE_TOKEN=$SOURCE_TOKEN"
+echo "  EXISTING_DEST_CONNECTOR=$DEST_CONNECTOR EXISTING_DEST_TOKEN=$DEST_TOKEN"
