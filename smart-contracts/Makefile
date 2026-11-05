@@ -702,7 +702,7 @@ deploy-risc0-adapter-dest-prod: require-private-key ## Deploy RiscZeroAdapter on
 #   4. Source Connector         — WrappedTokenFactory auto-deployed unless WRAPPED_TOKEN_FACTORY_SOURCE is set
 #   5. Destination Connector    — WrappedTokenFactory auto-deployed unless WRAPPED_TOKEN_FACTORY_DEST is set
 #   6. BridgeWrappedToken (dest)— bound exclusively to the dest Connector
-#   7. Route registration       — proposeRoute; on local Anvil auto-warps and applies immediately
+#   7. Route registration       — proposeRoute on both chains; on local Anvil auto-warps and applies immediately
 #
 # Required in smart-contracts/.env (or as make VAR=value overrides):
 #   PRIVATE_KEY
@@ -1012,52 +1012,49 @@ deploy-prod-full: require-private-key ## Full prod: adapters → tokens → conn
 	echo "  -> DEST_WRAPPED_TOKEN=$$dst_wrapped_token"; \
 	\
 	echo ""; \
-	echo ">>> Step 9/9: Registering wrapped-token route"; \
-	retry_script env \
-		SOURCE_CHAIN_ID="$$src_chain_id" \
-		SOURCE_CONNECTOR="$$src_connector" \
-		SOURCE_TOKEN="$$src_token" \
-		DEST_CHAIN_ID="$$dst_chain_id" \
-		DEST_CONNECTOR="$$dst_connector" \
-		DEST_WRAPPED_TOKEN_FACTORY="$$dst_factory" \
-		DEST_WRAPPED_TOKEN="$$dst_wrapped_token" \
-		$(FORGE) script script/bootstrap/ProposeRoutes.s.sol:ProposeRoutes \
-			--rpc-url "$(RPC_URL_DEST)" --private-key "$(PRIVATE_KEY)" --broadcast --slow $(PROD_FORGE_SCRIPT_EXTRA_FLAGS) -vvv; \
+	echo ">>> Step 9/9: Registering wrapped-token route on both chains"; \
+	route_env() { \
+		env SOURCE_CHAIN_ID="$$src_chain_id" \
+			SOURCE_CONNECTOR="$$src_connector" \
+			SOURCE_TOKEN="$$src_token" \
+			DEST_CHAIN_ID="$$dst_chain_id" \
+			DEST_CONNECTOR="$$dst_connector" \
+			DEST_WRAPPED_TOKEN="$$dst_wrapped_token" \
+			DEST_WRAPPED_TOKEN_FACTORY="$$2" \
+			$(FORGE) script "$$3" \
+				--rpc-url "$$1" --private-key "$(PRIVATE_KEY)" --broadcast --slow $(PROD_FORGE_SCRIPT_EXTRA_FLAGS) -vvv; \
+	}; \
+	propose_route() { retry_script route_env "$$1" "$$2" script/bootstrap/ProposeRoutes.s.sol:ProposeRoutes; }; \
+	apply_route()   { retry_script route_env "$$1" "$$2" script/bootstrap/ApplyRoutes.s.sol:ApplyRoutes; }; \
+	echo ">>> [$(DEST_NETWORK)] Proposing route (dest factory: mints the wrapped token)"; \
+	propose_route "$(RPC_URL_DEST)" "$$dst_factory"; \
+	echo ">>> [$(SOURCE_NETWORK)] Proposing route (source factory: checked by depositAndLock)"; \
+	propose_route "$(RPC_URL_SOURCE)" "$$src_factory"; \
 	_timelock="$(REGISTRATION_TIMELOCK)"; \
 	if [ "$${_timelock:-0}" = "0" ]; then \
-		echo ">>> Timelock is zero — applying route immediately..."; \
-		retry_script env \
-			SOURCE_CHAIN_ID="$$src_chain_id" \
-			SOURCE_CONNECTOR="$$src_connector" \
-			SOURCE_TOKEN="$$src_token" \
-			DEST_CHAIN_ID="$$dst_chain_id" \
-			DEST_CONNECTOR="$$dst_connector" \
-			DEST_WRAPPED_TOKEN_FACTORY="$$dst_factory" \
-			$(FORGE) script script/bootstrap/ApplyRoutes.s.sol:ApplyRoutes \
-				--rpc-url "$(RPC_URL_DEST)" --private-key "$(PRIVATE_KEY)" --broadcast --slow $(PROD_FORGE_SCRIPT_EXTRA_FLAGS) -vvv; \
-		echo ">>> Route is live."; \
-	elif echo "$(RPC_URL_DEST)" | grep -qE "127\.0\.0\.1|localhost"; then \
-		echo ">>> [LOCAL] Warping Anvil time $${_timelock}s and applying route..."; \
-		$(CAST) rpc --rpc-url "$(RPC_URL_DEST)" evm_increaseTime "$${_timelock}"; \
-		$(CAST) rpc --rpc-url "$(RPC_URL_DEST)" evm_mine; \
-		retry_script env \
-			SOURCE_CHAIN_ID="$$src_chain_id" \
-			SOURCE_CONNECTOR="$$src_connector" \
-			SOURCE_TOKEN="$$src_token" \
-			DEST_CHAIN_ID="$$dst_chain_id" \
-			DEST_CONNECTOR="$$dst_connector" \
-			DEST_WRAPPED_TOKEN_FACTORY="$$dst_factory" \
-			$(FORGE) script script/bootstrap/ApplyRoutes.s.sol:ApplyRoutes \
-				--rpc-url "$(RPC_URL_DEST)" --private-key "$(PRIVATE_KEY)" --broadcast --slow $(PROD_FORGE_SCRIPT_EXTRA_FLAGS) -vvv; \
-		echo ">>> Route is live."; \
+		echo ">>> Timelock is zero — applying routes immediately..."; \
+		apply_route "$(RPC_URL_DEST)" "$$dst_factory"; \
+		apply_route "$(RPC_URL_SOURCE)" "$$src_factory"; \
+		echo ">>> Routes are live."; \
+	elif echo "$(RPC_URL_SOURCE)" | grep -qE "127\.0\.0\.1|localhost" && \
+	     echo "$(RPC_URL_DEST)" | grep -qE "127\.0\.0\.1|localhost"; then \
+		echo ">>> [LOCAL] Warping both Anvil clocks $${_timelock}s and applying routes..."; \
+		for rpc in $(sort $(RPC_URL_SOURCE) $(RPC_URL_DEST)); do \
+			$(CAST) rpc --rpc-url "$$rpc" evm_increaseTime "$${_timelock}" >/dev/null; \
+			$(CAST) rpc --rpc-url "$$rpc" evm_mine >/dev/null; \
+		done; \
+		apply_route "$(RPC_URL_DEST)" "$$dst_factory"; \
+		apply_route "$(RPC_URL_SOURCE)" "$$src_factory"; \
+		echo ">>> Routes are live."; \
 	else \
 		echo ""; \
-		echo "  NOTE: $${_timelock}s timelock started on $(DEST_NETWORK)."; \
+		echo "  NOTE: $${_timelock}s timelock started on both chains."; \
 		echo "  After the timelock elapses, finalize with:"; \
 		echo "    SOURCE_CHAIN_ID=$$src_chain_id SOURCE_CONNECTOR=$$src_connector \\"; \
 		echo "    SOURCE_TOKEN=$$src_token DEST_CHAIN_ID=$$dst_chain_id \\"; \
 		echo "    DEST_CONNECTOR=$$dst_connector DEST_WRAPPED_TOKEN_FACTORY=$$dst_factory \\"; \
-		echo "    make apply-routes"; \
+		echo "    SOURCE_WRAPPED_TOKEN_FACTORY=$$src_factory DEST_WRAPPED_TOKEN=$$dst_wrapped_token \\"; \
+		echo "    make apply-routes apply-source-route"; \
 	fi; \
 	\
 	echo ""; \
