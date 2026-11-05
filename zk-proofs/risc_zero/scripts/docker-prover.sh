@@ -5,6 +5,8 @@
 # proof host inside it with the repository mounted read-only at /workspace and a
 # persistent cargo cache volume. The workspaces depend on risc0-ethereum from
 # smart-contracts/lib, so run `make install` in smart-contracts/ first.
+# For prove, the host's Docker socket and a temporary work dir (RISC0_WORK_DIR) are
+# mounted too: risc0-groth16 runs its Groth16 prover image through Docker.
 # Wrappers source this file and call, in order:
 #
 #   prover_init <workspace-dir> <host-package>   defaults + common validation
@@ -25,6 +27,7 @@
 #   DOCKER_PLATFORM      default: linux/amd64 (rzup does not support linux/aarch64)
 #   DOCKER_REBUILD       1 forces an image rebuild
 #   DOCKERFILE_PATH      default: zk-proofs/risc_zero/Dockerfile.prover
+#   DOCKER_SOCKET        host Docker socket for prove (default: /var/run/docker.sock)
 #   GITHUB_TOKEN         optional; forwarded as a build arg to avoid rate limits
 
 RISC0_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -58,6 +61,7 @@ prover_init() {
     DOCKER_REBUILD="${DOCKER_REBUILD:-0}"
     DOCKER_CACHE_VOLUME="${DOCKER_CACHE_VOLUME:-risc0-${stage_slug}-cache}"
     DOCKERFILE_PATH="${DOCKERFILE_PATH:-$RISC0_DIR/Dockerfile.prover}"
+    DOCKER_SOCKET="${DOCKER_SOCKET:-/var/run/docker.sock}"
 
     require_cmd docker
     if [[ ! -f "$REPO_ROOT/smart-contracts/lib/risc0-ethereum/contracts/Cargo.toml" ]]; then
@@ -171,8 +175,15 @@ prover_run() {
             "$DOCKER_IMAGE" \
             cargo run -q --manifest-path "$manifest" -p "$HOST_PACKAGE" --bin print_image_id
     else
+        # risc0-groth16 (without CUDA) wraps the proof with `docker run -v <work dir>:/mnt` on the
+        # host's Docker, so the work dir has the same path on the host and in this container.
+        local groth16_work_dir status=0
+        groth16_work_dir="$(mktemp -d)"
         echo "Running proof generation in Docker..." >&2
         docker "${DOCKER_RUN_ARGS[@]}" \
+            -v "$DOCKER_SOCKET:/var/run/docker.sock" \
+            -v "$groth16_work_dir:$groth16_work_dir" \
+            -e "RISC0_WORK_DIR=$groth16_work_dir" \
             -e "RISC0_PROVER=$RISC0_PROVER_MODE" \
             -e "RPC_URL=$DOCKER_RPC_URL" \
             -e "EXECUTION_BLOCK=$EXECUTION_BLOCK" \
@@ -180,6 +191,8 @@ prover_run() {
             cargo run --manifest-path "$manifest" -p "$HOST_PACKAGE" --bin "$HOST_PACKAGE" -- \
                 --connector "$CONNECTOR" \
                 --tx-id "$TX_ID" \
-                "$@"
+                "$@" || status=$?
+        rm -rf "$groth16_work_dir"
+        return "$status"
     fi
 }
