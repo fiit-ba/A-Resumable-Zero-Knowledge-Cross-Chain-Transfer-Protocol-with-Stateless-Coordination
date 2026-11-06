@@ -147,10 +147,34 @@ The root [README quick start](../README.md#quick-start) walks through a complete
 `make deploy-all`, `make bootstrap`, a `depositAndLock`, then `stateless-client relay-resume`
 for each stage, including the refund path.
 
-> [!NOTE]
-> `scripts/e2e-happy-path.sh` and `scripts/e2e-refund-path.sh` predate the current contracts.
-> Their deployment step targets removed contracts and constructor signatures, so use the flow
-> above until they are updated.
+The scripts in [`../scripts`](../scripts) run the same flows end to end on two running chains:
+they deploy with `make deploy-prod-full`, deposit, and drive every stage with
+`stateless-client relay-resume`, then check statuses and balances.
+
+| Script | Flow |
+| --- | --- |
+| `e2e-happy-path.sh` | lock → mint → ack |
+| `e2e-refund-path.sh` | lock, ACK deadline passes, refund-initiate → refund-claim → execute-burn → burn-proof |
+| `e2e-non-accept-path.sh` | no lock, ACK deadline passes, refund-initiate → non-accept-proof |
+
+From the repository root:
+
+```bash
+anvil --port 8545 --chain-id 31337 &
+anvil --port 8546 --chain-id 31338 &
+export PRIVATE_KEY=0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80
+scripts/e2e-happy-path.sh --proof-backend test
+scripts/e2e-refund-path.sh --proof-backend test --source-finality-delay 3600
+scripts/e2e-non-accept-path.sh --proof-backend test --destination-finality-delay 3600
+```
+
+`--proof-backend test` needs only Foundry, Node and make: each stage submits a SnarkJS test proof
+built from chain data, which the mock SnarkJS verifier of `deploy-prod-full` accepts. With
+`--proof-backend local` or `docker` the stages carry real RISC Zero proofs, and the scripts first
+build the six guests to deploy with their image IDs. With a finality delay the refund scripts
+also check that the connector refuses the refund proof (`FinalityNotReached`) until the delay
+has passed. On Linux, `--proof-backend docker` needs the chains to listen beyond localhost
+(`anvil --host 0.0.0.0`) so the prover container can reach them.
 
 ## Deployment Scripts
 
@@ -163,7 +187,8 @@ for each stage, including the refund path.
 
 - `PRIVATE_KEY` can be exported in the shell or stored in `smart-contracts/.env`.
 - `RISC0_GUEST_USE_DOCKER=1` is the default expected path in this repo.
-- `REUSE_SOURCE_DEPLOYMENTS=1` and `REUSE_DEST_DEPLOYMENTS=1` let you skip redeployments when you already know the connector and token addresses.
+- With `--proof-backend local`, set `RISC0_GUEST_USE_DOCKER=0` for now: the e2e scripts build all six guests for their image IDs, and the non-accept guest does not build in RISC Zero's docker builder yet (its `Cargo.lock` needs rustc 1.91, the builder has 1.88).
+- `REUSE_SOURCE_DEPLOYMENTS=1` (or `REUSE_DEST_DEPLOYMENTS=1`) lets the e2e scripts skip the deployment when you already know both connectors, the source token and the wrapped token (`EXISTING_*`).
 
 ## Related Docs
 

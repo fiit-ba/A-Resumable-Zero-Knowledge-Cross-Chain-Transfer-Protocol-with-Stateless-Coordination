@@ -187,8 +187,10 @@ export function resolveVerificationConfig(options: CliOptions): VerificationConf
 
 function resolveProofBackend(options: CliOptions): ProofBackend {
   const backend = requireStringOption(options, "proof-backend");
-  if (backend !== "local" && backend !== "docker") {
-    throw new Error(`Unsupported --proof-backend '${backend}'. Expected 'local' or 'docker'.`);
+  if (backend !== "local" && backend !== "docker" && backend !== "test") {
+    throw new Error(
+      `Unsupported --proof-backend '${backend}'. Expected 'local', 'docker' or 'test'.`,
+    );
   }
   return backend;
 }

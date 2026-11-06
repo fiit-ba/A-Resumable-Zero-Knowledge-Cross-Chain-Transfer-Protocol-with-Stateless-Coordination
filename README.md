@@ -318,7 +318,7 @@ flowchart LR
 | [`zk-proofs/risc_zero/`](zk-proofs) | Six guest programs (lock, mint, ack, refund-claim, burn, non-accept), each with a host CLI and a Docker wrapper |
 | [`stateless-client/`](stateless-client) | TypeScript library and `stateless-client` CLI: planner, Colibri verification, proof orchestration, and the local HTTP agent |
 | [`web-app/`](web-app) | Operator UI for depositing, tracking, and signing relay stages |
-| [`scripts/`](scripts) | E2E orchestration scripts. Their deployment step predates the current contracts, so use the [quick start](#quick-start) until they are updated. |
+| [`scripts/`](scripts) | E2E scripts for the happy, refund-claim, and non-acceptance paths: deploy with `make deploy-prod-full`, then drive each stage with `relay-resume` |
 
 ### Supported networks
 
