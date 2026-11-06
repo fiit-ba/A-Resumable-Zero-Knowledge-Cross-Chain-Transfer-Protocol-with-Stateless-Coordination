@@ -66,7 +66,17 @@ is built on first use (`linux/amd64`, the platform `rzup` supports) and cached, 
 per-stage cargo cache volume. The repository root is mounted read-only at `/workspace`, so the
 container sees `smart-contracts/lib` too. `localhost` RPC URLs are rewritten to `host.docker.internal`
 automatically. See the header of `docker-prover.sh` for every tunable (`DOCKER_IMAGE`,
-`DOCKER_REBUILD`, `DOCKER_PLATFORM`, `RISC0_PROVER_MODE`, and more).
+`DOCKER_REBUILD`, `DOCKER_PLATFORM`, `RISC0_PROVER_MODE`, and more). An existing image is
+reused as is, so set `DOCKER_REBUILD=1` once after `Dockerfile.prover` changes. On Linux,
+`host.docker.internal` points at the Docker bridge, so a local node must listen there too (for
+example `anvil --host 0.0.0.0`).
+
+Without CUDA, RISC Zero wraps the proof into Groth16 by running its own prover image through
+Docker. For `prove`, the wrapper therefore hands the container the host's Docker socket and a
+work directory mounted at the same path on the host and in the container (`RISC0_WORK_DIR`).
+Set `DOCKER_SOCKET` if the socket is not at `/var/run/docker.sock` (rootless Docker, Colima).
+The socket gives the container full control of the host's Docker; use the wrapper only on
+machines where that is acceptable.
 
 To prove remotely on Bonsai instead of the local CPU, use the local toolchain with
 `RISC0_PROVER=bonsai`, `BONSAI_API_URL` and `BONSAI_API_KEY`. The Docker wrapper does not

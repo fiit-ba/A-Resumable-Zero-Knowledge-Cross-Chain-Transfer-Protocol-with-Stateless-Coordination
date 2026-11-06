@@ -105,7 +105,13 @@ pub fn chain_spec_from_id(chain_id: u64) -> Option<&'static EthChainSpec> {
         31337 => Some(&ANVIL_CHAIN_SPEC),
         31338 => Some(&HARDHAT_CHAIN_SPEC),
         560048 => Some(&HOODI_CHAIN_SPEC),
-        _ => None,
+        // Any other chain gets the same mainnet fork rules. The spec is leaked to get a
+        // 'static reference; host and guest call this once per run.
+        _ => {
+            let mut spec = ETH_MAINNET_CHAIN_SPEC.clone();
+            spec.chain_id = chain_id;
+            Some(Box::leak(Box::new(spec)))
+        }
     }
 }
 
@@ -191,5 +197,17 @@ mod tests {
     fn validate_zero_connector() {
         let err = validate_non_acceptance(false, 2000, 1000, Address::ZERO).unwrap_err();
         assert_eq!(err, NonAcceptValidationError::ZeroDstConnector);
+    }
+
+    #[test]
+    fn chain_spec_reuses_mainnet_rules_for_unknown_chains() {
+        for chain_id in [12345, 167000] {
+            let mut expected = ETH_MAINNET_CHAIN_SPEC.clone();
+            expected.chain_id = chain_id;
+            assert_eq!(
+                chain_spec_from_id(chain_id).unwrap().digest(),
+                expected.digest()
+            );
+        }
     }
 }

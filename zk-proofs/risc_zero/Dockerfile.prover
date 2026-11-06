@@ -1,5 +1,8 @@
 FROM rust:bookworm
 
+# Make a RUN fail when any command in a pipe fails (e.g. curl in curl | bash).
+SHELL ["/bin/bash", "-o", "pipefail", "-c"]
+
 ARG GITHUB_TOKEN
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -15,10 +18,16 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 ENV PATH="/root/.risc0/bin:${PATH}"
 
-RUN curl -L https://risczero.com/install | bash
+RUN curl -fsSL https://risczero.com/install | bash
+# Guests that compile C code (blst) need the RISC Zero C++ toolchain.
 # GITHUB_TOKEN (optional build arg) only lifts GitHub API rate limits. It is used during this
 # step and never persisted as ENV; an empty value would make rzup send bad credentials.
 RUN if [ -z "${GITHUB_TOKEN:-}" ]; then unset GITHUB_TOKEN; fi; \
-    rzup install rust && (rzup install r0vm || echo "Skipping r0vm install (optional)")
+    rzup install rust && rzup install cpp \
+    && (rzup install r0vm || echo "Skipping r0vm install (optional)")
+
+# Without CUDA, risc0-groth16 wraps proofs by running RISC Zero's Groth16 prover image through
+# Docker; docker-prover.sh mounts the host's Docker socket for this client.
+COPY --from=docker:29.9.2-cli /usr/local/bin/docker /usr/local/bin/docker
 
 WORKDIR /workspace/zk-proofs/risc_zero

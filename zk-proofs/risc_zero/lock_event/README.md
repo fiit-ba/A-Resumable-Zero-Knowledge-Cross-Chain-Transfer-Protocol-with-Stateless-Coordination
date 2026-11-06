@@ -159,7 +159,6 @@ cargo test
 
 ## Common Errors
 
-- `unsupported source chain id`: `--source-chain-id` is not supported by the Steel chain-spec mapping.
 - `no DepositLocked logs found for txId`: wrong `txId`, wrong connector, wrong chain, or wrong execution block.
 - `expected exactly one DepositLocked log`: event query matched multiple logs for the same `txId`.
 - `receipt verification failed`: proof generation output failed local verification; check inputs and environment.

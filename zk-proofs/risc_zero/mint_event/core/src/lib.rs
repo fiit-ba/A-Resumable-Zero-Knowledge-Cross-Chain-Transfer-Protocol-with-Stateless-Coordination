@@ -162,7 +162,13 @@ pub fn chain_spec_from_id(chain_id: u64) -> Option<&'static EthChainSpec> {
         17000 => Some(&ETH_HOLESKY_CHAIN_SPEC),
         31337 => Some(&ANVIL_CHAIN_SPEC),
         31338 => Some(&HARDHAT_CHAIN_SPEC),
-        _ => None,
+        // Any other chain gets the same mainnet fork rules. The spec is leaked to get a
+        // 'static reference; host and guest call this once per run.
+        _ => {
+            let mut spec = ETH_MAINNET_CHAIN_SPEC.clone();
+            spec.chain_id = chain_id;
+            Some(Box::leak(Box::new(spec)))
+        }
     }
 }
 
@@ -245,5 +251,22 @@ pub fn build_public_inputs_from_tx(
         receiver,
         sourceChainId: source_chain_id,
         destinationChainId: destination_chain_id,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn chain_spec_reuses_mainnet_rules_for_unknown_chains() {
+        for chain_id in [12345, 167000] {
+            let mut expected = ETH_MAINNET_CHAIN_SPEC.clone();
+            expected.chain_id = chain_id;
+            assert_eq!(
+                chain_spec_from_id(chain_id).unwrap().digest(),
+                expected.digest()
+            );
+        }
     }
 }
