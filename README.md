@@ -328,7 +328,7 @@ flowchart LR
 | `sepolia`, `holesky`, `hoodi` | 11155111, 17000, 560048 | Ethereum testnets |
 | `chiado` | 10200 | Gnosis testnet |
 | `mainnet`, `gnosis` | 1, 100 | Mainnets (configuration only; see the disclaimer below) |
-| `custom` | any | Any other network, with an explicit chain ID and RPC URL. Colibri does not support it, so it needs `--allow-rpc-fallback`: its stages are verified through plain RPC and marked degraded |
+| `custom` | any | Any other network, with an explicit chain ID and RPC URL. Colibri does not support it, so it needs `--allow-rpc-fallback`: its stages are verified through plain RPC and marked degraded. The refund flows wait for real time there; finality delays are set beforehand with `scripts/e2e-finality-delays.sh` |
 
 
 ---

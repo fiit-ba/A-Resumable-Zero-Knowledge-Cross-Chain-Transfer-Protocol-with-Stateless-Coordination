@@ -10,9 +10,10 @@
 #      moved past it
 #   5. relay-resume → execute-burn → burn-proof, then check statuses and balances
 #
-# Prerequisite: source and destination profiles must support time-warp
-# (local-anvil or local-hardhat).  Public/testnet profiles abort immediately
-# with a capability error rather than wasting time on long-running work.
+# Local chains (local-anvil, local-hardhat) warp their clocks; on any other profile (a public
+# network or custom) the flow waits for real time: the ack window, then the finality delay. A
+# finality delay there must already be applied on reused contracts
+# (scripts/e2e-finality-delays.sh), since the 48 h timelock cannot be warped past.
 #
 # Flags: identical to e2e-happy-path.sh plus the finality delays.
 #   --source-finality-delay <seconds>   (default: 0, check off)
@@ -30,10 +31,11 @@ ACK_WINDOW_SECONDS="${ACK_WINDOW_SECONDS:-3600}"
 # ── Usage ───────────────────────────────────────────────────────────────────
 export E2E_USAGE="Usage: $0 [OPTIONS]
 
-Run the refund-path relay flow (lock → time-warp → refund-initiate → refund-claim → execute-burn → burn-proof).
+Run the refund-path relay flow (lock → move time → refund-initiate → refund-claim → execute-burn → burn-proof).
 
-IMPORTANT: Both source and destination profiles must support local time-warp
-(local-anvil or local-hardhat).  Public/testnet profiles will fail fast.
+Local chains (local-anvil, local-hardhat) warp their clocks. On any other profile (a public
+network or custom) the flow waits for real time: the ack window, then the finality delay, which
+must already be applied on reused contracts (scripts/e2e-finality-delays.sh).
 
 Network selection:
   --source-profile <profile>         Source network profile (default: local-anvil)
@@ -44,6 +46,11 @@ Network selection:
   --destination-rpc-url <url>        Override destination RPC URL
   --source-chain-id <id>             Override source chain ID
   --destination-chain-id <id>        Override destination chain ID
+  --allow-rpc-fallback               Verify a custom network Colibri does not support through
+                                     plain RPC; such verifications are marked degraded
+
+Supported profiles: local-anvil, local-hardhat, mainnet, sepolia, holesky, hoodi, gnosis, chiado,
+custom (any other network; give its chain ID and RPC URL)
 
 Signing and amounts:
   --private-key <hex>                Signer private key (or set PRIVATE_KEY env var)
@@ -56,6 +63,8 @@ Finality:
                                           the refund claim must wait it out (default: 0, off)
   --destination-finality-delay <seconds>  Destination network delay held by the source connector
                                           (used by e2e-non-accept-path.sh; default: 0, off)
+  With a delay the flow first checks that a too early proof is refused, so the delay must be
+  clearly longer than one proof takes (minutes with real proofs).
 
 Proof runtime:
   --proof-backend <local|docker|test> Proof runner (default: local); test = SnarkJS test proofs
@@ -64,6 +73,11 @@ Proof runtime:
 Deployment reuse (both sides; the token route and finality delays stay as deployed):
   --reuse-source, --reuse-dest
   --source-connector <addr>, --destination-connector <addr>
+
+Environment (more in scripts/lib/e2e-common.sh):
+  STATELESS_CLIENT_LOG_LOOKBACK_BLOCKS  Blocks the client searches for events (default: 50000);
+                                     lower it for a public RPC with a smaller eth_getLogs range
+                                     limit
 
 Misc:
   -h, --help
@@ -76,7 +90,8 @@ Examples:
 # ── Parse args, apply defaults, validate ────────────────────────────────────
 e2e_parse_args "$@"
 e2e_apply_profile_defaults
-assert_time_warp_capable
+announce_time_movement
+require_reuse_for_finality_delays
 e2e_validate_prerequisites
 ensure_stateless_client_ready
 
@@ -102,8 +117,8 @@ DEST_FUNDS_RELEASED_BLOCK="$LAST_SUBMISSION_BLOCK"
 DEST_HELD_BEFORE_BURN="$(query_erc20_balance "$DEST_RPC" "$DEST_TOKEN" "$DEST_CONNECTOR")"
 
 # ── Move both chains to the ACK deadline ─────────────────────────────────────
-# Warp to the deadline, not past it, so the refund proof still falls inside the finality delay.
-echo "Ack deadline: $ACK_DEADLINE — warping both chains to it..."
+# Move to the deadline, not far past it, so the refund proof still falls inside the finality delay.
+echo "Ack deadline: $ACK_DEADLINE — moving both chains to it..."
 warp_both_chains_past "$ACK_DEADLINE"
 
 # ── refund-initiate stage ────────────────────────────────────────────────────
@@ -121,8 +136,9 @@ wait_for_successor_execution_block "$SOURCE_RPC" "$refund_claim_exec_block" "sou
 if [[ "$SOURCE_FINALITY_DELAY" != "0" ]]; then
     echo "Running relay-resume for refund-claim before the ${SOURCE_FINALITY_DELAY}s source finality delay..."
     expect_finality_not_reached "refund-claim" --refund-claim-execution-block "$refund_claim_exec_block"
+    # The connector counts the delay from the ack deadline.
     echo "Moving the destination clock past the source finality delay..."
-    advance_chain_time "$DEST_RPC" "$SOURCE_FINALITY_DELAY"
+    move_chain_past "$DEST_RPC" "$(( ACK_DEADLINE + SOURCE_FINALITY_DELAY ))"
 fi
 
 echo "Running relay-resume for refund-claim..."

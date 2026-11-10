@@ -10,8 +10,10 @@
 #      past it
 #   5. Check that the sender got the tokens back and both records are closed
 #
-# Prerequisite: source and destination profiles must support time-warp
-# (local-anvil or local-hardhat).
+# Local chains (local-anvil, local-hardhat) warp their clocks; on any other profile (a public
+# network or custom) the flow waits for real time: the ack window, then the finality delay. A
+# finality delay there must already be applied on reused contracts
+# (scripts/e2e-finality-delays.sh), since the 48 h timelock cannot be warped past.
 #
 # Flags: identical to e2e-refund-path.sh; the delay used here is
 #   --destination-finality-delay <seconds>   (default: 0, check off)
@@ -25,14 +27,17 @@ source "$SCRIPT_DIR/lib/e2e-common.sh"
 # ── Usage ───────────────────────────────────────────────────────────────────
 export E2E_USAGE="Usage: $0 [OPTIONS]
 
-Run the non-acceptance refund flow (deposit → time-warp → refund-initiate → non-accept-proof).
+Run the non-acceptance refund flow (deposit → move time → refund-initiate → non-accept-proof).
 
-IMPORTANT: Both source and destination profiles must support local time-warp
-(local-anvil or local-hardhat).
+Local chains (local-anvil, local-hardhat) warp their clocks. On any other profile (a public
+network or custom) the flow waits for real time: the ack window, then the finality delay, which
+must already be applied on reused contracts (scripts/e2e-finality-delays.sh).
 
 Options: as in e2e-refund-path.sh --help. The delay this flow checks is
   --destination-finality-delay <seconds>  Destination network delay held by the source connector;
                                           the non-acceptance proof must wait it out (default: 0, off)
+  With a delay the flow first checks that a too early proof is refused, so the delay must be
+  clearly longer than one proof takes (minutes with real proofs).
 
 Examples:
   $0 --proof-backend test --destination-finality-delay 3600
@@ -41,7 +46,8 @@ Examples:
 # ── Parse args, apply defaults, validate ────────────────────────────────────
 e2e_parse_args "$@"
 e2e_apply_profile_defaults
-assert_time_warp_capable
+announce_time_movement
+require_reuse_for_finality_delays
 e2e_validate_prerequisites
 ensure_stateless_client_ready
 
@@ -54,8 +60,8 @@ align_chain_clocks
 perform_deposit
 SOURCE_BALANCE_LOCKED="$(query_erc20_balance "$SOURCE_RPC" "$SOURCE_TOKEN" "$DEPLOYER_ADDRESS")"
 
-# Warp to the deadline, not past it, so the refund proof still falls inside the finality delay.
-echo "Ack deadline: $ACK_DEADLINE — warping both chains to it..."
+# Move to the deadline, not far past it, so the refund proof still falls inside the finality delay.
+echo "Ack deadline: $ACK_DEADLINE — moving both chains to it..."
 warp_both_chains_past "$ACK_DEADLINE"
 
 # ── refund-initiate stage ────────────────────────────────────────────────────
@@ -67,8 +73,9 @@ REFUND_INITIATE_TX="$LAST_SUBMISSION_TX_HASH"
 if [[ "$DEST_FINALITY_DELAY" != "0" ]]; then
     echo "Running relay-resume for non-accept-proof before the ${DEST_FINALITY_DELAY}s destination finality delay..."
     expect_finality_not_reached "non-accept-proof"
+    # The connector counts the delay from the ack deadline.
     echo "Moving the source clock past the destination finality delay..."
-    advance_chain_time "$SOURCE_RPC" "$DEST_FINALITY_DELAY"
+    move_chain_past "$SOURCE_RPC" "$(( ACK_DEADLINE + DEST_FINALITY_DELAY ))"
 fi
 
 echo "Running relay-resume for non-accept-proof..."
