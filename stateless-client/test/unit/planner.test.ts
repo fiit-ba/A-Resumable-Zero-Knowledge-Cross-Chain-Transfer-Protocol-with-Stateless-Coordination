@@ -1,6 +1,13 @@
-import { describe, expect, it } from "vitest";
-import { computeResumeDecision } from "../../src/relay/planner.js";
-import type { HistoryFlags } from "../../src/core/types.js";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { computeResumeDecision, planRelayResume } from "../../src/relay/planner.js";
+import type { ChainConfig, HistoryFlags } from "../../src/core/types.js";
+
+vi.mock("../../src/relay/endpoints.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../../src/relay/endpoints.js")>();
+  return { ...actual, connectorReaders: vi.fn() };
+});
+
+import { connectorReaders } from "../../src/relay/endpoints.js";
 
 const NO_HISTORY: HistoryFlags = {
   depositLocked: false,
@@ -138,5 +145,75 @@ describe("computeResumeDecision", () => {
     };
     const d = computeResumeDecision(0, 0, flags);
     expect(d.historyFlags).toEqual(flags);
+  });
+});
+
+describe("planRelayResume event search", () => {
+  const LOOKBACK_ENV = "STATELESS_CLIENT_LOG_LOOKBACK_BLOCKS";
+  const TX_ID = "0x" + "ab".repeat(32);
+  const CONNECTOR = "0x1111111111111111111111111111111111111111";
+  const CHAIN: ChainConfig = {
+    side: "source",
+    profileName: "custom",
+    isLocal: false,
+    chainId: 59141,
+    rpcUrls: ["https://rpc.sepolia.linea.build"],
+    proverUrls: [],
+    beaconUrls: [],
+    checkpointzUrls: [],
+  };
+  const CONFIG = {
+    source: CHAIN,
+    destination: CHAIN,
+    connectors: { source: CONNECTOR, destination: CONNECTOR },
+    txId: TX_ID,
+  };
+
+  /** A connector reader at head block 100000 that reports `status` and finds one event. */
+  function makeReader(status: number) {
+    return {
+      address: CONNECTOR,
+      provider: {
+        getBlockNumber: vi.fn().mockResolvedValue(100_000),
+        getLogs: vi.fn().mockResolvedValue([{}]),
+      },
+      contract: { txStatus: vi.fn().mockResolvedValue(BigInt(status)) },
+    };
+  }
+
+  /** Plans a transfer whose source record is pruned (0) and whose destination holds funds (3). */
+  async function planPrunedAck() {
+    const source = makeReader(0);
+    const readers = { source, destination: makeReader(3) };
+    vi.mocked(connectorReaders).mockReturnValue(
+      readers as unknown as ReturnType<typeof connectorReaders>,
+    );
+    const decision = await planRelayResume(CONFIG);
+    return { decision, getLogs: source.provider.getLogs };
+  }
+
+  afterEach(() => {
+    vi.clearAllMocks();
+    delete process.env[LOOKBACK_ENV];
+  });
+
+  it("searches the last 50000 blocks by default", async () => {
+    const { decision, getLogs } = await planPrunedAck();
+
+    expect(decision.action).toBe("ack");
+    expect(getLogs).toHaveBeenCalledWith(
+      expect.objectContaining({ fromBlock: 50_001, toBlock: 100_000 }),
+    );
+  });
+
+  it("narrows the search to the configured lookback for RPCs with a range limit", async () => {
+    process.env[LOOKBACK_ENV] = "10000";
+
+    const { decision, getLogs } = await planPrunedAck();
+
+    expect(decision.action).toBe("ack");
+    expect(getLogs).toHaveBeenCalledWith(
+      expect.objectContaining({ fromBlock: 90_001, toBlock: 100_000 }),
+    );
   });
 });

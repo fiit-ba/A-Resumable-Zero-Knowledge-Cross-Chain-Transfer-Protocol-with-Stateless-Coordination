@@ -45,6 +45,9 @@ SOURCE_RPC="${SOURCE_RPC:-}"
 DEST_RPC="${DEST_RPC:-}"
 SOURCE_CHAIN_ID="${SOURCE_CHAIN_ID:-}"
 DEST_CHAIN_ID="${DEST_CHAIN_ID:-}"
+# 1 lets a custom network that Colibri does not support be verified through plain RPC (the
+# client's --allow-rpc-fallback); such verifications are marked degraded.
+ALLOW_RPC_FALLBACK="${ALLOW_RPC_FALLBACK:-0}"
 
 PRIVATE_KEY="${PRIVATE_KEY:-}"
 ACK_WINDOW_SECONDS="${ACK_WINDOW_SECONDS:-3600}"
@@ -152,6 +155,8 @@ e2e_parse_args() {
                 SOURCE_CHAIN_ID="$2"; shift 2 ;;
             --destination-chain-id|--dest-chain-id)
                 DEST_CHAIN_ID="$2"; shift 2 ;;
+            --allow-rpc-fallback)
+                ALLOW_RPC_FALLBACK=1; shift ;;
             --private-key)
                 PRIVATE_KEY="$2"; shift 2 ;;
             --amount)
@@ -254,9 +259,15 @@ apply_network_profile_defaults() {
             default_prover="https://chiado.colibri-proof.tech"
             default_beacon="${COLIBRI_CHIADO_PARENT_ROOT_BEACON_FALLBACK_URL},https://gnosis-chiado-beacon-api.publicnode.com"
             default_checkpointz="${COLIBRI_CHIADO_PARENT_ROOT_BEACON_FALLBACK_URL},https://gnosis-chiado-beacon-api.publicnode.com" ;;
+        custom)
+            # Any other network: the chain id and RPC come only from the command line.
+            if [[ -z "${!chain_var}" || -z "${!rpc_var}" ]]; then
+                echo "The custom ${side} profile needs --${side}-chain-id and --${side}-rpc-url." >&2
+                exit 1
+            fi ;;
         *)
             echo "Unsupported ${side} network profile: $profile" >&2
-            echo "Supported profiles: local-anvil, local-hardhat, mainnet, sepolia, holesky, hoodi, gnosis, chiado" >&2
+            echo "Supported profiles: local-anvil, local-hardhat, mainnet, sepolia, holesky, hoodi, gnosis, chiado, custom" >&2
             exit 1 ;;
     esac
 
@@ -799,6 +810,7 @@ build_relay_resume_common_args() {
     [[ -n "$COLIBRI_DEST_BEACON_URLS" ]]       && RELAY_COMMON_ARGS+=(--destination-beacon-urls "$COLIBRI_DEST_BEACON_URLS")
     [[ -n "$COLIBRI_SOURCE_CHECKPOINTZ_URLS" ]] && RELAY_COMMON_ARGS+=(--source-checkpointz-urls "$COLIBRI_SOURCE_CHECKPOINTZ_URLS")
     [[ -n "$COLIBRI_DEST_CHECKPOINTZ_URLS" ]]  && RELAY_COMMON_ARGS+=(--destination-checkpointz-urls "$COLIBRI_DEST_CHECKPOINTZ_URLS")
+    [[ "$ALLOW_RPC_FALLBACK" == "1" ]]         && RELAY_COMMON_ARGS+=(--allow-rpc-fallback)
     return 0
 }
 

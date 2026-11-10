@@ -63,7 +63,7 @@ function usage(): string {
   const relayArgs =
     "--tx-id <bytes32> --private-key <hex> --proof-backend <local|docker|test> " +
     "--source-connector <address> --destination-connector <address> [network and proof options]";
-  const profiles = Object.keys(NETWORK_PROFILES).join("|");
+  const profiles = [...Object.keys(NETWORK_PROFILES), "custom"].join("|");
   return [
     "Usage:",
     `  stateless-client verify-stage --stage <${VERIFY_STAGES.join("|")}> --tx-id <bytes32> --source-connector <address> --destination-connector <address> [network options]`,
@@ -80,6 +80,7 @@ function usage(): string {
     "  --source-beacon-urls <csv> --destination-beacon-urls <csv>",
     "  --source-checkpointz-urls <csv> --destination-checkpointz-urls <csv>",
     "  --prover-urls <csv> --beacon-urls <csv> --checkpointz-urls <csv>",
+    "  --allow-rpc-fallback  (a custom network Colibri does not support is verified through RPC, marked degraded)",
     "",
     "Execution block options:",
     "  --execution-block <tag|number|hex>",

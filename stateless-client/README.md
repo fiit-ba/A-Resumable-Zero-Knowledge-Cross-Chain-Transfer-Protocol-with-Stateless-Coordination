@@ -47,7 +47,14 @@ npx tsx src/cli.ts relay-resume \
 - **Networks:** `--source-profile` / `--destination-profile` select a built-in profile:
   `local-anvil`, `local-hardhat`, `mainnet`, `sepolia`, `holesky`, `hoodi`, `gnosis` or
   `chiado`. Override any part of a profile with `--<side>-rpc-url`, `--<side>-chain-id`,
-  `--<side>-prover-urls`, and similar options.
+  `--<side>-prover-urls`, and similar options. Any other network uses the `custom` profile
+  with an explicit `--<side>-chain-id` and `--<side>-rpc-url`.
+- **RPC fallback:** Colibri supports only Ethereum and Gnosis networks, so on any other public
+  network a relay stops at its first stage with Colibri's error unless `--allow-rpc-fallback`
+  is given. With it, a `custom` network is verified through plain RPC, as a local chain is:
+  a warning names the network and the result is marked degraded (reason `custom_network`;
+  the CLI prints `verificationDegraded: true`). The flag never applies to a built-in profile,
+  nor to its chain ID given under `custom`: those keep Colibri.
 - **Execution blocks:** `--execution-block` pins every proof to one block. Per-stage variants
   such as `--lock-execution-block` take precedence.
 - **Proof paths:** by default these are discovered from the repository root. Override them with
@@ -104,7 +111,7 @@ Environment variables are read from the process or from `stateless-client/.env`.
 | `STATELESS_CLIENT_RISC0_PROVER_MODE` | auto | `local` or `bonsai`. Defaults to Bonsai for non-local chains when `BONSAI_API_URL` and `BONSAI_API_KEY` are set. |
 | `STATELESS_CLIENT_PROOF_TIMEOUT_SEC` | `1800` | Kill a proof host that runs longer than this |
 | `RISC0_VM`, `RISC0_HOME` | auto-detected | Location of `r0vm` |
-| `STATELESS_CLIENT_LOG_LOOKBACK_BLOCKS` | `50000` | Log window used when a stage has no explicit block |
+| `STATELESS_CLIENT_LOG_LOOKBACK_BLOCKS` | `50000` | How many blocks back from the head events are searched when a stage has no explicit block, also by the resume planner. Lower it for an RPC that caps the `eth_getLogs` block range. |
 | `STATELESS_CLIENT_COLIBRI_TRANSIENT_RETRIES` | `6` | Retries for transient Colibri errors |
 | `STATELESS_CLIENT_COLIBRI_TRANSIENT_RETRY_DELAY_SEC` | `12` | Delay between those retries |
 | `STATELESS_CLIENT_COLIBRI_CACHE_DIR` | `./.colibri-cache` | Colibri sync-state cache |

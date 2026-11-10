@@ -83,6 +83,25 @@ function requireStringOption(options: CliOptions, key: string): string {
   return value;
 }
 
+/** Reads a flag given as `--flag`, `--flag=true|false|1|0` or `--flag true|false|1|0`. */
+function getBooleanOption(options: CliOptions, key: string): boolean {
+  const value = options[key];
+  if (value === undefined || value === false) {
+    return false;
+  }
+  if (value === true) {
+    return true;
+  }
+  const normalized = value.toLowerCase();
+  if (normalized === "true" || normalized === "1") {
+    return true;
+  }
+  if (normalized === "false" || normalized === "0") {
+    return false;
+  }
+  throw new Error(`Invalid value '${value}' for --${key}. Expected no value, true or false.`);
+}
+
 function resolveExecutionBlocks(options: CliOptions): StageExecutionBlocks {
   const global = parseBlockOption(options, "execution-block");
   const blocks: StageExecutionBlocks = {};
@@ -163,6 +182,7 @@ function resolveSideChainConfig(options: CliOptions, side: Side): ChainConfig {
     beaconUrls: option("beacon-urls") ?? getStringOption(options, "beacon-urls"),
     checkpointzUrls: option("checkpointz-urls") ?? getStringOption(options, "checkpointz-urls"),
     defaultProfileName: DEFAULT_PROFILE_BY_SIDE[side],
+    allowRpcFallback: getBooleanOption(options, "allow-rpc-fallback"),
   });
 }
 

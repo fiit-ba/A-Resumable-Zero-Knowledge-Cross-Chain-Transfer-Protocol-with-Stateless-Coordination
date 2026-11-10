@@ -88,10 +88,12 @@ export function shouldUsePrunedAckVerification(
 
 function hasPriorDegradedNonLocalProofStage(config: StageSubmissionConfig): boolean {
   const prior = config.verificationHints?.priorProofStageVerifications ?? [];
-  return prior.some(
-    (entry) =>
-      entry.degraded && !endpointFor(config, STAGE_DEFINITIONS[entry.stage].side).chain.isLocal,
-  );
+  return prior.some((entry) => {
+    const { chain } = endpointFor(config, STAGE_DEFINITIONS[entry.stage].side);
+    // A local chain or a custom network read through RPC is degraded by design, not by a
+    // Colibri failure, so it gives no reason to restart Colibri on the other side.
+    return entry.degraded && !chain.isLocal && !chain.rpcFallback;
+  });
 }
 
 export function deriveVerificationPolicyForStage(

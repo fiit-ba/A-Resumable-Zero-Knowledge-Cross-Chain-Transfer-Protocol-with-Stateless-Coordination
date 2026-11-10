@@ -20,7 +20,8 @@ export type VerificationDegradeReason =
   | "chiado_finalization"
   | "chiado_block_not_signed"
   | "chiado_bootstrap_unsupported"
-  | "local_chain";
+  | "local_chain"
+  | "custom_network";
 
 export type RelayMode = "auto" | "manual";
 export type PostSubmitBehavior = "pause" | "auto_prepare";

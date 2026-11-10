@@ -10,6 +10,7 @@
 #   --destination-profile / --destination-network  (default: local-hardhat)
 #   --source-rpc-url, --destination-rpc-url
 #   --source-chain-id, --destination-chain-id
+#   --allow-rpc-fallback                     verify a custom network through RPC (degraded)
 #   --private-key, --receiver
 #   --proof-backend <local|docker|test>      (default: local)
 #   --risc0-prover-mode <local|bonsai>       (default: local)
@@ -21,10 +22,11 @@
 #
 # Environment variables (all overridable; see scripts/lib/e2e-common.sh):
 #   SOURCE_NETWORK_PROFILE, DEST_NETWORK_PROFILE
-#   SOURCE_RPC, DEST_RPC, SOURCE_CHAIN_ID, DEST_CHAIN_ID
+#   SOURCE_RPC, DEST_RPC, SOURCE_CHAIN_ID, DEST_CHAIN_ID, ALLOW_RPC_FALLBACK
 #   PRIVATE_KEY, RECEIVER_ADDRESS, AMOUNT_WEI, ACK_WINDOW_SECONDS
 #   PROOF_BACKEND, RISC0_PROVER_MODE, USE_DOCKER_PROVER (alias for PROOF_BACKEND=docker)
 #   STATELESS_CLIENT_DIR, STATELESS_CLIENT_AUTO_BUILD
+#   STATELESS_CLIENT_LOG_LOOKBACK_BLOCKS (lower it for an RPC with a small eth_getLogs range limit)
 #   REUSE_SOURCE_DEPLOYMENTS, REUSE_DEST_DEPLOYMENTS
 #   EXISTING_SOURCE_CONNECTOR, EXISTING_SOURCE_TOKEN, EXISTING_DEST_CONNECTOR, EXISTING_DEST_TOKEN
 #   LOCK_EXECUTION_BLOCK, MINT_EXECUTION_BLOCK, ACK_EXECUTION_BLOCK
@@ -49,8 +51,11 @@ Network selection:
   --destination-rpc-url <url>        Override destination RPC URL
   --source-chain-id <id>             Override source chain ID
   --destination-chain-id <id>        Override destination chain ID
+  --allow-rpc-fallback               Verify a custom network Colibri does not support through
+                                     plain RPC; such verifications are marked degraded
 
-Supported profiles: local-anvil, local-hardhat, mainnet, sepolia, holesky, hoodi, gnosis, chiado
+Supported profiles: local-anvil, local-hardhat, mainnet, sepolia, holesky, hoodi, gnosis, chiado,
+custom (any other network; give its chain ID and RPC URL)
 
 Signing and amounts:
   --private-key <hex>                Signer private key (or set PRIVATE_KEY env var)
@@ -68,6 +73,11 @@ Deployment reuse (both sides; the token route must already be registered):
   --source-connector <addr>          Set source connector and enable reuse
   --destination-connector <addr>     Set dest connector and enable reuse
 
+Environment (more in scripts/lib/e2e-common.sh):
+  STATELESS_CLIENT_LOG_LOOKBACK_BLOCKS  Blocks the client searches for events (default: 50000);
+                                     lower it for a public RPC with a smaller eth_getLogs range
+                                     limit
+
 Misc:
   -h, --help                         Show this help
 
@@ -76,6 +86,7 @@ Examples:
   $0 --proof-backend test
   $0 --source-profile local-anvil --destination-profile local-hardhat
   $0 --source-profile sepolia --destination-profile chiado --private-key 0x...
+  $0 --source-profile custom --source-chain-id 167013 --source-rpc-url https://rpc.hoodi.taiko.xyz --destination-profile sepolia --proof-backend docker --allow-rpc-fallback --private-key 0x...
   $0 --reuse-source --source-connector 0x... --reuse-dest --destination-connector 0x... --source-profile local-anvil --destination-profile local-hardhat
 "
 

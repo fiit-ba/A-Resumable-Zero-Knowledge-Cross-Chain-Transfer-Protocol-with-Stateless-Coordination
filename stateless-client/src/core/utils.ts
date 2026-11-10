@@ -181,6 +181,19 @@ export function readPositiveIntEnv(...names: string[]): number | undefined {
   return undefined;
 }
 
+const DEFAULT_LOG_LOOKBACK_BLOCKS = 50_000;
+
+/**
+ * How many blocks back from the head an event search reaches. Public RPCs cap the block
+ * range of eth_getLogs, so STATELESS_CLIENT_LOG_LOOKBACK_BLOCKS lowers it.
+ */
+export function resolveLogLookbackBlocks(): number {
+  return (
+    readPositiveIntEnv("STATELESS_CLIENT_LOG_LOOKBACK_BLOCKS", "COLIBRI_LOG_LOOKBACK_BLOCKS") ??
+    DEFAULT_LOG_LOOKBACK_BLOCKS
+  );
+}
+
 /** Reads `name` as a boolean flag (`1`/`true`/`0`/`false`); anything else yields `defaultValue`. */
 export function readBooleanEnv(name: string, defaultValue: boolean): boolean {
   const normalized = process.env[name]?.toLowerCase();
