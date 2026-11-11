@@ -737,9 +737,9 @@ export async function verifyStageEventOnly(
   } else if (request.chain.isLocal) {
     degradeReason = "local_chain";
   } else {
-    degradeReason = "custom_network";
+    degradeReason = "unsupported_network";
     console.warn(
-      `[colibri] chain=${request.chain.chainId} is a custom network without Colibri support;` +
+      `[colibri] chain=${request.chain.chainId} is a network without Colibri support;` +
         ` verifying ${request.stage} through RPC (--allow-rpc-fallback)`,
     );
   }
@@ -778,13 +778,13 @@ export async function verifyStage(request: VerifyStageRequest): Promise<StageVer
     colibriCallBlockTag,
   ];
 
-  // A custom network Colibri does not support is read through plain RPC, as a local chain is.
+  // A network Colibri does not support is read through plain RPC, as a local chain is.
   if (request.chain.rpcFallback) {
     console.warn(
-      `[colibri] chain=${request.chain.chainId} is a custom network without Colibri support;` +
+      `[colibri] chain=${request.chain.chainId} is a network without Colibri support;` +
         ` verifying ${request.stage} through RPC (--allow-rpc-fallback)`,
     );
-    return verifyStageThroughRpc(request, ctx, "custom_network");
+    return verifyStageThroughRpc(request, ctx, "unsupported_network");
   }
 
   if (request.verificationPolicy?.retryColibriFromScratch && !request.chain.isLocal) {

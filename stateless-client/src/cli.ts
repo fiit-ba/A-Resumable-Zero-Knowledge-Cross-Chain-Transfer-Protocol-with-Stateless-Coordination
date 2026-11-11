@@ -80,7 +80,7 @@ function usage(): string {
     "  --source-beacon-urls <csv> --destination-beacon-urls <csv>",
     "  --source-checkpointz-urls <csv> --destination-checkpointz-urls <csv>",
     "  --prover-urls <csv> --beacon-urls <csv> --checkpointz-urls <csv>",
-    "  --allow-rpc-fallback  (a custom network Colibri does not support is verified through RPC, marked degraded)",
+    "  --allow-rpc-fallback  (a network Colibri does not support is verified through RPC, marked degraded)",
     "",
     "Execution block options:",
     "  --execution-block <tag|number|hex>",

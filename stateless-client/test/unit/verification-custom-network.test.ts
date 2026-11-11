@@ -1,6 +1,6 @@
 /**
  * A custom public network with --allow-rpc-fallback: Colibri does not support it, so each
- * stage is verified through plain RPC and marked degraded with the reason "custom_network".
+ * stage is verified through plain RPC and marked degraded with the reason "unsupported_network".
  * Without the flag the same network stops with Colibri's error.
  *
  * The Colibri backend is mocked so that any use of it shows up; the RPC provider is a fake.
@@ -167,7 +167,7 @@ describe("verifyStage() on a custom network with the RPC fallback", () => {
 
     expect(result.mode).toBe("rpc-fallback");
     expect(result.degraded).toBe(true);
-    expect(result.degradeReason).toBe("custom_network");
+    expect(result.degradeReason).toBe("unsupported_network");
     expect(result.status).toBe(1);
     expect(provider.send).toHaveBeenCalledWith("eth_call", expect.any(Array));
     expect(getColibriBackend).not.toHaveBeenCalled();
@@ -180,7 +180,7 @@ describe("verifyStage() on a custom network with the RPC fallback", () => {
 
     expect(result.mode).toBe("rpc-fallback");
     expect(result.degraded).toBe(true);
-    expect(result.degradeReason).toBe("custom_network");
+    expect(result.degradeReason).toBe("unsupported_network");
     expect(provider.send).not.toHaveBeenCalled();
     expect(getColibriBackend).not.toHaveBeenCalled();
   });

@@ -46,8 +46,8 @@ Network selection:
   --destination-rpc-url <url>        Override destination RPC URL
   --source-chain-id <id>             Override source chain ID
   --destination-chain-id <id>        Override destination chain ID
-  --allow-rpc-fallback               Verify a custom network Colibri does not support through
-                                     plain RPC; such verifications are marked degraded
+  --allow-rpc-fallback               Verify a network Colibri does not support (custom, holesky,
+                                     hoodi) through plain RPC; such verifications are marked degraded
 
 Supported profiles: local-anvil, local-hardhat, mainnet, sepolia, holesky, hoodi, gnosis, chiado,
 custom (any other network; give its chain ID and RPC URL)

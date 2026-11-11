@@ -133,9 +133,15 @@ export function getNetworkProfile(profileName: string): NetworkProfileDefaults {
   return NETWORK_PROFILES[profileName as NetworkProfileName];
 }
 
-/** True when `chainId` belongs to a built-in profile, whatever profile name was given. */
-function isBuiltInChainId(chainId: number): boolean {
-  return listNetworkProfiles().some((profile) => profile.chainId === chainId);
+/**
+ * Chain ids the Colibri library can verify. Holesky and Hoodi have profiles here, but
+ * Colibri does not know them.
+ */
+const COLIBRI_CHAIN_IDS = [1, 11155111, 100, 10200];
+
+/** True when Colibri can verify `chainId`, whatever profile name was given. */
+function isColibriChainId(chainId: number): boolean {
+  return COLIBRI_CHAIN_IDS.includes(chainId);
 }
 
 export function resolveChainConfig(input: ChainResolveInput): ChainConfig {
@@ -210,12 +216,8 @@ export function resolveChainConfig(input: ChainResolveInput): ChainConfig {
     beaconUrls: beaconOverrides.length > 0 ? beaconOverrides : (baseProfile?.beaconUrls ?? []),
     checkpointzUrls:
       checkpointzOverrides.length > 0 ? checkpointzOverrides : (baseProfile?.checkpointzUrls ?? []),
-    // Only a custom public network may skip Colibri. A built-in network keeps its checks,
-    // also when its chain id is given under the custom profile.
-    rpcFallback:
-      profileName === "custom" &&
-      !isLocal &&
-      !isBuiltInChainId(chainId) &&
-      Boolean(input.allowRpcFallback),
+    // Only a public network Colibri cannot verify may skip it. A network Colibri supports
+    // keeps its checks, also when its chain id is given under the custom profile.
+    rpcFallback: !isLocal && !isColibriChainId(chainId) && Boolean(input.allowRpcFallback),
   };
 }

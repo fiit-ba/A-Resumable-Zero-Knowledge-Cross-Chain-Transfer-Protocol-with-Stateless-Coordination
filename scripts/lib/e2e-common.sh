@@ -47,8 +47,8 @@ SOURCE_RPC="${SOURCE_RPC:-}"
 DEST_RPC="${DEST_RPC:-}"
 SOURCE_CHAIN_ID="${SOURCE_CHAIN_ID:-}"
 DEST_CHAIN_ID="${DEST_CHAIN_ID:-}"
-# 1 lets a custom network that Colibri does not support be verified through plain RPC (the
-# client's --allow-rpc-fallback); such verifications are marked degraded.
+# 1 lets a network that Colibri does not support be verified through plain RPC (the client's
+# --allow-rpc-fallback); such verifications are marked degraded.
 ALLOW_RPC_FALLBACK="${ALLOW_RPC_FALLBACK:-0}"
 
 PRIVATE_KEY="${PRIVATE_KEY:-}"
@@ -367,18 +367,19 @@ ensure_risc0_r0vm_available() {
     echo "Warning: r0vm not found in PATH; ImageID computation may be slow." >&2
 }
 
-# Stop before anything is deployed when a side is a custom network on a public RPC and
-# --allow-rpc-fallback is missing: Colibri cannot verify such a network, so the client would stop
-# at the first stage. A local RPC and the chain id of a built-in profile need no flag, the client
-# keeps its own checks for them.
+# Stop before anything is deployed when a side is a public network Colibri cannot verify (a
+# custom one, Holesky or Hoodi) and --allow-rpc-fallback is missing: the client would stop at the
+# first stage. A local chain and a network Colibri supports need no flag, the client keeps its
+# own checks for them.
 require_rpc_fallback_flag() {
     local side="$1" profile="$2" chain_id="$3" rpc_url="$4"
-    [[ "$ALLOW_RPC_FALLBACK" == "1" || "$profile" != "custom" ]] && return 0
+    [[ "$ALLOW_RPC_FALLBACK" == "1" ]] && return 0
+    [[ "$(profile_time_warp_method "$profile")" != "none" ]] && return 0
     [[ "$rpc_url" =~ ^https?://(127\.0\.0\.1|localhost)(:|/|$) ]] && return 0
     case "$chain_id" in
-        1|100|10200|17000|31337|31338|560048|11155111) return 0 ;;
+        1|100|10200|31337|31338|11155111) return 0 ;;
     esac
-    echo "ERROR: Colibri does not support the custom $side network (chain $chain_id)." >&2
+    echo "ERROR: Colibri does not support the $side network (chain $chain_id)." >&2
     echo "Pass --allow-rpc-fallback to verify it through plain RPC; its stages are marked degraded." >&2
     exit 1
 }

@@ -103,18 +103,37 @@ describe("resolveChainConfig with the custom profile", () => {
     expect(resolveChainConfig({ ...TAIKO_HOODI, allowRpcFallback: true }).rpcFallback).toBe(true);
   });
 
-  it("keeps Colibri for a built-in profile even with the RPC fallback allowed", () => {
-    const chain = resolveChainConfig({
-      side: "source",
-      defaultProfileName: "local-anvil",
-      profileName: "sepolia",
-      allowRpcFallback: true,
-    });
+  it("keeps Colibri for a network it supports even with the RPC fallback allowed", () => {
+    for (const profileName of ["mainnet", "sepolia", "gnosis", "chiado"]) {
+      const chain = resolveChainConfig({
+        side: "source",
+        defaultProfileName: "local-anvil",
+        profileName,
+        allowRpcFallback: true,
+      });
 
-    expect(chain.rpcFallback).toBe(false);
+      expect(chain.rpcFallback).toBe(false);
+    }
   });
 
-  it("keeps Colibri for the chain id of a built-in profile given under the custom profile", () => {
+  it("allows the RPC fallback for a built-in profile Colibri does not support only when asked", () => {
+    for (const profileName of ["holesky", "hoodi"]) {
+      const profile = { side: "source" as const, defaultProfileName: "local-anvil" as const };
+
+      expect(resolveChainConfig({ ...profile, profileName }).rpcFallback).toBe(false);
+      expect(
+        resolveChainConfig({ ...profile, profileName, allowRpcFallback: true }).rpcFallback,
+      ).toBe(true);
+    }
+  });
+
+  it("allows the RPC fallback for Hoodi's chain id given under the custom profile", () => {
+    const hoodiAsCustom = { ...TAIKO_HOODI, chainId: "560048", allowRpcFallback: true };
+
+    expect(resolveChainConfig(hoodiAsCustom).rpcFallback).toBe(true);
+  });
+
+  it("keeps Colibri for the chain id of a network it supports given under the custom profile", () => {
     const sepoliaAsCustom = { ...TAIKO_HOODI, chainId: "11155111", allowRpcFallback: true };
 
     expect(resolveChainConfig(sepoliaAsCustom).rpcFallback).toBe(false);

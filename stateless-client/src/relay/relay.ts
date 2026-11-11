@@ -90,8 +90,8 @@ function hasPriorDegradedNonLocalProofStage(config: StageSubmissionConfig): bool
   const prior = config.verificationHints?.priorProofStageVerifications ?? [];
   return prior.some((entry) => {
     const { chain } = endpointFor(config, STAGE_DEFINITIONS[entry.stage].side);
-    // A local chain or a custom network read through RPC is degraded by design, not by a
-    // Colibri failure, so it gives no reason to restart Colibri on the other side.
+    // A local chain or a network without Colibri support is read through RPC by design, not
+    // after a Colibri failure, so it gives no reason to restart Colibri on the other side.
     return entry.degraded && !chain.isLocal && !chain.rpcFallback;
   });
 }

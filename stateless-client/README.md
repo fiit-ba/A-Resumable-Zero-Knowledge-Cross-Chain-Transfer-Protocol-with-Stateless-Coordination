@@ -49,12 +49,13 @@ npx tsx src/cli.ts relay-resume \
   `chiado`. Override any part of a profile with `--<side>-rpc-url`, `--<side>-chain-id`,
   `--<side>-prover-urls`, and similar options. Any other network uses the `custom` profile
   with an explicit `--<side>-chain-id` and `--<side>-rpc-url`.
-- **RPC fallback:** Colibri supports only Ethereum and Gnosis networks, so on any other public
-  network a relay stops at its first stage with Colibri's error unless `--allow-rpc-fallback`
-  is given. With it, a `custom` network is verified through plain RPC, as a local chain is:
-  a warning names the network and the result is marked degraded (reason `custom_network`;
-  the CLI prints `verificationDegraded: true`). The flag never applies to a built-in profile,
-  nor to its chain ID given under `custom`: those keep Colibri.
+- **RPC fallback:** Colibri supports only Ethereum mainnet, Sepolia, Gnosis and Chiado, so on
+  any other public network (a `custom` one, and also `holesky` and `hoodi`) a relay stops at
+  its first stage with Colibri's error unless `--allow-rpc-fallback` is given. With it, such a
+  network is verified through plain RPC, as a local chain is: a warning names the network and
+  the result is marked degraded (reason `unsupported_network`; the CLI prints
+  `verificationDegraded: true`). The flag never applies to a network Colibri supports, nor to
+  its chain ID given under `custom`: those keep Colibri.
 - **Execution blocks:** `--execution-block` pins every proof to one block. Per-stage variants
   such as `--lock-execution-block` take precedence.
 - **Proof paths:** by default these are discovered from the repository root. Override them with

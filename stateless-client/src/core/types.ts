@@ -70,7 +70,7 @@ export type VerificationDegradeReason =
   | "chiado_block_not_signed"
   | "chiado_bootstrap_unsupported"
   | "local_chain"
-  | "custom_network";
+  | "unsupported_network";
 
 export type NetworkProfileName =
   | "local-anvil"
@@ -94,9 +94,9 @@ export interface ChainConfig {
   beaconUrls: string[];
   checkpointzUrls: string[];
   /**
-   * True for a custom public network that may be verified through plain RPC
-   * (`--allow-rpc-fallback`). Colibri does not support such a network, so its stages
-   * are verified as on a local chain and marked degraded.
+   * True for a public network Colibri does not support that may be verified through plain
+   * RPC (`--allow-rpc-fallback`): its stages are verified as on a local chain and marked
+   * degraded.
    */
   rpcFallback?: boolean;
 }

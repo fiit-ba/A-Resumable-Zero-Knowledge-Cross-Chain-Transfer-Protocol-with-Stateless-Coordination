@@ -10,7 +10,7 @@
 #   --destination-profile / --destination-network  (default: local-hardhat)
 #   --source-rpc-url, --destination-rpc-url
 #   --source-chain-id, --destination-chain-id
-#   --allow-rpc-fallback                     verify a custom network through RPC (degraded)
+#   --allow-rpc-fallback                     verify a network without Colibri through RPC (degraded)
 #   --private-key, --receiver
 #   --proof-backend <local|docker|test>      (default: local)
 #   --risc0-prover-mode <local|bonsai>       (default: local)
@@ -51,8 +51,8 @@ Network selection:
   --destination-rpc-url <url>        Override destination RPC URL
   --source-chain-id <id>             Override source chain ID
   --destination-chain-id <id>        Override destination chain ID
-  --allow-rpc-fallback               Verify a custom network Colibri does not support through
-                                     plain RPC; such verifications are marked degraded
+  --allow-rpc-fallback               Verify a network Colibri does not support (custom, holesky,
+                                     hoodi) through plain RPC; such verifications are marked degraded
 
 Supported profiles: local-anvil, local-hardhat, mainnet, sepolia, holesky, hoodi, gnosis, chiado,
 custom (any other network; give its chain ID and RPC URL)
