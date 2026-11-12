@@ -45,6 +45,10 @@ SOURCE_NETWORK_PROFILE="${SOURCE_NETWORK_PROFILE:-local-anvil}"
 DEST_NETWORK_PROFILE="${DEST_NETWORK_PROFILE:-local-hardhat}"
 SOURCE_RPC="${SOURCE_RPC:-}"
 DEST_RPC="${DEST_RPC:-}"
+# Optional other RPC URL for the deployment only. A load-balanced RPC can name a newest block
+# that its next node does not have yet, and forge then stops with "block not found".
+SOURCE_DEPLOY_RPC="${SOURCE_DEPLOY_RPC:-}"
+DEST_DEPLOY_RPC="${DEST_DEPLOY_RPC:-}"
 SOURCE_CHAIN_ID="${SOURCE_CHAIN_ID:-}"
 DEST_CHAIN_ID="${DEST_CHAIN_ID:-}"
 # 1 lets a network that Colibri does not support be verified through plain RPC (the client's
@@ -660,6 +664,32 @@ query_erc20_balance() {
     cast --to-dec "$raw_balance"
 }
 
+# Right after a transaction a lagging node of a load-balanced RPC can still answer with the
+# state from before it, so one read can fail a flow that succeeded on chain. These two read
+# again until the expected value is seen and print the last value read (`unknown` when that
+# read failed, so a failed read never looks like a real value).
+query_tx_status_until() {
+    local rpc_url="$1" connector="$2" tx_id="$3" expected="$4"
+    local attempts=10 attempt status
+    for ((attempt = 1; attempt <= attempts; attempt++)); do
+        status="$(query_tx_status "$rpc_url" "$connector" "$tx_id")" || status="unknown"
+        if [[ "$status" == "$expected" ]]; then break; fi
+        sleep "$TX_RECEIPT_WAIT_INTERVAL_SEC"
+    done
+    printf '%s' "$status"
+}
+
+query_erc20_balance_until() {
+    local rpc_url="$1" token="$2" account="$3" expected="$4"
+    local attempts=10 attempt balance
+    for ((attempt = 1; attempt <= attempts; attempt++)); do
+        balance="$(query_erc20_balance "$rpc_url" "$token" "$account")" || balance="unknown"
+        if [[ "$balance" == "$expected" ]]; then break; fi
+        sleep "$TX_RECEIPT_WAIT_INTERVAL_SEC"
+    done
+    printf '%s' "$balance"
+}
+
 # ── Time-warp helpers ────────────────────────────────────────────────────────
 get_chain_timestamp() {
     local rpc_url="$1"
@@ -845,7 +875,12 @@ run_stateless_client_cli_with_retry() {
             || "$output" == *"has not been signed yet and cannot be verified"* \
             || "$output" == *"requested block has not been signed yet"* \
             || "$output" == *"Invalid offset for container"* \
-            || "$output" == *"Invalid SSZ structure in bootstrap data"* ]]; then
+            || "$output" == *"Invalid SSZ structure in bootstrap data"* \
+            || "$output" == *"no LCU covers the bootstrap period"* \
+            || "$output" == *"HTTP error 429"* \
+            || "$output" == *"Too Many Requests"* \
+            || "$output" == *"request timeout"* \
+            || "$output" == *"block not found"* ]]; then
             if [[ "$attempt" -lt "$max_retries" ]]; then
                 attempt=$((attempt+1))
                 echo "stateless-client $command hit transient error. Retrying in ${retry_delay_sec}s ($attempt/$max_retries)..."
@@ -1024,8 +1059,8 @@ deploy_contracts() {
     local output
     if ! output="$(make -C "$SC_DIR" --no-print-directory deploy-prod-full \
         PRIVATE_KEY="$PRIVATE_KEY" \
-        RPC_URL_SOURCE="$SOURCE_RPC" \
-        RPC_URL_DEST="$DEST_RPC" \
+        RPC_URL_SOURCE="${SOURCE_DEPLOY_RPC:-$SOURCE_RPC}" \
+        RPC_URL_DEST="${DEST_DEPLOY_RPC:-$DEST_RPC}" \
         REGISTRATION_TIMELOCK=0 \
         AUTO_DETECT_FINALITY=0 \
         ACK_WINDOW_SECONDS_SOURCE="$ACK_WINDOW_SECONDS" \
@@ -1170,7 +1205,8 @@ query_ack_deadline() {
 # Mint AMOUNT_WEI to the deployer, approve the source connector and lock it for RECEIVER_ADDRESS.
 # Sets TX_ID, SOURCE_DEPOSIT_BLOCK and ACK_DEADLINE.
 perform_deposit() {
-    local nonce mint_tx approve_tx deposit_tx status
+    local nonce mint_tx approve_tx deposit_tx status attempt
+    local attempts=10
     nonce="$(query_tx_nonce "$SOURCE_RPC" "$SOURCE_CONNECTOR")"
 
     mint_tx="$(send_tx_async "$SOURCE_RPC" "$SOURCE_TOKEN" "mint(address,uint256)" "$DEPLOYER_ADDRESS" "$AMOUNT_WEI")"
@@ -1178,18 +1214,42 @@ perform_deposit() {
     approve_tx="$(send_tx_async "$SOURCE_RPC" "$SOURCE_TOKEN" "approve(address,uint256)" "$SOURCE_CONNECTOR" "$AMOUNT_WEI")"
     wait_for_tx_receipt_block "$SOURCE_RPC" "$approve_tx" >/dev/null
 
-    deposit_tx="$(send_tx_async "$SOURCE_RPC" "$SOURCE_CONNECTOR" \
-        "depositAndLock(address,address,address,uint256,address,uint256)" \
-        "$SOURCE_TOKEN" "$DEST_TOKEN" "$RECEIVER_ADDRESS" "$AMOUNT_WEI" "$DEST_CONNECTOR" "$DEST_CHAIN_ID")"
+    # A public RPC behind a load balancer can answer the deposit's gas estimate from a node that
+    # has not seen the approve yet. The estimate then reverts with ERC20InsufficientAllowance
+    # (selector 0xfb8f41b2) and nothing is sent, so the deposit is simply sent again.
+    for ((attempt = 1; attempt <= attempts; attempt++)); do
+        if deposit_tx="$(send_tx_async "$SOURCE_RPC" "$SOURCE_CONNECTOR" \
+            "depositAndLock(address,address,address,uint256,address,uint256)" \
+            "$SOURCE_TOKEN" "$DEST_TOKEN" "$RECEIVER_ADDRESS" "$AMOUNT_WEI" "$DEST_CONNECTOR" "$DEST_CHAIN_ID" 2>&1)"; then
+            break
+        fi
+        if (( attempt == attempts )) \
+            || [[ "$deposit_tx" != *ERC20InsufficientAllowance* && "$deposit_tx" != *0xfb8f41b2* ]]; then
+            echo "$deposit_tx" >&2; exit 1
+        fi
+        echo "The RPC has not seen the approve yet; sending the deposit again ($attempt/$attempts)..."
+        sleep "$TX_RECEIPT_WAIT_INTERVAL_SEC"
+    done
+    # The hash is the last line; with shell tracing on, the trace lines come before it.
+    deposit_tx="$(printf '%s\n' "$deposit_tx" | tail -n 1)"
     SOURCE_DEPOSIT_BLOCK="$(wait_for_tx_receipt_block "$SOURCE_RPC" "$deposit_tx")"
     echo "depositAndLock tx: $deposit_tx (block $SOURCE_DEPOSIT_BLOCK)"
 
     TX_ID="$(compute_tx_id "$DEPLOYER_ADDRESS" "$RECEIVER_ADDRESS" "$AMOUNT_WEI" "$SOURCE_TOKEN" "$DEST_TOKEN" \
         "$SOURCE_CONNECTOR" "$DEST_CONNECTOR" "$nonce" "$SOURCE_CHAIN_ID" "$DEST_CHAIN_ID")"
-    status="$(query_tx_status "$SOURCE_RPC" "$SOURCE_CONNECTOR" "$TX_ID")"
-    if [[ "$status" != "1" ]]; then
-        echo "Computed txId $TX_ID is not DEPOSIT_LOCKED on the source (status $status)." >&2; exit 1
+    # The same lagging node can answer these two reads as if the deposit were not mined yet
+    # (status 0, deadline 0), so they are repeated until the deposit is seen.
+    for ((attempt = 1; attempt <= attempts; attempt++)); do
+        status="$(query_tx_status "$SOURCE_RPC" "$SOURCE_CONNECTOR" "$TX_ID")"
+        # A failed read counts as not seen yet.
+        ACK_DEADLINE="$(query_ack_deadline "$SOURCE_RPC" "$SOURCE_CONNECTOR" "$TX_ID")" || ACK_DEADLINE="0"
+        if [[ "$status" == "1" && "$ACK_DEADLINE" != "0" ]]; then
+            break
+        fi
+        sleep "$TX_RECEIPT_WAIT_INTERVAL_SEC"
+    done
+    if [[ "$status" != "1" || "$ACK_DEADLINE" == "0" ]]; then
+        echo "Computed txId $TX_ID is not DEPOSIT_LOCKED on the source (status $status, ackDeadline $ACK_DEADLINE)." >&2; exit 1
     fi
-    ACK_DEADLINE="$(query_ack_deadline "$SOURCE_RPC" "$SOURCE_CONNECTOR" "$TX_ID")"
     echo "txId: $TX_ID  ackDeadline: $ACK_DEADLINE"
 }

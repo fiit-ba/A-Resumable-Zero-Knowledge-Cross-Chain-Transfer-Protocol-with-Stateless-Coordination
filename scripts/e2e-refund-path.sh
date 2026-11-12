@@ -102,7 +102,6 @@ set_finality_delays
 # ── Deposit ──────────────────────────────────────────────────────────────────
 align_chain_clocks
 perform_deposit
-SOURCE_BALANCE_LOCKED="$(query_erc20_balance "$SOURCE_RPC" "$SOURCE_TOKEN" "$DEPLOYER_ADDRESS")"
 
 # ── lock stage ──────────────────────────────────────────────────────────────
 lock_exec_block="${LOCK_EXECUTION_BLOCK:-$SOURCE_DEPOSIT_BLOCK}"
@@ -110,11 +109,14 @@ lock_exec_block="$(normalize_execution_block_tag "$lock_exec_block")"
 echo "Lock execution block: $lock_exec_block"
 wait_for_successor_execution_block "$SOURCE_RPC" "$lock_exec_block" "source-deposit"
 
+# Read only now: right after the deposit a lagging node of a load-balanced RPC can still
+# answer with the balance from before it.
+SOURCE_BALANCE_LOCKED="$(query_erc20_balance "$SOURCE_RPC" "$SOURCE_TOKEN" "$DEPLOYER_ADDRESS")"
+
 echo "Running relay-resume for lock..."
 run_relay_resume_for_action "lock" --lock-execution-block "$lock_exec_block"
 LOCK_SUBMIT_TX="$LAST_SUBMISSION_TX_HASH"
 DEST_FUNDS_RELEASED_BLOCK="$LAST_SUBMISSION_BLOCK"
-DEST_HELD_BEFORE_BURN="$(query_erc20_balance "$DEST_RPC" "$DEST_TOKEN" "$DEST_CONNECTOR")"
 
 # ── Move both chains to the ACK deadline ─────────────────────────────────────
 # Move to the deadline, not far past it, so the refund proof still falls inside the finality delay.
@@ -146,11 +148,15 @@ run_relay_resume_for_action "refund-claim" --refund-claim-execution-block "$refu
 REFUND_CLAIM_TX="$LAST_SUBMISSION_TX_HASH"
 
 # ── execute-burn stage ───────────────────────────────────────────────────────
+# Read here, long after the lock was accepted, so a lagging RPC node cannot answer with the
+# balance from before it.
+DEST_HELD_BEFORE_BURN="$(query_erc20_balance "$DEST_RPC" "$DEST_TOKEN" "$DEST_CONNECTOR")"
 echo "Running relay-resume for execute-burn..."
 run_relay_resume_for_action "execute-burn"
 EXECUTE_BURN_TX="$LAST_SUBMISSION_TX_HASH"
 DEST_BURN_EXECUTED_BLOCK="$LAST_SUBMISSION_BLOCK"
-DEST_HELD_AFTER_BURN="$(query_erc20_balance "$DEST_RPC" "$DEST_TOKEN" "$DEST_CONNECTOR")"
+DEST_HELD_AFTER_BURN="$(query_erc20_balance_until "$DEST_RPC" "$DEST_TOKEN" "$DEST_CONNECTOR" \
+    "$(( DEST_HELD_BEFORE_BURN - AMOUNT_WEI ))")"
 
 # ── burn-proof stage (may need eth_getBlockReceipts proxy) ───────────────────
 burn_proof_exec_block="${BURN_PROOF_EXECUTION_BLOCK:-$DEST_BURN_EXECUTED_BLOCK}"
@@ -170,8 +176,8 @@ run_relay_resume_for_action "burn-proof" \
 BURN_PROOF_TX="$LAST_SUBMISSION_TX_HASH"
 
 # ── Final assertions ─────────────────────────────────────────────────────────
-SOURCE_STATUS_FINAL="$(query_tx_status "$SOURCE_RPC" "$SOURCE_CONNECTOR" "$TX_ID")"
-DEST_STATUS_FINAL="$(query_tx_status "$DEST_RPC" "$DEST_CONNECTOR" "$TX_ID")"
+SOURCE_STATUS_FINAL="$(query_tx_status_until "$SOURCE_RPC" "$SOURCE_CONNECTOR" "$TX_ID" 0)"
+DEST_STATUS_FINAL="$(query_tx_status_until "$DEST_RPC" "$DEST_CONNECTOR" "$TX_ID" 0)"
 
 if [[ "$SOURCE_STATUS_FINAL" != "0" ]]; then
     echo "Source status mismatch after burn-proof: expected 0 (NONE), got $SOURCE_STATUS_FINAL" >&2; exit 1
@@ -180,7 +186,8 @@ if [[ "$DEST_STATUS_FINAL" != "0" ]]; then
     echo "Destination status mismatch after burn-proof: expected 0 (NONE), got $DEST_STATUS_FINAL" >&2; exit 1
 fi
 
-SOURCE_BALANCE_AFTER="$(query_erc20_balance "$SOURCE_RPC" "$SOURCE_TOKEN" "$DEPLOYER_ADDRESS")"
+SOURCE_BALANCE_AFTER="$(query_erc20_balance_until "$SOURCE_RPC" "$SOURCE_TOKEN" "$DEPLOYER_ADDRESS" \
+    "$(( SOURCE_BALANCE_LOCKED + AMOUNT_WEI ))")"
 if (( SOURCE_BALANCE_AFTER - SOURCE_BALANCE_LOCKED != AMOUNT_WEI )); then
     echo "Sender went $SOURCE_BALANCE_LOCKED -> $SOURCE_BALANCE_AFTER on the source, expected +$AMOUNT_WEI back" >&2; exit 1
 fi

@@ -443,6 +443,26 @@ export function isChiadoColibriTransportUnavailableError(error: unknown): boolea
 }
 
 /**
+ * Returns true when Colibri could not get a proof for a block that is only a
+ * slot or two old.
+ *
+ * Seen with Colibri 3.0.3 on Sepolia: the remote prover refuses such a block
+ * with a 500 or a 503, the library then tries to build the proof itself and
+ * reports only the last error of that attempt - a 405 from the prover host
+ * asked as a beacon API, a 5xx of one of its servers, or a debug_getRawBlock
+ * the execution RPC does not have. The same request passes about one slot
+ * later, so the caller waits and tries again.
+ *
+ * The status is searched anywhere in the text, because the library may put
+ * its own words in front of the HTTP error.
+ */
+export function isProverNotReadyError(error: unknown): boolean {
+  if (!(error instanceof Error)) return false;
+  const message = error.message;
+  return /HTTP error! Status: (405|5\d\d)/.test(message) || message.includes("debug_getRawBlock");
+}
+
+/**
  * Maps a Colibri error to a machine-readable degrade reason.
  * Returns undefined when the error does not match any known Chiado pattern.
  */
@@ -483,7 +503,7 @@ function shouldFallbackToRpcForKnownChiadoColibriIssue(error: unknown, chainId: 
 }
 
 function shouldRetryPrunedAckColibriError(error: unknown): boolean {
-  return isKnownTransientColibriError(error) || isChiadoColibriTransportUnavailableError(error);
+  return isKnownTransientColibriError(error) || isProverNotReadyError(error);
 }
 
 export function decideVerificationMode(input: VerificationPolicyInput): VerificationMode {
@@ -726,6 +746,11 @@ export async function verifyStageEventOnly(
               `${errorMessage(lastColibriError)}`,
           );
         }
+
+        // The prover needs about one more slot for a fresh block, so an immediate retry cannot pass.
+        if (isProverNotReadyError(lastColibriError)) {
+          await sleep(resolveColibriTransientRetryDelayMs());
+        }
       }
     }
 
@@ -824,6 +849,7 @@ export async function verifyStage(request: VerifyStageRequest): Promise<StageVer
   let transientSszRetryAttempts = 0;
   let chiadoSyncBackwardsWaitRetryAttempts = 0;
   let transientColibriTransportRetryAttempts = 0;
+  let proverNotReadyRetryAttempts = 0;
   let chiadoSyncBackwardsRangeRelaxed = false;
   let chiadoSyncBackwardsProverFallbackApplied = false;
   const maxTransientParentRootRetries = resolveColibriTransientRetryCount();
@@ -999,6 +1025,18 @@ export async function verifyStage(request: VerifyStageRequest): Promise<StageVer
           throw new Error(
             `[colibri] ${operationLabel}: Colibri transport unavailable (503) after ${transientColibriTransportRetryAttempts} retries — ${errorMessage(error)}`,
           );
+        }
+
+        if (
+          isProverNotReadyError(error) &&
+          proverNotReadyRetryAttempts < maxTransientParentRootRetries
+        ) {
+          proverNotReadyRetryAttempts += 1;
+          console.warn(
+            `[colibri] prover cannot prove the block yet (${operationLabel}); retry ${proverNotReadyRetryAttempts}/${maxTransientParentRootRetries}: ${errorMessage(error)}`,
+          );
+          await sleep(transientParentRootRetryDelayMs);
+          continue;
         }
 
         throw error;

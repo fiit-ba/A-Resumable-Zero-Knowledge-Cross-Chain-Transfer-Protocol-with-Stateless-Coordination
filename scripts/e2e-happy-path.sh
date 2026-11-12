@@ -23,6 +23,7 @@
 # Environment variables (all overridable; see scripts/lib/e2e-common.sh):
 #   SOURCE_NETWORK_PROFILE, DEST_NETWORK_PROFILE
 #   SOURCE_RPC, DEST_RPC, SOURCE_CHAIN_ID, DEST_CHAIN_ID, ALLOW_RPC_FALLBACK
+#   SOURCE_DEPLOY_RPC, DEST_DEPLOY_RPC (another RPC URL for the deployment only)
 #   PRIVATE_KEY, RECEIVER_ADDRESS, AMOUNT_WEI, ACK_WINDOW_SECONDS
 #   PROOF_BACKEND, RISC0_PROVER_MODE, USE_DOCKER_PROVER (alias for PROOF_BACKEND=docker)
 #   STATELESS_CLIENT_DIR, STATELESS_CLIENT_AUTO_BUILD
@@ -109,14 +110,16 @@ DEST_BALANCE_BEFORE="$(query_erc20_balance "$DEST_RPC" "$DEST_TOKEN" "$RECEIVER_
 
 perform_deposit
 
-SOURCE_BALANCE_LOCKED="$(query_erc20_balance "$SOURCE_RPC" "$SOURCE_TOKEN" "$DEPLOYER_ADDRESS")"
-echo "Balances after the deposit: source=$SOURCE_BALANCE_LOCKED receiver wrapped=$DEST_BALANCE_BEFORE"
-
 # ── lock stage ──────────────────────────────────────────────────────────────
 lock_exec_block="${LOCK_EXECUTION_BLOCK:-$SOURCE_DEPOSIT_BLOCK}"
 lock_exec_block="$(normalize_execution_block_tag "$lock_exec_block")"
 echo "Lock execution block: $lock_exec_block"
 wait_for_successor_execution_block "$SOURCE_RPC" "$lock_exec_block" "source-deposit"
+
+# Read only now: right after the deposit a lagging node of a load-balanced RPC can still
+# answer with the balance from before it.
+SOURCE_BALANCE_LOCKED="$(query_erc20_balance "$SOURCE_RPC" "$SOURCE_TOKEN" "$DEPLOYER_ADDRESS")"
+echo "Balances after the deposit: source=$SOURCE_BALANCE_LOCKED receiver wrapped=$DEST_BALANCE_BEFORE"
 
 echo "Running relay-resume for lock..."
 run_relay_resume_for_action "lock" --lock-execution-block "$lock_exec_block"
@@ -146,8 +149,8 @@ ACK_SUBMIT_TX="$LAST_SUBMISSION_TX_HASH"
 
 # ── Final assertions ─────────────────────────────────────────────────────────
 # submitMintProof deletes the source record and submitAckProof the destination record.
-SOURCE_STATUS_FINAL="$(query_tx_status "$SOURCE_RPC" "$SOURCE_CONNECTOR" "$TX_ID")"
-DEST_STATUS_FINAL="$(query_tx_status "$DEST_RPC" "$DEST_CONNECTOR" "$TX_ID")"
+SOURCE_STATUS_FINAL="$(query_tx_status_until "$SOURCE_RPC" "$SOURCE_CONNECTOR" "$TX_ID" 0)"
+DEST_STATUS_FINAL="$(query_tx_status_until "$DEST_RPC" "$DEST_CONNECTOR" "$TX_ID" 0)"
 if [[ "$SOURCE_STATUS_FINAL" != "0" ]]; then
     echo "Source status mismatch after ack: expected 0 (NONE), got $SOURCE_STATUS_FINAL" >&2; exit 1
 fi
@@ -155,8 +158,10 @@ if [[ "$DEST_STATUS_FINAL" != "0" ]]; then
     echo "Destination status mismatch after ack: expected 0 (NONE), got $DEST_STATUS_FINAL" >&2; exit 1
 fi
 
-SOURCE_BALANCE_AFTER="$(query_erc20_balance "$SOURCE_RPC" "$SOURCE_TOKEN" "$DEPLOYER_ADDRESS")"
-DEST_BALANCE_AFTER="$(query_erc20_balance "$DEST_RPC" "$DEST_TOKEN" "$RECEIVER_ADDRESS")"
+SOURCE_BALANCE_AFTER="$(query_erc20_balance_until "$SOURCE_RPC" "$SOURCE_TOKEN" "$DEPLOYER_ADDRESS" \
+    "$SOURCE_BALANCE_LOCKED")"
+DEST_BALANCE_AFTER="$(query_erc20_balance_until "$DEST_RPC" "$DEST_TOKEN" "$RECEIVER_ADDRESS" \
+    "$(( DEST_BALANCE_BEFORE + AMOUNT_WEI ))")"
 if [[ "$SOURCE_BALANCE_AFTER" != "$SOURCE_BALANCE_LOCKED" ]]; then
     echo "Source balance changed after the deposit: $SOURCE_BALANCE_LOCKED -> $SOURCE_BALANCE_AFTER" >&2; exit 1
 fi

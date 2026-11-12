@@ -7,9 +7,13 @@ use lock_proof_methods::{LOCK_PROOF_GUEST_ELF, LOCK_PROOF_GUEST_ID};
 use risc0_ethereum_contracts::encode_seal;
 use risc0_steel::{ethereum::EthEvmEnv, host::BlockNumberOrTag, Contract, Event};
 use risc0_zkvm::{default_prover, sha::Digestible, Digest, ExecutorEnv, Prover, ProverOpts};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 use tracing_subscriber::EnvFilter;
 use url::Url;
+
+/// Attempts to read the connector state at the newest block, and the pause between them.
+const STATE_READ_ATTEMPTS: u32 = 8;
+const STATE_READ_RETRY_DELAY: Duration = Duration::from_secs(6);
 
 #[derive(Parser, Debug)]
 #[command(about = "Generate trustless RISC Zero lock proof from DepositLocked event")]
@@ -85,12 +89,27 @@ async fn main() -> Result<()> {
         .await
         .context("failed to build state EthEvmEnv")?;
 
-    let mut connector = Contract::preflight(args.connector, &mut state_env);
-    let tx_snapshot = connector
-        .call_builder(&IConnector::getTxCall { _txId: args.tx_id })
-        .call()
-        .await
-        .context("getTx preflight failed")?;
+    // Some RPC providers answer "block not found" for the newest block until the next one
+    // arrives, so the read is repeated on the same block.
+    let mut attempt = 1;
+    let tx_snapshot = loop {
+        let mut connector = Contract::preflight(args.connector, &mut state_env);
+        let read = connector
+            .call_builder(&IConnector::getTxCall { _txId: args.tx_id })
+            .call()
+            .await;
+        match read {
+            Ok(tx_snapshot) => break tx_snapshot,
+            Err(error) if attempt < STATE_READ_ATTEMPTS => {
+                eprintln!(
+                    "getTx preflight failed (attempt {attempt}/{STATE_READ_ATTEMPTS}), retrying: {error:#}"
+                );
+                attempt += 1;
+                tokio::time::sleep(STATE_READ_RETRY_DELAY).await;
+            }
+            Err(error) => return Err(error).context("getTx preflight failed"),
+        }
+    };
     ensure!(
         tx_snapshot.txId == args.tx_id,
         "getTx returned unexpected txId"

@@ -58,11 +58,14 @@ set_finality_delays
 # ── Deposit, never relayed ───────────────────────────────────────────────────
 align_chain_clocks
 perform_deposit
-SOURCE_BALANCE_LOCKED="$(query_erc20_balance "$SOURCE_RPC" "$SOURCE_TOKEN" "$DEPLOYER_ADDRESS")"
 
 # Move to the deadline, not far past it, so the refund proof still falls inside the finality delay.
 echo "Ack deadline: $ACK_DEADLINE — moving both chains to it..."
 warp_both_chains_past "$ACK_DEADLINE"
+
+# Read only now: right after the deposit a lagging node of a load-balanced RPC can still
+# answer with the balance from before it.
+SOURCE_BALANCE_LOCKED="$(query_erc20_balance "$SOURCE_RPC" "$SOURCE_TOKEN" "$DEPLOYER_ADDRESS")"
 
 # ── refund-initiate stage ────────────────────────────────────────────────────
 echo "Running relay-resume for refund-initiate..."
@@ -83,8 +86,8 @@ run_relay_resume_for_action "non-accept-proof"
 NON_ACCEPT_TX="$LAST_SUBMISSION_TX_HASH"
 
 # ── Final assertions ─────────────────────────────────────────────────────────
-SOURCE_STATUS_FINAL="$(query_tx_status "$SOURCE_RPC" "$SOURCE_CONNECTOR" "$TX_ID")"
-DEST_STATUS_FINAL="$(query_tx_status "$DEST_RPC" "$DEST_CONNECTOR" "$TX_ID")"
+SOURCE_STATUS_FINAL="$(query_tx_status_until "$SOURCE_RPC" "$SOURCE_CONNECTOR" "$TX_ID" 0)"
+DEST_STATUS_FINAL="$(query_tx_status_until "$DEST_RPC" "$DEST_CONNECTOR" "$TX_ID" 0)"
 if [[ "$SOURCE_STATUS_FINAL" != "0" ]]; then
     echo "Source status mismatch after the refund: expected 0 (NONE), got $SOURCE_STATUS_FINAL" >&2; exit 1
 fi
@@ -92,7 +95,8 @@ if [[ "$DEST_STATUS_FINAL" != "0" ]]; then
     echo "Destination status mismatch: expected 0 (NONE), got $DEST_STATUS_FINAL" >&2; exit 1
 fi
 
-SOURCE_BALANCE_AFTER="$(query_erc20_balance "$SOURCE_RPC" "$SOURCE_TOKEN" "$DEPLOYER_ADDRESS")"
+SOURCE_BALANCE_AFTER="$(query_erc20_balance_until "$SOURCE_RPC" "$SOURCE_TOKEN" "$DEPLOYER_ADDRESS" \
+    "$(( SOURCE_BALANCE_LOCKED + AMOUNT_WEI ))")"
 if (( SOURCE_BALANCE_AFTER - SOURCE_BALANCE_LOCKED != AMOUNT_WEI )); then
     echo "Sender went $SOURCE_BALANCE_LOCKED -> $SOURCE_BALANCE_AFTER on the source, expected +$AMOUNT_WEI back" >&2; exit 1
 fi
