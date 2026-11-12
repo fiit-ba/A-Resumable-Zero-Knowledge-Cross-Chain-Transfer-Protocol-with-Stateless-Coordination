@@ -68,15 +68,15 @@ SNARK_ADAPTER_DEST   ?=
 WRAPPED_TOKEN_FACTORY_SOURCE ?=
 WRAPPED_TOKEN_FACTORY_DEST   ?=
 
-# Default guest image IDs from reproducible builds (RISC0_GUEST_USE_DOCKER=1). The non-accept
-# guest does not build that way yet (its Cargo.lock needs rustc 1.91), so its ID is not updated.
+# Default guest image IDs from reproducible builds (RISC0_GUEST_USE_DOCKER=1), made with the
+# builder image that each methods/build.rs pins.
 BYTES32_ZERO                ?= 0x0000000000000000000000000000000000000000000000000000000000000000
-ORIGIN_MINT_IMAGE_ID        ?= 0xab996f9daf19357f4b600aa9d3064ce9f7fbfce25ccd517166ee9aa7cc737117
-ORIGIN_BURN_IMAGE_ID        ?= 0x0f9d5cfdfa8c517bf93c27c4160239f7a37f7ddcba2d5cba0e31c6f4e36d2624
-DEST_LOCK_IMAGE_ID          ?= 0x7218dd133e965a2c5716cf6fd3cd6dbfe26b1556c60cbc829f2bf7a298293830
-DEST_ACK_IMAGE_ID           ?= 0x51aa22fa909a0a200d0179ba02e619611a0fa46d0204626ad9d04405eca2ee80
-DEST_REFUND_CLAIM_IMAGE_ID  ?= 0x2d795f94202f5d2ce8eacde2d23d9f0881495ee17d542edaf76e21aaaba097de
-ORIGIN_NON_ACCEPT_IMAGE_ID 		?= 0x7b607ff01e6bcee8e429186596090ab4aa83954b883f9e14e8efdfbf6fea3742
+ORIGIN_MINT_IMAGE_ID        ?= 0xd721009d4dfe0a303bbf383d1235813d245a65ff715548cb91b824398bbc43a4
+ORIGIN_BURN_IMAGE_ID        ?= 0x5980b68be179e256be0bd8552af5fb5efa1a864e77cd07a689c233f4116fc79c
+DEST_LOCK_IMAGE_ID          ?= 0xd7bd3109f16ba8cc9c9a358492ed7928ba431ab5394d5dea9bbb6b13b16d9bab
+DEST_ACK_IMAGE_ID           ?= 0xc28966b6cfb8e363757ec98498b64d039fe9354385b8ff0f092b7a20acf07f95
+DEST_REFUND_CLAIM_IMAGE_ID  ?= 0xc393471fcdc9dd83035a6fb544ff6299f1c33b1777d0fa96b80ba78f433a95b4
+ORIGIN_NON_ACCEPT_IMAGE_ID  ?= 0x26bde82921f71b99d75c141864faae4f00228c5718e742d23afb8f0525c9ffd2
 
 # By default source connector enables origin routes; destination connector enables dest routes.
 ORIGIN_MINT_IMAGE_ID_SOURCE       ?= $(ORIGIN_MINT_IMAGE_ID)

@@ -1,8 +1,7 @@
 use alloy_primitives::{Address, B256, U256, keccak256};
 use alloy_sol_types::{SolEvent, SolValue, sol};
 use risc0_steel::ethereum::{
-    ETH_HOLESKY_CHAIN_SPEC, ETH_MAINNET_CHAIN_SPEC, ETH_SEPOLIA_CHAIN_SPEC, EthChainSpec,
-    EthEvmInput,
+    ETH_MAINNET_CHAIN_SPEC, ETH_SEPOLIA_CHAIN_SPEC, EthChainSpec, EthEvmInput,
 };
 use serde::{Deserialize, Serialize};
 use std::sync::LazyLock;
@@ -177,7 +176,6 @@ pub fn chain_spec_from_id(chain_id: u64) -> Option<&'static EthChainSpec> {
         100 => Some(&GNOSIS_CHAIN_SPEC),
         10200 => Some(&CHIADO_CHAIN_SPEC),
         11155111 => Some(&ETH_SEPOLIA_CHAIN_SPEC),
-        17000 => Some(&ETH_HOLESKY_CHAIN_SPEC),
         31337 => Some(&ANVIL_CHAIN_SPEC),
         31338 => Some(&HARDHAT_CHAIN_SPEC),
         // Any other chain gets the same mainnet fork rules. The spec is leaked to get a

@@ -13,7 +13,7 @@ lock-proof-core = { workspace = true }
 lock-proof-methods = { workspace = true }
 log = { workspace = true }
 risc0-ethereum-contracts = { workspace = true }
-risc0-steel = { workspace = true, features = ["host"] }
+risc0-steel = { workspace = true, features = ["host", "reqwest-native-tls"] }
 risc0-zkvm = { workspace = true, features = ["prove"] }
 tokio = { workspace = true }
 tracing-subscriber = { workspace = true }
