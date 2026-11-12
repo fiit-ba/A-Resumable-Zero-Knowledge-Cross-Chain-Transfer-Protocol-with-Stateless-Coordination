@@ -273,8 +273,11 @@ apply_network_profile_defaults() {
             default_chain="10200"
             default_rpc="https://gnosis-chiado-rpc.publicnode.com"
             default_prover="https://chiado.colibri-proof.tech"
-            default_beacon="${COLIBRI_CHIADO_PARENT_ROOT_BEACON_FALLBACK_URL},https://gnosis-chiado-beacon-api.publicnode.com"
-            default_checkpointz="${COLIBRI_CHIADO_PARENT_ROOT_BEACON_FALLBACK_URL},https://gnosis-chiado-beacon-api.publicnode.com" ;;
+            # The public node goes first: rpc-gbc.chiadochain.net can report a finalized checkpoint
+            # more than a day old, and a proof that starts from it fails with
+            # "no LCU covers the bootstrap period".
+            default_beacon="https://gnosis-chiado-beacon-api.publicnode.com,${COLIBRI_CHIADO_PARENT_ROOT_BEACON_FALLBACK_URL}"
+            default_checkpointz="https://gnosis-chiado-beacon-api.publicnode.com,${COLIBRI_CHIADO_PARENT_ROOT_BEACON_FALLBACK_URL}" ;;
         custom)
             # Any other network: there are no defaults, the chain id and RPC must be given
             # (options or the *_CHAIN_ID and *_RPC environment variables).
