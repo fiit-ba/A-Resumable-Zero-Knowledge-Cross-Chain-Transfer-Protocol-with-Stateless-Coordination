@@ -1,5 +1,9 @@
 import { describe, expect, it } from "vitest";
-import { defaultProofPaths, resolveRelayConfig } from "../../src/config/config.js";
+import {
+  defaultProofPaths,
+  resolveRelayConfig,
+  resolveVerificationConfig,
+} from "../../src/config/config.js";
 
 const BASE_OPTIONS = {
   "tx-id": "0x" + "ab".repeat(32),
@@ -80,5 +84,62 @@ describe("resolveRelayConfig", () => {
     expect(() =>
       resolveRelayConfig({ ...BASE_OPTIONS, "destination-rpc-url": "http://127.0.0.1:9999" }),
     ).toThrow(/No destination chain id configured/);
+  });
+});
+
+describe("resolveRelayConfig with --allow-rpc-fallback", () => {
+  const CUSTOM_SOURCE = {
+    ...BASE_OPTIONS,
+    "source-profile": "custom",
+    "source-chain-id": "167013",
+    "source-rpc-url": "https://rpc.hoodi.taiko.xyz",
+    "destination-profile": "sepolia",
+  };
+
+  it("leaves the RPC fallback off unless the flag is given", () => {
+    expect(resolveRelayConfig(CUSTOM_SOURCE).source.rpcFallback).toBe(false);
+  });
+
+  it("allows the RPC fallback only on the custom side", () => {
+    const config = resolveRelayConfig({ ...CUSTOM_SOURCE, "allow-rpc-fallback": true });
+
+    expect(config.source.rpcFallback).toBe(true);
+    expect(config.destination.rpcFallback).toBe(false);
+  });
+
+  it("allows the RPC fallback on both sides when both are custom", () => {
+    const config = resolveRelayConfig({
+      ...CUSTOM_SOURCE,
+      "destination-profile": "custom",
+      "destination-chain-id": "59141",
+      "destination-rpc-url": "https://rpc.sepolia.linea.build",
+      "allow-rpc-fallback": true,
+    });
+
+    expect(config.source.rpcFallback).toBe(true);
+    expect(config.destination.rpcFallback).toBe(true);
+  });
+
+  it("reads the flag for verify-stage too", () => {
+    const config = resolveVerificationConfig({ ...CUSTOM_SOURCE, "allow-rpc-fallback": true });
+
+    expect(config.source.rpcFallback).toBe(true);
+  });
+
+  it("accepts the flag written with a value", () => {
+    for (const value of ["true", "TRUE", "1"]) {
+      const config = resolveRelayConfig({ ...CUSTOM_SOURCE, "allow-rpc-fallback": value });
+      expect(config.source.rpcFallback).toBe(true);
+    }
+    for (const value of ["false", "0"]) {
+      const config = resolveRelayConfig({ ...CUSTOM_SOURCE, "allow-rpc-fallback": value });
+      expect(config.source.rpcFallback).toBe(false);
+    }
+  });
+
+  it("refuses a flag value it cannot read instead of leaving the fallback off", () => {
+    expect(() => resolveRelayConfig({ ...CUSTOM_SOURCE, "allow-rpc-fallback": "yes" })).toThrow(
+      "Invalid value 'yes' for --allow-rpc-fallback. Expected no value, true or false.",
+    );
   });
 });

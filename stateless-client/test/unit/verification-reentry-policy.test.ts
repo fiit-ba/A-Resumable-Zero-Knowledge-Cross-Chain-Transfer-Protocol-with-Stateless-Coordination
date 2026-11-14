@@ -219,6 +219,19 @@ describe("deriveVerificationPolicyForStage", () => {
     expect(policy.retryColibriFromScratch).toBe(false);
   });
 
+  it("does not force retry-from-scratch after a custom network was read through RPC", () => {
+    const config = baseConfig(DEST_NON_LOCAL);
+    config.source = {
+      ...SOURCE_NON_LOCAL,
+      profileName: "custom",
+      chainId: 167013,
+      rpcFallback: true,
+    };
+
+    const policy = deriveVerificationPolicyForStage(config, "destination-funds-released");
+    expect(policy.retryColibriFromScratch).toBe(false);
+  });
+
   it("uses the same pruned-ack predicate for status 0/3", () => {
     expect(shouldUsePrunedAckVerification(0, 3)).toBe(true);
     expect(shouldUsePrunedAckVerification(2, 3)).toBe(false);

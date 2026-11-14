@@ -1,5 +1,5 @@
 import { eventTopic } from "../contracts/abi.js";
-import { normalizeBytes32 } from "../core/utils.js";
+import { normalizeBytes32, resolveLogLookbackBlocks } from "../core/utils.js";
 import { TxStatus } from "../core/types.js";
 import type {
   HistoryFlags,
@@ -9,8 +9,6 @@ import type {
   StageSubmissionConfig,
 } from "../core/types.js";
 import { connectorReaders, type ConnectorReader } from "./endpoints.js";
-
-const PLANNER_LOG_LOOKBACK_BLOCKS = 50_000;
 
 /** The subset of a relay config the planner needs: no signer, proofs, or paths. */
 export type ResumePlanConfig = Pick<
@@ -34,7 +32,7 @@ async function hasRecentEvent(
   txId: string,
 ): Promise<boolean> {
   const latestBlock = await reader.provider.getBlockNumber();
-  const fromBlock = Math.max(0, latestBlock - PLANNER_LOG_LOOKBACK_BLOCKS + 1);
+  const fromBlock = Math.max(0, latestBlock - resolveLogLookbackBlocks() + 1);
   const logs = await reader.provider.getLogs({
     address: reader.address,
     topics: [eventTopic(eventName), txId],

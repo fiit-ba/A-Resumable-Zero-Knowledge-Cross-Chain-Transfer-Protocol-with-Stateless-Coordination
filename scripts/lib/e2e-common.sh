@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # scripts/lib/e2e-common.sh
 #
-# Shared library sourced by e2e-happy-path.sh, e2e-refund-path.sh and e2e-non-accept-path.sh.
+# Shared library sourced by e2e-happy-path.sh, e2e-refund-path.sh, e2e-non-accept-path.sh and
+# e2e-finality-delays.sh.
 # Do NOT execute this file directly.
 #
 # After sourcing, call:
@@ -10,7 +11,8 @@
 #   e2e_validate_prerequisites    -- check commands, key, chain connectivity
 #   ensure_stateless_client_ready -- install and build the relay client
 #   deploy_contracts              -- `make deploy-prod-full` on both chains
-#   set_finality_delays           -- connector finality delays (local chains only)
+#   set_finality_delays           -- connector finality delays (set on local chains; checked on
+#                                    reused contracts elsewhere, see e2e-finality-delays.sh)
 #   perform_deposit               -- mint, approve and depositAndLock; sets TX_ID
 #
 # Every relay stage runs through `stateless-client relay-resume`. Proof backends:
@@ -43,8 +45,15 @@ SOURCE_NETWORK_PROFILE="${SOURCE_NETWORK_PROFILE:-local-anvil}"
 DEST_NETWORK_PROFILE="${DEST_NETWORK_PROFILE:-local-hardhat}"
 SOURCE_RPC="${SOURCE_RPC:-}"
 DEST_RPC="${DEST_RPC:-}"
+# Optional other RPC URL for the deployment only. A load-balanced RPC can name a newest block
+# that its next node does not have yet, and forge then stops with "block not found".
+SOURCE_DEPLOY_RPC="${SOURCE_DEPLOY_RPC:-}"
+DEST_DEPLOY_RPC="${DEST_DEPLOY_RPC:-}"
 SOURCE_CHAIN_ID="${SOURCE_CHAIN_ID:-}"
 DEST_CHAIN_ID="${DEST_CHAIN_ID:-}"
+# 1 lets a network that Colibri does not support be verified through plain RPC (the client's
+# --allow-rpc-fallback); such verifications are marked degraded.
+ALLOW_RPC_FALLBACK="${ALLOW_RPC_FALLBACK:-0}"
 
 PRIVATE_KEY="${PRIVATE_KEY:-}"
 ACK_WINDOW_SECONDS="${ACK_WINDOW_SECONDS:-3600}"
@@ -76,6 +85,8 @@ STATELESS_CLIENT_RELAY_RETRIES="${STATELESS_CLIENT_RELAY_RETRIES:-6}"
 STATELESS_CLIENT_RELAY_RETRY_DELAY_SEC="${STATELESS_CLIENT_RELAY_RETRY_DELAY_SEC:-12}"
 STATELESS_CLIENT_SUCCESSOR_BLOCK_WAIT_ATTEMPTS="${STATELESS_CLIENT_SUCCESSOR_BLOCK_WAIT_ATTEMPTS:-45}"
 STATELESS_CLIENT_SUCCESSOR_BLOCK_WAIT_INTERVAL_SEC="${STATELESS_CLIENT_SUCCESSOR_BLOCK_WAIT_INTERVAL_SEC:-2}"
+# How many blocks back from the head the client searches for events. A public RPC that caps the
+# block range of eth_getLogs below this needs a lower value (10000 fits most of them).
 STATELESS_CLIENT_LOG_LOOKBACK_BLOCKS="${STATELESS_CLIENT_LOG_LOOKBACK_BLOCKS:-50000}"
 STATELESS_CLIENT_CHIADO_SYNC_BACKWARDS_RPC_FALLBACK="${STATELESS_CLIENT_CHIADO_SYNC_BACKWARDS_RPC_FALLBACK:-}"
 
@@ -111,8 +122,16 @@ BURN_PROOF_PROXY_PORT="${BURN_PROOF_PROXY_PORT:-18546}"
 PROXY_SCRIPT="${PROXY_SCRIPT:-$ROOT_DIR/scripts/lib/hardhat-block-receipts-proxy.mjs}"
 
 # Connector admin changes (finality delays) wait out a 48 h timelock; on local chains the
-# scripts warp past it.
+# scripts warp past it, on any other chain e2e-finality-delays.sh waits it out in two steps.
 ADMIN_TIMELOCK_SECONDS=172801
+# A proposed change can be applied for 7 days after its timelock, then it expires.
+ADMIN_APPLY_WINDOW_SECONDS=604800
+# On a chain that cannot warp, the refund flows wait for real time and poll the latest block
+# every this many seconds.
+REAL_TIME_POLL_SECONDS="${REAL_TIME_POLL_SECONDS:-30}"
+# While waiting, a failed read of the block time is tried again; after this many failures in a
+# row the flow stops.
+CHAIN_TIME_READ_ATTEMPTS="${CHAIN_TIME_READ_ATTEMPTS:-10}"
 
 # Proof workspace -> deploy-prod-full image-ID variable for the route that workspace proves.
 IMAGE_ID_VARIABLES=(
@@ -152,6 +171,8 @@ e2e_parse_args() {
                 SOURCE_CHAIN_ID="$2"; shift 2 ;;
             --destination-chain-id|--dest-chain-id)
                 DEST_CHAIN_ID="$2"; shift 2 ;;
+            --allow-rpc-fallback)
+                ALLOW_RPC_FALLBACK=1; shift ;;
             --private-key)
                 PRIVATE_KEY="$2"; shift 2 ;;
             --amount)
@@ -252,11 +273,21 @@ apply_network_profile_defaults() {
             default_chain="10200"
             default_rpc="https://gnosis-chiado-rpc.publicnode.com"
             default_prover="https://chiado.colibri-proof.tech"
-            default_beacon="${COLIBRI_CHIADO_PARENT_ROOT_BEACON_FALLBACK_URL},https://gnosis-chiado-beacon-api.publicnode.com"
-            default_checkpointz="${COLIBRI_CHIADO_PARENT_ROOT_BEACON_FALLBACK_URL},https://gnosis-chiado-beacon-api.publicnode.com" ;;
+            # The public node goes first: rpc-gbc.chiadochain.net can report a finalized checkpoint
+            # more than a day old, and a proof that starts from it fails with
+            # "no LCU covers the bootstrap period".
+            default_beacon="https://gnosis-chiado-beacon-api.publicnode.com,${COLIBRI_CHIADO_PARENT_ROOT_BEACON_FALLBACK_URL}"
+            default_checkpointz="https://gnosis-chiado-beacon-api.publicnode.com,${COLIBRI_CHIADO_PARENT_ROOT_BEACON_FALLBACK_URL}" ;;
+        custom)
+            # Any other network: there are no defaults, the chain id and RPC must be given
+            # (options or the *_CHAIN_ID and *_RPC environment variables).
+            if [[ -z "${!chain_var}" || -z "${!rpc_var}" ]]; then
+                echo "The custom ${side} profile needs --${side}-chain-id and --${side}-rpc-url." >&2
+                exit 1
+            fi ;;
         *)
             echo "Unsupported ${side} network profile: $profile" >&2
-            echo "Supported profiles: local-anvil, local-hardhat, mainnet, sepolia, holesky, hoodi, gnosis, chiado" >&2
+            echo "Supported profiles: local-anvil, local-hardhat, mainnet, sepolia, holesky, hoodi, gnosis, chiado, custom" >&2
             exit 1 ;;
     esac
 
@@ -343,7 +374,48 @@ ensure_risc0_r0vm_available() {
     echo "Warning: r0vm not found in PATH; ImageID computation may be slow." >&2
 }
 
+# Stop before anything is deployed when a side is a public network Colibri cannot verify (a
+# custom one, Holesky or Hoodi) and --allow-rpc-fallback is missing: the client would stop at the
+# first stage. A local chain and a network Colibri supports need no flag, the client keeps its
+# own checks for them.
+require_rpc_fallback_flag() {
+    local side="$1" profile="$2" chain_id="$3" rpc_url="$4"
+    [[ "$ALLOW_RPC_FALLBACK" == "1" ]] && return 0
+    [[ "$(profile_time_warp_method "$profile")" != "none" ]] && return 0
+    [[ "$rpc_url" =~ ^https?://(127\.0\.0\.1|localhost)(:|/|$) ]] && return 0
+    case "$chain_id" in
+        1|100|10200|31337|31338|11155111) return 0 ;;
+    esac
+    echo "ERROR: Colibri does not support the $side network (chain $chain_id)." >&2
+    echo "Pass --allow-rpc-fallback to verify it through plain RPC; its stages are marked degraded." >&2
+    exit 1
+}
+
+# deploy-prod-full always deploys both sides, so reusing either side reuses both.
+reuses_deployments() {
+    [[ "$REUSE_SOURCE_DEPLOYMENTS" == "1" || "$REUSE_DEST_DEPLOYMENTS" == "1" ]]
+}
+
+# A finality delay waits out a 48 h timelock that only local chains can warp past. On any other
+# chain it must already be applied on reused contracts: stop before anything is deployed.
+require_reuse_for_finality_delays() {
+    [[ "$SOURCE_FINALITY_DELAY" == "0" && "$DEST_FINALITY_DELAY" == "0" ]] && return 0
+    if [[ "$(profile_time_warp_method "$SOURCE_NETWORK_PROFILE")" != "none" \
+        && "$(profile_time_warp_method "$DEST_NETWORK_PROFILE")" != "none" ]]; then
+        return 0
+    fi
+    if ! reuses_deployments; then
+        echo "ERROR: Finality delays wait out a 48 h timelock that only local chains can warp past." >&2
+        echo "Deploy, run scripts/e2e-finality-delays.sh propose and, 48 h later, apply; then run" >&2
+        echo "this flow on those contracts (--source-connector, --destination-connector, EXISTING_* tokens)." >&2
+        exit 1
+    fi
+}
+
 e2e_validate_prerequisites() {
+    require_rpc_fallback_flag "source" "$SOURCE_NETWORK_PROFILE" "$SOURCE_CHAIN_ID" "$SOURCE_RPC"
+    require_rpc_fallback_flag "destination" "$DEST_NETWORK_PROFILE" "$DEST_CHAIN_ID" "$DEST_RPC"
+
     require_cmd cast
     require_cmd forge
     require_cmd awk
@@ -406,18 +478,15 @@ require_test_backend_setup() {
     fi
 }
 
-# Refund flows warp time, so both profiles must be local chains.
-assert_time_warp_capable() {
+# Refund flows move both clocks: a local chain warps, any other chain is waited for in real time.
+announce_time_movement() {
     local src_method dest_method
     src_method="$(profile_time_warp_method "$SOURCE_NETWORK_PROFILE")"
     dest_method="$(profile_time_warp_method "$DEST_NETWORK_PROFILE")"
 
     if [[ "$src_method" == "none" || "$dest_method" == "none" ]]; then
-        echo "ERROR: This flow requires local time-warp support on both chains." >&2
-        echo "  source profile '$SOURCE_NETWORK_PROFILE' -> time-warp: $src_method" >&2
-        echo "  dest profile '$DEST_NETWORK_PROFILE' -> time-warp: $dest_method" >&2
-        echo "Use local-anvil or local-hardhat for both profiles." >&2
-        exit 1
+        echo "Profiles '$SOURCE_NETWORK_PROFILE' -> '$DEST_NETWORK_PROFILE' cannot both warp time:"
+        echo "this flow waits for real time (the ack window and any finality delay)."
     fi
 }
 
@@ -506,7 +575,11 @@ ensure_block_receipts_available() {
 send_tx_async() {
     local rpc_url="$1"; shift
     local output tx_hash
-    output="$(cast send --async "$@" --rpc-url "$rpc_url" --private-key "$PRIVATE_KEY" 2>&1)"
+    # A call that reverts already fails here, and its revert data must not be read as a tx hash.
+    if ! output="$(cast send --async "$@" --rpc-url "$rpc_url" --private-key "$PRIVATE_KEY" 2>&1)"; then
+        echo "cast send failed on $rpc_url:" >&2
+        echo "$output" >&2; exit 1
+    fi
     tx_hash="$(printf '%s\n' "$output" | sed -n 's/.*\(0x[0-9a-fA-F]\{64\}\).*/\1/p' | tail -n1)"
     if [[ -z "$tx_hash" ]]; then
         echo "Failed to parse tx hash from cast send output." >&2
@@ -594,6 +667,32 @@ query_erc20_balance() {
     cast --to-dec "$raw_balance"
 }
 
+# Right after a transaction a lagging node of a load-balanced RPC can still answer with the
+# state from before it, so one read can fail a flow that succeeded on chain. These two read
+# again until the expected value is seen and print the last value read (`unknown` when that
+# read failed, so a failed read never looks like a real value).
+query_tx_status_until() {
+    local rpc_url="$1" connector="$2" tx_id="$3" expected="$4"
+    local attempts=10 attempt status
+    for ((attempt = 1; attempt <= attempts; attempt++)); do
+        status="$(query_tx_status "$rpc_url" "$connector" "$tx_id")" || status="unknown"
+        if [[ "$status" == "$expected" ]]; then break; fi
+        sleep "$TX_RECEIPT_WAIT_INTERVAL_SEC"
+    done
+    printf '%s' "$status"
+}
+
+query_erc20_balance_until() {
+    local rpc_url="$1" token="$2" account="$3" expected="$4"
+    local attempts=10 attempt balance
+    for ((attempt = 1; attempt <= attempts; attempt++)); do
+        balance="$(query_erc20_balance "$rpc_url" "$token" "$account")" || balance="unknown"
+        if [[ "$balance" == "$expected" ]]; then break; fi
+        sleep "$TX_RECEIPT_WAIT_INTERVAL_SEC"
+    done
+    printf '%s' "$balance"
+}
+
 # ── Time-warp helpers ────────────────────────────────────────────────────────
 get_chain_timestamp() {
     local rpc_url="$1"
@@ -632,28 +731,55 @@ warp_time_hardhat() {
     echo "Warped Hardhat time to $new_timestamp."
 }
 
-# Warp both chains past the given Unix timestamp using per-profile method.
+# The time-warp method of the chain behind an RPC URL, from the source or destination profile.
+time_warp_method_of() {
+    if [[ "$1" == "$SOURCE_RPC" ]]; then
+        profile_time_warp_method "$SOURCE_NETWORK_PROFILE"
+    else
+        profile_time_warp_method "$DEST_NETWORK_PROFILE"
+    fi
+}
+
+# Wait until a chain that cannot warp has a block later than the given Unix timestamp. A read of
+# the block time that fails is tried again and never taken for a time; after
+# CHAIN_TIME_READ_ATTEMPTS failures in a row the flow stops.
+wait_for_chain_time() {
+    local rpc_url="$1" target_timestamp="$2" now failed_reads=0
+    while true; do
+        now="$(get_chain_timestamp "$rpc_url" || true)"
+        if [[ "$now" =~ ^[1-9][0-9]*$ ]]; then
+            failed_reads=0
+            if (( now > target_timestamp )); then break; fi
+            echo "Waiting for $rpc_url to pass timestamp $target_timestamp ($(( target_timestamp - now ))s left)..."
+        else
+            failed_reads=$(( failed_reads + 1 ))
+            if (( failed_reads >= CHAIN_TIME_READ_ATTEMPTS )); then
+                echo "ERROR: Could not read the latest block time from $rpc_url $failed_reads times in a row." >&2
+                exit 1
+            fi
+            echo "Could not read the latest block time from $rpc_url; trying again ($failed_reads/$CHAIN_TIME_READ_ATTEMPTS)..."
+        fi
+        sleep "$REAL_TIME_POLL_SECONDS"
+    done
+    echo "Chain at $rpc_url is at timestamp $now, past $target_timestamp."
+}
+
+# Move one chain to the given Unix timestamp: a local chain warps, any other chain is waited for.
+move_chain_past() {
+    local rpc_url="$1" target_timestamp="$2"
+    case "$(time_warp_method_of "$rpc_url")" in
+        anvil)   warp_time_anvil   "$rpc_url" "$target_timestamp" ;;
+        hardhat) warp_time_hardhat "$rpc_url" "$target_timestamp" ;;
+        *)       wait_for_chain_time "$rpc_url" "$target_timestamp" ;;
+    esac
+}
+
+# Move both chains past the given Unix timestamp.
 warp_both_chains_past() {
     local target_timestamp="$1"
-    local src_method dest_method
-    src_method="$(profile_time_warp_method "$SOURCE_NETWORK_PROFILE")"
-    dest_method="$(profile_time_warp_method "$DEST_NETWORK_PROFILE")"
-
-    if [[ "$src_method" == "none" || "$dest_method" == "none" ]]; then
-        echo "ERROR: Time-warp is not supported for profile pair '$SOURCE_NETWORK_PROFILE' -> '$DEST_NETWORK_PROFILE'." >&2
-        echo "This flow requires local chain profiles that support evm_setNextBlockTimestamp." >&2
-        exit 1
-    fi
-
-    echo "Warping both chains past timestamp $target_timestamp..."
-    case "$src_method" in
-        anvil)   warp_time_anvil   "$SOURCE_RPC" "$target_timestamp" ;;
-        hardhat) warp_time_hardhat "$SOURCE_RPC" "$target_timestamp" ;;
-    esac
-    case "$dest_method" in
-        anvil)   warp_time_anvil   "$DEST_RPC" "$target_timestamp" ;;
-        hardhat) warp_time_hardhat "$DEST_RPC" "$target_timestamp" ;;
-    esac
+    echo "Moving both chains past timestamp $target_timestamp..."
+    move_chain_past "$SOURCE_RPC" "$target_timestamp"
+    move_chain_past "$DEST_RPC" "$target_timestamp"
 }
 
 # Move one local chain's clock forward by a number of seconds (Anvil and Hardhat alike).
@@ -752,7 +878,12 @@ run_stateless_client_cli_with_retry() {
             || "$output" == *"has not been signed yet and cannot be verified"* \
             || "$output" == *"requested block has not been signed yet"* \
             || "$output" == *"Invalid offset for container"* \
-            || "$output" == *"Invalid SSZ structure in bootstrap data"* ]]; then
+            || "$output" == *"Invalid SSZ structure in bootstrap data"* \
+            || "$output" == *"no LCU covers the bootstrap period"* \
+            || "$output" == *"HTTP error 429"* \
+            || "$output" == *"Too Many Requests"* \
+            || "$output" == *"request timeout"* \
+            || "$output" == *"block not found"* ]]; then
             if [[ "$attempt" -lt "$max_retries" ]]; then
                 attempt=$((attempt+1))
                 echo "stateless-client $command hit transient error. Retrying in ${retry_delay_sec}s ($attempt/$max_retries)..."
@@ -799,6 +930,7 @@ build_relay_resume_common_args() {
     [[ -n "$COLIBRI_DEST_BEACON_URLS" ]]       && RELAY_COMMON_ARGS+=(--destination-beacon-urls "$COLIBRI_DEST_BEACON_URLS")
     [[ -n "$COLIBRI_SOURCE_CHECKPOINTZ_URLS" ]] && RELAY_COMMON_ARGS+=(--source-checkpointz-urls "$COLIBRI_SOURCE_CHECKPOINTZ_URLS")
     [[ -n "$COLIBRI_DEST_CHECKPOINTZ_URLS" ]]  && RELAY_COMMON_ARGS+=(--destination-checkpointz-urls "$COLIBRI_DEST_CHECKPOINTZ_URLS")
+    [[ "$ALLOW_RPC_FALLBACK" == "1" ]]         && RELAY_COMMON_ARGS+=(--allow-rpc-fallback)
     return 0
 }
 
@@ -910,7 +1042,7 @@ deployed_value() {
 # reused. Sets SOURCE_CONNECTOR, SOURCE_TOKEN, DEST_CONNECTOR and DEST_TOKEN (the destination's
 # BridgeWrappedToken).
 deploy_contracts() {
-    if [[ "$REUSE_SOURCE_DEPLOYMENTS" == "1" || "$REUSE_DEST_DEPLOYMENTS" == "1" ]]; then
+    if reuses_deployments; then
         require_env_value "EXISTING_SOURCE_CONNECTOR" "$EXISTING_SOURCE_CONNECTOR"
         require_env_value "EXISTING_SOURCE_TOKEN" "$EXISTING_SOURCE_TOKEN"
         require_env_value "EXISTING_DEST_CONNECTOR" "$EXISTING_DEST_CONNECTOR"
@@ -930,8 +1062,8 @@ deploy_contracts() {
     local output
     if ! output="$(make -C "$SC_DIR" --no-print-directory deploy-prod-full \
         PRIVATE_KEY="$PRIVATE_KEY" \
-        RPC_URL_SOURCE="$SOURCE_RPC" \
-        RPC_URL_DEST="$DEST_RPC" \
+        RPC_URL_SOURCE="${SOURCE_DEPLOY_RPC:-$SOURCE_RPC}" \
+        RPC_URL_DEST="${DEST_DEPLOY_RPC:-$DEST_RPC}" \
         REGISTRATION_TIMELOCK=0 \
         AUTO_DETECT_FINALITY=0 \
         ACK_WINDOW_SECONDS_SOURCE="$ACK_WINDOW_SECONDS" \
@@ -959,12 +1091,64 @@ propose_finality_delay() {
     wait_for_tx_receipt_block "$rpc_url" "$tx" >/dev/null
 }
 
+# Apply a connector's proposed finality delay for a remote chain. The proposal is read first, so
+# a missing, different, too early or expired one stops with a plain reason instead of a revert.
+# A delay that is already applied is left as it is, so the step can be run again.
 apply_finality_delay() {
-    local rpc_url="$1" connector="$2" remote_chain_id="$3" seconds="$4" tx stored
+    local rpc_url="$1" connector="$2" remote_chain_id="$3" seconds="$4"
+    local pending exists proposed available_at stored now tx
+
+    pending="$(cast call "$connector" "getPendingChainFinalityDelay(uint256)(bool,uint64,uint64)" \
+        "$remote_chain_id" --rpc-url "$rpc_url")"
+    exists="$(printf '%s\n' "$pending" | sed -n '1p')"
+    proposed="$(printf '%s\n' "$pending" | sed -n '2p')"; proposed="${proposed%% *}"
+    available_at="$(printf '%s\n' "$pending" | sed -n '3p')"; available_at="${available_at%% *}"
+
+    if [[ "$exists" != "true" ]]; then
+        stored="$(query_finality_delay "$rpc_url" "$connector" "$remote_chain_id")"
+        if [[ "$stored" == "$seconds" ]]; then
+            echo "Connector $connector already holds ${seconds}s for chain $remote_chain_id; nothing to apply."
+            return 0
+        fi
+        echo "Connector $connector has no proposed delay for chain $remote_chain_id (it holds ${stored}s): propose first." >&2
+        exit 1
+    fi
+    if [[ "$proposed" != "$seconds" ]]; then
+        echo "Connector $connector has ${proposed}s proposed for chain $remote_chain_id, not ${seconds}s:" \
+            "apply ${proposed}s or propose ${seconds}s again." >&2
+        exit 1
+    fi
+    now="$(get_chain_timestamp "$rpc_url")"
+    if [[ "$now" == "0" ]]; then
+        echo "Could not read the latest block time from $rpc_url." >&2; exit 1
+    fi
+    if (( now < available_at )); then
+        echo "The ${seconds}s proposed on connector $connector for chain $remote_chain_id is still in its 48 h" \
+            "timelock: $(( available_at - now ))s left." >&2
+        exit 1
+    fi
+    if (( now > available_at + ADMIN_APPLY_WINDOW_SECONDS )); then
+        echo "The ${seconds}s proposed on connector $connector for chain $remote_chain_id expired, the 7 days" \
+            "after its timelock have passed: propose again." >&2
+        exit 1
+    fi
+
     tx="$(send_tx_async "$rpc_url" "$connector" "applyChainFinalityDelay(uint256)" "$remote_chain_id")"
     wait_for_tx_receipt_block "$rpc_url" "$tx" >/dev/null
+    check_finality_delay "$rpc_url" "$connector" "$remote_chain_id" "$seconds"
+}
+
+# The finality delay in seconds a connector holds for a remote chain.
+query_finality_delay() {
+    local rpc_url="$1" connector="$2" remote_chain_id="$3" stored
     stored="$(cast call "$connector" "chainFinalityDelaySeconds(uint256)(uint64)" "$remote_chain_id" --rpc-url "$rpc_url")"
-    stored="${stored%% *}"
+    printf '%s' "${stored%% *}"
+}
+
+# Stop unless a connector holds the given finality delay for a remote chain.
+check_finality_delay() {
+    local rpc_url="$1" connector="$2" remote_chain_id="$3" seconds="$4" stored
+    stored="$(query_finality_delay "$rpc_url" "$connector" "$remote_chain_id")"
     if [[ "$stored" != "$seconds" ]]; then
         echo "Connector $connector holds a delay of ${stored}s for chain $remote_chain_id, not ${seconds}s." >&2; exit 1
     fi
@@ -979,7 +1163,14 @@ set_finality_delays() {
     fi
     if [[ "$(profile_time_warp_method "$SOURCE_NETWORK_PROFILE")" == "none" \
         || "$(profile_time_warp_method "$DEST_NETWORK_PROFILE")" == "none" ]]; then
-        echo "ERROR: Finality delays wait out a 48 h timelock; only local chain profiles can warp past it." >&2; exit 1
+        # Such a chain waits out the timelock in real time, so e2e-finality-delays.sh sets the
+        # delays beforehand on the connectors this run reuses; here they are only checked.
+        require_reuse_for_finality_delays
+        [[ "$DEST_FINALITY_DELAY" != "0" ]] && check_finality_delay "$SOURCE_RPC" "$SOURCE_CONNECTOR" "$DEST_CHAIN_ID" "$DEST_FINALITY_DELAY"
+        [[ "$SOURCE_FINALITY_DELAY" != "0" ]] && check_finality_delay "$DEST_RPC" "$DEST_CONNECTOR" "$SOURCE_CHAIN_ID" "$SOURCE_FINALITY_DELAY"
+        echo "Finality delays already applied: source connector ${DEST_FINALITY_DELAY}s for chain $DEST_CHAIN_ID," \
+            "dest connector ${SOURCE_FINALITY_DELAY}s for chain $SOURCE_CHAIN_ID"
+        return 0
     fi
 
     [[ "$DEST_FINALITY_DELAY" != "0" ]] && propose_finality_delay "$SOURCE_RPC" "$SOURCE_CONNECTOR" "$DEST_CHAIN_ID" "$DEST_FINALITY_DELAY"
@@ -1017,7 +1208,8 @@ query_ack_deadline() {
 # Mint AMOUNT_WEI to the deployer, approve the source connector and lock it for RECEIVER_ADDRESS.
 # Sets TX_ID, SOURCE_DEPOSIT_BLOCK and ACK_DEADLINE.
 perform_deposit() {
-    local nonce mint_tx approve_tx deposit_tx status
+    local nonce mint_tx approve_tx deposit_tx status attempt
+    local attempts=10
     nonce="$(query_tx_nonce "$SOURCE_RPC" "$SOURCE_CONNECTOR")"
 
     mint_tx="$(send_tx_async "$SOURCE_RPC" "$SOURCE_TOKEN" "mint(address,uint256)" "$DEPLOYER_ADDRESS" "$AMOUNT_WEI")"
@@ -1025,18 +1217,42 @@ perform_deposit() {
     approve_tx="$(send_tx_async "$SOURCE_RPC" "$SOURCE_TOKEN" "approve(address,uint256)" "$SOURCE_CONNECTOR" "$AMOUNT_WEI")"
     wait_for_tx_receipt_block "$SOURCE_RPC" "$approve_tx" >/dev/null
 
-    deposit_tx="$(send_tx_async "$SOURCE_RPC" "$SOURCE_CONNECTOR" \
-        "depositAndLock(address,address,address,uint256,address,uint256)" \
-        "$SOURCE_TOKEN" "$DEST_TOKEN" "$RECEIVER_ADDRESS" "$AMOUNT_WEI" "$DEST_CONNECTOR" "$DEST_CHAIN_ID")"
+    # A public RPC behind a load balancer can answer the deposit's gas estimate from a node that
+    # has not seen the approve yet. The estimate then reverts with ERC20InsufficientAllowance
+    # (selector 0xfb8f41b2) and nothing is sent, so the deposit is simply sent again.
+    for ((attempt = 1; attempt <= attempts; attempt++)); do
+        if deposit_tx="$(send_tx_async "$SOURCE_RPC" "$SOURCE_CONNECTOR" \
+            "depositAndLock(address,address,address,uint256,address,uint256)" \
+            "$SOURCE_TOKEN" "$DEST_TOKEN" "$RECEIVER_ADDRESS" "$AMOUNT_WEI" "$DEST_CONNECTOR" "$DEST_CHAIN_ID" 2>&1)"; then
+            break
+        fi
+        if (( attempt == attempts )) \
+            || [[ "$deposit_tx" != *ERC20InsufficientAllowance* && "$deposit_tx" != *0xfb8f41b2* ]]; then
+            echo "$deposit_tx" >&2; exit 1
+        fi
+        echo "The RPC has not seen the approve yet; sending the deposit again ($attempt/$attempts)..."
+        sleep "$TX_RECEIPT_WAIT_INTERVAL_SEC"
+    done
+    # The hash is the last line; with shell tracing on, the trace lines come before it.
+    deposit_tx="$(printf '%s\n' "$deposit_tx" | tail -n 1)"
     SOURCE_DEPOSIT_BLOCK="$(wait_for_tx_receipt_block "$SOURCE_RPC" "$deposit_tx")"
     echo "depositAndLock tx: $deposit_tx (block $SOURCE_DEPOSIT_BLOCK)"
 
     TX_ID="$(compute_tx_id "$DEPLOYER_ADDRESS" "$RECEIVER_ADDRESS" "$AMOUNT_WEI" "$SOURCE_TOKEN" "$DEST_TOKEN" \
         "$SOURCE_CONNECTOR" "$DEST_CONNECTOR" "$nonce" "$SOURCE_CHAIN_ID" "$DEST_CHAIN_ID")"
-    status="$(query_tx_status "$SOURCE_RPC" "$SOURCE_CONNECTOR" "$TX_ID")"
-    if [[ "$status" != "1" ]]; then
-        echo "Computed txId $TX_ID is not DEPOSIT_LOCKED on the source (status $status)." >&2; exit 1
+    # The same lagging node can answer these two reads as if the deposit were not mined yet
+    # (status 0, deadline 0), so they are repeated until the deposit is seen.
+    for ((attempt = 1; attempt <= attempts; attempt++)); do
+        status="$(query_tx_status "$SOURCE_RPC" "$SOURCE_CONNECTOR" "$TX_ID")"
+        # A failed read counts as not seen yet.
+        ACK_DEADLINE="$(query_ack_deadline "$SOURCE_RPC" "$SOURCE_CONNECTOR" "$TX_ID")" || ACK_DEADLINE="0"
+        if [[ "$status" == "1" && "$ACK_DEADLINE" != "0" ]]; then
+            break
+        fi
+        sleep "$TX_RECEIPT_WAIT_INTERVAL_SEC"
+    done
+    if [[ "$status" != "1" || "$ACK_DEADLINE" == "0" ]]; then
+        echo "Computed txId $TX_ID is not DEPOSIT_LOCKED on the source (status $status, ackDeadline $ACK_DEADLINE)." >&2; exit 1
     fi
-    ACK_DEADLINE="$(query_ack_deadline "$SOURCE_RPC" "$SOURCE_CONNECTOR" "$TX_ID")"
     echo "txId: $TX_ID  ackDeadline: $ACK_DEADLINE"
 }

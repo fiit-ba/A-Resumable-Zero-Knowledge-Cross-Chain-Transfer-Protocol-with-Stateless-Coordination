@@ -164,6 +164,16 @@ prover_build_image_if_needed() {
     fi
 }
 
+# Stops the proof container. It may not be running yet when the stop signal comes, so the
+# stop is tried a few times.
+prover_stop_container() {
+    local container_name="$1"
+    for _ in 1 2 3 4; do
+        if docker kill "$container_name" >/dev/null 2>&1; then return 0; fi
+        sleep 1
+    done
+}
+
 # Host args are ignored for print-image-id.
 prover_run() {
     prover_build_image_if_needed
@@ -178,9 +188,17 @@ prover_run() {
         # risc0-groth16 (without CUDA) wraps the proof with `docker run -v <work dir>:/mnt` on the
         # host's Docker, so the work dir has the same path on the host and in this container.
         local groth16_work_dir status=0
+        local container_name="risc0-$HOST_PACKAGE-$$"
         groth16_work_dir="$(mktemp -d)"
         echo "Running proof generation in Docker..." >&2
+        # The caller stops this script with SIGTERM when a proof takes too long. Without the
+        # trap the container would go on proving and keep the caller's output pipes open, so
+        # the caller would wait until the proof ends. Bash runs a trap only between commands,
+        # so the container runs in the background and `wait`, which a signal interrupts,
+        # watches it.
+        trap 'prover_stop_container "$container_name"' TERM INT
         docker "${DOCKER_RUN_ARGS[@]}" \
+            --name "$container_name" \
             -v "$DOCKER_SOCKET:/var/run/docker.sock" \
             -v "$groth16_work_dir:$groth16_work_dir" \
             -e "RISC0_WORK_DIR=$groth16_work_dir" \
@@ -191,7 +209,9 @@ prover_run() {
             cargo run --manifest-path "$manifest" -p "$HOST_PACKAGE" --bin "$HOST_PACKAGE" -- \
                 --connector "$CONNECTOR" \
                 --tx-id "$TX_ID" \
-                "$@" || status=$?
+                "$@" &
+        wait "$!" || status=$?
+        trap - TERM INT
         rm -rf "$groth16_work_dir"
         return "$status"
     fi

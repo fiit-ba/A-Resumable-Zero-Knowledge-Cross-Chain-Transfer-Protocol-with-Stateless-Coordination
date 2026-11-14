@@ -10,8 +10,10 @@
 #      past it
 #   5. Check that the sender got the tokens back and both records are closed
 #
-# Prerequisite: source and destination profiles must support time-warp
-# (local-anvil or local-hardhat).
+# Local chains (local-anvil, local-hardhat) warp their clocks; on any other profile (a public
+# network or custom) the flow waits for real time: the ack window, then the finality delay. A
+# finality delay there must already be applied on reused contracts
+# (scripts/e2e-finality-delays.sh), since the 48 h timelock cannot be warped past.
 #
 # Flags: identical to e2e-refund-path.sh; the delay used here is
 #   --destination-finality-delay <seconds>   (default: 0, check off)
@@ -25,14 +27,17 @@ source "$SCRIPT_DIR/lib/e2e-common.sh"
 # ── Usage ───────────────────────────────────────────────────────────────────
 export E2E_USAGE="Usage: $0 [OPTIONS]
 
-Run the non-acceptance refund flow (deposit → time-warp → refund-initiate → non-accept-proof).
+Run the non-acceptance refund flow (deposit → move time → refund-initiate → non-accept-proof).
 
-IMPORTANT: Both source and destination profiles must support local time-warp
-(local-anvil or local-hardhat).
+Local chains (local-anvil, local-hardhat) warp their clocks. On any other profile (a public
+network or custom) the flow waits for real time: the ack window, then the finality delay, which
+must already be applied on reused contracts (scripts/e2e-finality-delays.sh).
 
 Options: as in e2e-refund-path.sh --help. The delay this flow checks is
   --destination-finality-delay <seconds>  Destination network delay held by the source connector;
                                           the non-acceptance proof must wait it out (default: 0, off)
+  With a delay the flow first checks that a too early proof is refused, so the delay must be
+  clearly longer than one proof takes (minutes with real proofs).
 
 Examples:
   $0 --proof-backend test --destination-finality-delay 3600
@@ -41,7 +46,8 @@ Examples:
 # ── Parse args, apply defaults, validate ────────────────────────────────────
 e2e_parse_args "$@"
 e2e_apply_profile_defaults
-assert_time_warp_capable
+announce_time_movement
+require_reuse_for_finality_delays
 e2e_validate_prerequisites
 ensure_stateless_client_ready
 
@@ -52,11 +58,14 @@ set_finality_delays
 # ── Deposit, never relayed ───────────────────────────────────────────────────
 align_chain_clocks
 perform_deposit
-SOURCE_BALANCE_LOCKED="$(query_erc20_balance "$SOURCE_RPC" "$SOURCE_TOKEN" "$DEPLOYER_ADDRESS")"
 
-# Warp to the deadline, not past it, so the refund proof still falls inside the finality delay.
-echo "Ack deadline: $ACK_DEADLINE — warping both chains to it..."
+# Move to the deadline, not far past it, so the refund proof still falls inside the finality delay.
+echo "Ack deadline: $ACK_DEADLINE — moving both chains to it..."
 warp_both_chains_past "$ACK_DEADLINE"
+
+# Read only now: right after the deposit a lagging node of a load-balanced RPC can still
+# answer with the balance from before it.
+SOURCE_BALANCE_LOCKED="$(query_erc20_balance "$SOURCE_RPC" "$SOURCE_TOKEN" "$DEPLOYER_ADDRESS")"
 
 # ── refund-initiate stage ────────────────────────────────────────────────────
 echo "Running relay-resume for refund-initiate..."
@@ -67,8 +76,9 @@ REFUND_INITIATE_TX="$LAST_SUBMISSION_TX_HASH"
 if [[ "$DEST_FINALITY_DELAY" != "0" ]]; then
     echo "Running relay-resume for non-accept-proof before the ${DEST_FINALITY_DELAY}s destination finality delay..."
     expect_finality_not_reached "non-accept-proof"
+    # The connector counts the delay from the ack deadline.
     echo "Moving the source clock past the destination finality delay..."
-    advance_chain_time "$SOURCE_RPC" "$DEST_FINALITY_DELAY"
+    move_chain_past "$SOURCE_RPC" "$(( ACK_DEADLINE + DEST_FINALITY_DELAY ))"
 fi
 
 echo "Running relay-resume for non-accept-proof..."
@@ -76,8 +86,8 @@ run_relay_resume_for_action "non-accept-proof"
 NON_ACCEPT_TX="$LAST_SUBMISSION_TX_HASH"
 
 # ── Final assertions ─────────────────────────────────────────────────────────
-SOURCE_STATUS_FINAL="$(query_tx_status "$SOURCE_RPC" "$SOURCE_CONNECTOR" "$TX_ID")"
-DEST_STATUS_FINAL="$(query_tx_status "$DEST_RPC" "$DEST_CONNECTOR" "$TX_ID")"
+SOURCE_STATUS_FINAL="$(query_tx_status_until "$SOURCE_RPC" "$SOURCE_CONNECTOR" "$TX_ID" 0)"
+DEST_STATUS_FINAL="$(query_tx_status_until "$DEST_RPC" "$DEST_CONNECTOR" "$TX_ID" 0)"
 if [[ "$SOURCE_STATUS_FINAL" != "0" ]]; then
     echo "Source status mismatch after the refund: expected 0 (NONE), got $SOURCE_STATUS_FINAL" >&2; exit 1
 fi
@@ -85,7 +95,8 @@ if [[ "$DEST_STATUS_FINAL" != "0" ]]; then
     echo "Destination status mismatch: expected 0 (NONE), got $DEST_STATUS_FINAL" >&2; exit 1
 fi
 
-SOURCE_BALANCE_AFTER="$(query_erc20_balance "$SOURCE_RPC" "$SOURCE_TOKEN" "$DEPLOYER_ADDRESS")"
+SOURCE_BALANCE_AFTER="$(query_erc20_balance_until "$SOURCE_RPC" "$SOURCE_TOKEN" "$DEPLOYER_ADDRESS" \
+    "$(( SOURCE_BALANCE_LOCKED + AMOUNT_WEI ))")"
 if (( SOURCE_BALANCE_AFTER - SOURCE_BALANCE_LOCKED != AMOUNT_WEI )); then
     echo "Sender went $SOURCE_BALANCE_LOCKED -> $SOURCE_BALANCE_AFTER on the source, expected +$AMOUNT_WEI back" >&2; exit 1
 fi

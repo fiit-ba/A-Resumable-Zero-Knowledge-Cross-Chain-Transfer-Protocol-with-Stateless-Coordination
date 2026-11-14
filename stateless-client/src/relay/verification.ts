@@ -27,6 +27,7 @@ import {
   normalizeBytes32,
   readBooleanEnv,
   readPositiveIntEnv,
+  resolveLogLookbackBlocks,
   toNumberStatus,
   toRpcBlockTag,
 } from "../core/utils.js";
@@ -55,7 +56,6 @@ interface LogRange {
   toBlock: string;
 }
 
-const DEFAULT_DYNAMIC_LOG_LOOKBACK_BLOCKS = 50_000;
 const DEFAULT_COLIBRI_TRANSIENT_RETRIES = 6;
 const DEFAULT_COLIBRI_TRANSIENT_RETRY_DELAY_SEC = 12;
 const DEFAULT_COLIBRI_CACHE_DIR = ".colibri-cache";
@@ -78,13 +78,6 @@ const STAGE_EVENT_CONNECTOR_FIELDS: Record<
 };
 
 const EVENT_ONLY_STAGES = new Set<Stage>(["source-ack-ready", "destination-burn-executed"]);
-
-function resolveDynamicLookbackBlocks(): number {
-  return (
-    readPositiveIntEnv("STATELESS_CLIENT_LOG_LOOKBACK_BLOCKS", "COLIBRI_LOG_LOOKBACK_BLOCKS") ??
-    DEFAULT_DYNAMIC_LOG_LOOKBACK_BLOCKS
-  );
-}
 
 function resolveColibriTransientRetryCount(): number {
   return (
@@ -197,7 +190,7 @@ async function resolveLogRange(
     };
   }
 
-  const lookback = resolveDynamicLookbackBlocks();
+  const lookback = resolveLogLookbackBlocks();
   const fromBlock = toBlock + 1 > lookback ? toBlock - lookback + 1 : 0;
 
   return {
@@ -450,6 +443,26 @@ export function isChiadoColibriTransportUnavailableError(error: unknown): boolea
 }
 
 /**
+ * Returns true when Colibri could not get a proof for a block that is only a
+ * slot or two old.
+ *
+ * Seen with Colibri 3.0.3 on Sepolia: the remote prover refuses such a block
+ * with a 500 or a 503, the library then tries to build the proof itself and
+ * reports only the last error of that attempt - a 405 from the prover host
+ * asked as a beacon API, a 5xx of one of its servers, or a debug_getRawBlock
+ * the execution RPC does not have. The same request passes about one slot
+ * later, so the caller waits and tries again.
+ *
+ * The status is searched anywhere in the text, because the library may put
+ * its own words in front of the HTTP error.
+ */
+export function isProverNotReadyError(error: unknown): boolean {
+  if (!(error instanceof Error)) return false;
+  const message = error.message;
+  return /HTTP error! Status: (405|5\d\d)/.test(message) || message.includes("debug_getRawBlock");
+}
+
+/**
  * Maps a Colibri error to a machine-readable degrade reason.
  * Returns undefined when the error does not match any known Chiado pattern.
  */
@@ -490,7 +503,7 @@ function shouldFallbackToRpcForKnownChiadoColibriIssue(error: unknown, chainId: 
 }
 
 function shouldRetryPrunedAckColibriError(error: unknown): boolean {
-  return isKnownTransientColibriError(error) || isChiadoColibriTransportUnavailableError(error);
+  return isKnownTransientColibriError(error) || isProverNotReadyError(error);
 }
 
 export function decideVerificationMode(input: VerificationPolicyInput): VerificationMode {
@@ -682,7 +695,7 @@ export async function verifyStageEventOnly(
   const { expectedStatus } = STAGE_DEFINITIONS[request.stage];
   let degradeReason: VerificationDegradeReason | undefined;
 
-  if (!request.chain.isLocal) {
+  if (!request.chain.isLocal && !request.chain.rpcFallback) {
     if (request.verificationPolicy?.retryColibriFromScratch) {
       resetColibriStateForRetryPolicy(request);
     }
@@ -733,6 +746,11 @@ export async function verifyStageEventOnly(
               `${errorMessage(lastColibriError)}`,
           );
         }
+
+        // The prover needs about one more slot for a fresh block, so an immediate retry cannot pass.
+        if (isProverNotReadyError(lastColibriError)) {
+          await sleep(resolveColibriTransientRetryDelayMs());
+        }
       }
     }
 
@@ -741,8 +759,14 @@ export async function verifyStageEventOnly(
       `[colibri] ${request.stage} event-only verification degraded to rpc-fallback` +
         ` (reason=${degradeReason ?? "unknown"}): ${errorMessage(lastColibriError)}`,
     );
-  } else {
+  } else if (request.chain.isLocal) {
     degradeReason = "local_chain";
+  } else {
+    degradeReason = "unsupported_network";
+    console.warn(
+      `[colibri] chain=${request.chain.chainId} is a network without Colibri support;` +
+        ` verifying ${request.stage} through RPC (--allow-rpc-fallback)`,
+    );
   }
 
   const log = requireSingleLog(await fetchRpcLogs(ctx), ctx, "event-only path");
@@ -778,6 +802,15 @@ export async function verifyStage(request: VerifyStageRequest): Promise<StageVer
     { to: connector, data: getTxCallData },
     colibriCallBlockTag,
   ];
+
+  // A network Colibri does not support is read through plain RPC, as a local chain is.
+  if (request.chain.rpcFallback) {
+    console.warn(
+      `[colibri] chain=${request.chain.chainId} is a network without Colibri support;` +
+        ` verifying ${request.stage} through RPC (--allow-rpc-fallback)`,
+    );
+    return verifyStageThroughRpc(request, ctx, "unsupported_network");
+  }
 
   if (request.verificationPolicy?.retryColibriFromScratch && !request.chain.isLocal) {
     resetColibriStateForRetryPolicy(request);
@@ -816,6 +849,7 @@ export async function verifyStage(request: VerifyStageRequest): Promise<StageVer
   let transientSszRetryAttempts = 0;
   let chiadoSyncBackwardsWaitRetryAttempts = 0;
   let transientColibriTransportRetryAttempts = 0;
+  let proverNotReadyRetryAttempts = 0;
   let chiadoSyncBackwardsRangeRelaxed = false;
   let chiadoSyncBackwardsProverFallbackApplied = false;
   const maxTransientParentRootRetries = resolveColibriTransientRetryCount();
@@ -831,7 +865,7 @@ export async function verifyStage(request: VerifyStageRequest): Promise<StageVer
   ): Promise<T> {
     async function clampColibriFilterToLatestWindow(): Promise<void> {
       const latestBlock = await provider.getBlockNumber();
-      const lookback = resolveDynamicLookbackBlocks();
+      const lookback = resolveLogLookbackBlocks();
       const fromBlock = latestBlock + 1 > lookback ? latestBlock - lookback + 1 : 0;
       const toBlockHex = toHexBlock(latestBlock);
 
@@ -993,6 +1027,18 @@ export async function verifyStage(request: VerifyStageRequest): Promise<StageVer
           );
         }
 
+        if (
+          isProverNotReadyError(error) &&
+          proverNotReadyRetryAttempts < maxTransientParentRootRetries
+        ) {
+          proverNotReadyRetryAttempts += 1;
+          console.warn(
+            `[colibri] prover cannot prove the block yet (${operationLabel}); retry ${proverNotReadyRetryAttempts}/${maxTransientParentRootRetries}: ${errorMessage(error)}`,
+          );
+          await sleep(transientParentRootRetryDelayMs);
+          continue;
+        }
+
         throw error;
       }
     }
@@ -1067,15 +1113,28 @@ export async function verifyStage(request: VerifyStageRequest): Promise<StageVer
     }
   }
 
+  return verifyStageThroughRpc(request, ctx, degradeReason);
+}
+
+/**
+ * Verifies a stage from its event log and a `getTx` call over plain RPC, without Colibri
+ * proofs. The result is always marked degraded.
+ */
+async function verifyStageThroughRpc(
+  request: VerifyStageRequest,
+  ctx: VerificationContext,
+  degradeReason: VerificationDegradeReason | undefined,
+): Promise<StageVerificationResult> {
+  const { connector, txId, expectedSrcConnector, expectedDstConnector, provider, rpcFilter } = ctx;
   const log = requireSingleLog(await fetchRpcLogs(ctx), ctx);
   validateLog(request, ctx, log);
 
   const rawTx = await provider.send("eth_call", [
     {
       to: connector,
-      data: getTxCallData,
+      data: connectorInterface.encodeFunctionData("getTx", [txId]),
     },
-    callBlockTag,
+    rpcFilter.toBlock,
   ]);
 
   const [tx] = connectorInterface.decodeFunctionResult("getTx", rawTx);
@@ -1087,5 +1146,10 @@ export async function verifyStage(request: VerifyStageRequest): Promise<StageVer
     tx,
   );
 
-  return stageResult(request, ctx, { mode, degraded: true, degradeReason, status }, log);
+  return stageResult(
+    request,
+    ctx,
+    { mode: "rpc-fallback", degraded: true, degradeReason, status },
+    log,
+  );
 }

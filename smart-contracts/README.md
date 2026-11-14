@@ -187,7 +187,7 @@ has passed. On Linux, `--proof-backend docker` needs the chains to listen beyond
 
 - `PRIVATE_KEY` can be exported in the shell or stored in `smart-contracts/.env`.
 - `RISC0_GUEST_USE_DOCKER=1` is the default expected path in this repo.
-- With `--proof-backend local`, set `RISC0_GUEST_USE_DOCKER=0` for now: the e2e scripts build all six guests for their image IDs, and the non-accept guest does not build in RISC Zero's docker builder yet (its `Cargo.lock` needs rustc 1.91, the builder has 1.88).
+- The reproducible guest build uses the builder image `r0.1.97.0`, pinned in each `methods/build.rs`: RISC Zero's default one has rustc 1.88, which is too old for the guest dependencies. The image exists only for linux/amd64, so on Apple silicon it runs under emulation and the build takes longer.
 - `REUSE_SOURCE_DEPLOYMENTS=1` (or `REUSE_DEST_DEPLOYMENTS=1`) lets the e2e scripts skip the deployment when you already know both connectors, the source token and the wrapped token (`EXISTING_*`).
 
 ## Related Docs

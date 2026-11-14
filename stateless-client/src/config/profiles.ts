@@ -21,6 +21,7 @@ interface ChainResolveInput {
   beaconUrls?: string;
   checkpointzUrls?: string;
   defaultProfileName: NetworkProfileName;
+  allowRpcFallback?: boolean;
 }
 
 export const NETWORK_PROFILES: Record<NetworkProfileName, NetworkProfileDefaults> = {
@@ -123,12 +124,24 @@ export function listNetworkProfiles(): NetworkProfileDefaults[] {
 export function getNetworkProfile(profileName: string): NetworkProfileDefaults {
   if (!(profileName in NETWORK_PROFILES)) {
     throw new Error(
-      `Unsupported network profile '${profileName}'. Supported profiles: ${Object.keys(
-        NETWORK_PROFILES,
-      ).join(", ")}`,
+      `Unsupported network profile '${profileName}'. Supported profiles: ${[
+        ...Object.keys(NETWORK_PROFILES),
+        "custom",
+      ].join(", ")}`,
     );
   }
   return NETWORK_PROFILES[profileName as NetworkProfileName];
+}
+
+/**
+ * Chain ids the Colibri library can verify. Holesky and Hoodi have profiles here, but
+ * Colibri does not know them.
+ */
+const COLIBRI_CHAIN_IDS = [1, 11155111, 100, 10200];
+
+/** True when Colibri can verify `chainId`, whatever profile name was given. */
+function isColibriChainId(chainId: number): boolean {
+  return COLIBRI_CHAIN_IDS.includes(chainId);
 }
 
 export function resolveChainConfig(input: ChainResolveInput): ChainConfig {
@@ -143,7 +156,17 @@ export function resolveChainConfig(input: ChainResolveInput): ChainConfig {
 
   const selectedProfileName =
     input.profileName ?? (hasAnyExplicitOverride ? undefined : input.defaultProfileName);
-  const baseProfile = selectedProfileName ? getNetworkProfile(selectedProfileName) : undefined;
+  // "custom" names no built-in profile: the chain id and RPC must be given explicitly.
+  const baseProfile =
+    selectedProfileName && selectedProfileName !== "custom"
+      ? getNetworkProfile(selectedProfileName)
+      : undefined;
+
+  if (selectedProfileName === "custom" && !hasAnyExplicitOverride) {
+    throw new Error(
+      `The custom ${input.side} profile needs --${input.side}-chain-id and --${input.side}-rpc-url.`,
+    );
+  }
 
   if (!baseProfile && !hasAnyExplicitOverride) {
     throw new Error(
@@ -193,5 +216,8 @@ export function resolveChainConfig(input: ChainResolveInput): ChainConfig {
     beaconUrls: beaconOverrides.length > 0 ? beaconOverrides : (baseProfile?.beaconUrls ?? []),
     checkpointzUrls:
       checkpointzOverrides.length > 0 ? checkpointzOverrides : (baseProfile?.checkpointzUrls ?? []),
+    // Only a public network Colibri cannot verify may skip it. A network Colibri supports
+    // keeps its checks, also when its chain id is given under the custom profile.
+    rpcFallback: !isLocal && !isColibriChainId(chainId) && Boolean(input.allowRpcFallback),
   };
 }

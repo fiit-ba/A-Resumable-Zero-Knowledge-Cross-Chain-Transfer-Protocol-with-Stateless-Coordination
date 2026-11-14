@@ -10,9 +10,10 @@
 #      moved past it
 #   5. relay-resume → execute-burn → burn-proof, then check statuses and balances
 #
-# Prerequisite: source and destination profiles must support time-warp
-# (local-anvil or local-hardhat).  Public/testnet profiles abort immediately
-# with a capability error rather than wasting time on long-running work.
+# Local chains (local-anvil, local-hardhat) warp their clocks; on any other profile (a public
+# network or custom) the flow waits for real time: the ack window, then the finality delay. A
+# finality delay there must already be applied on reused contracts
+# (scripts/e2e-finality-delays.sh), since the 48 h timelock cannot be warped past.
 #
 # Flags: identical to e2e-happy-path.sh plus the finality delays.
 #   --source-finality-delay <seconds>   (default: 0, check off)
@@ -30,10 +31,11 @@ ACK_WINDOW_SECONDS="${ACK_WINDOW_SECONDS:-3600}"
 # ── Usage ───────────────────────────────────────────────────────────────────
 export E2E_USAGE="Usage: $0 [OPTIONS]
 
-Run the refund-path relay flow (lock → time-warp → refund-initiate → refund-claim → execute-burn → burn-proof).
+Run the refund-path relay flow (lock → move time → refund-initiate → refund-claim → execute-burn → burn-proof).
 
-IMPORTANT: Both source and destination profiles must support local time-warp
-(local-anvil or local-hardhat).  Public/testnet profiles will fail fast.
+Local chains (local-anvil, local-hardhat) warp their clocks. On any other profile (a public
+network or custom) the flow waits for real time: the ack window, then the finality delay, which
+must already be applied on reused contracts (scripts/e2e-finality-delays.sh).
 
 Network selection:
   --source-profile <profile>         Source network profile (default: local-anvil)
@@ -44,6 +46,11 @@ Network selection:
   --destination-rpc-url <url>        Override destination RPC URL
   --source-chain-id <id>             Override source chain ID
   --destination-chain-id <id>        Override destination chain ID
+  --allow-rpc-fallback               Verify a network Colibri does not support (custom, holesky,
+                                     hoodi) through plain RPC; such verifications are marked degraded
+
+Supported profiles: local-anvil, local-hardhat, mainnet, sepolia, holesky, hoodi, gnosis, chiado,
+custom (any other network; give its chain ID and RPC URL)
 
 Signing and amounts:
   --private-key <hex>                Signer private key (or set PRIVATE_KEY env var)
@@ -56,6 +63,8 @@ Finality:
                                           the refund claim must wait it out (default: 0, off)
   --destination-finality-delay <seconds>  Destination network delay held by the source connector
                                           (used by e2e-non-accept-path.sh; default: 0, off)
+  With a delay the flow first checks that a too early proof is refused, so the delay must be
+  clearly longer than one proof takes (minutes with real proofs).
 
 Proof runtime:
   --proof-backend <local|docker|test> Proof runner (default: local); test = SnarkJS test proofs
@@ -64,6 +73,11 @@ Proof runtime:
 Deployment reuse (both sides; the token route and finality delays stay as deployed):
   --reuse-source, --reuse-dest
   --source-connector <addr>, --destination-connector <addr>
+
+Environment (more in scripts/lib/e2e-common.sh):
+  STATELESS_CLIENT_LOG_LOOKBACK_BLOCKS  Blocks the client searches for events (default: 50000);
+                                     lower it for a public RPC with a smaller eth_getLogs range
+                                     limit
 
 Misc:
   -h, --help
@@ -76,7 +90,8 @@ Examples:
 # ── Parse args, apply defaults, validate ────────────────────────────────────
 e2e_parse_args "$@"
 e2e_apply_profile_defaults
-assert_time_warp_capable
+announce_time_movement
+require_reuse_for_finality_delays
 e2e_validate_prerequisites
 ensure_stateless_client_ready
 
@@ -87,7 +102,6 @@ set_finality_delays
 # ── Deposit ──────────────────────────────────────────────────────────────────
 align_chain_clocks
 perform_deposit
-SOURCE_BALANCE_LOCKED="$(query_erc20_balance "$SOURCE_RPC" "$SOURCE_TOKEN" "$DEPLOYER_ADDRESS")"
 
 # ── lock stage ──────────────────────────────────────────────────────────────
 lock_exec_block="${LOCK_EXECUTION_BLOCK:-$SOURCE_DEPOSIT_BLOCK}"
@@ -95,15 +109,18 @@ lock_exec_block="$(normalize_execution_block_tag "$lock_exec_block")"
 echo "Lock execution block: $lock_exec_block"
 wait_for_successor_execution_block "$SOURCE_RPC" "$lock_exec_block" "source-deposit"
 
+# Read only now: right after the deposit a lagging node of a load-balanced RPC can still
+# answer with the balance from before it.
+SOURCE_BALANCE_LOCKED="$(query_erc20_balance "$SOURCE_RPC" "$SOURCE_TOKEN" "$DEPLOYER_ADDRESS")"
+
 echo "Running relay-resume for lock..."
 run_relay_resume_for_action "lock" --lock-execution-block "$lock_exec_block"
 LOCK_SUBMIT_TX="$LAST_SUBMISSION_TX_HASH"
 DEST_FUNDS_RELEASED_BLOCK="$LAST_SUBMISSION_BLOCK"
-DEST_HELD_BEFORE_BURN="$(query_erc20_balance "$DEST_RPC" "$DEST_TOKEN" "$DEST_CONNECTOR")"
 
 # ── Move both chains to the ACK deadline ─────────────────────────────────────
-# Warp to the deadline, not past it, so the refund proof still falls inside the finality delay.
-echo "Ack deadline: $ACK_DEADLINE — warping both chains to it..."
+# Move to the deadline, not far past it, so the refund proof still falls inside the finality delay.
+echo "Ack deadline: $ACK_DEADLINE — moving both chains to it..."
 warp_both_chains_past "$ACK_DEADLINE"
 
 # ── refund-initiate stage ────────────────────────────────────────────────────
@@ -121,8 +138,9 @@ wait_for_successor_execution_block "$SOURCE_RPC" "$refund_claim_exec_block" "sou
 if [[ "$SOURCE_FINALITY_DELAY" != "0" ]]; then
     echo "Running relay-resume for refund-claim before the ${SOURCE_FINALITY_DELAY}s source finality delay..."
     expect_finality_not_reached "refund-claim" --refund-claim-execution-block "$refund_claim_exec_block"
+    # The connector counts the delay from the ack deadline.
     echo "Moving the destination clock past the source finality delay..."
-    advance_chain_time "$DEST_RPC" "$SOURCE_FINALITY_DELAY"
+    move_chain_past "$DEST_RPC" "$(( ACK_DEADLINE + SOURCE_FINALITY_DELAY ))"
 fi
 
 echo "Running relay-resume for refund-claim..."
@@ -130,11 +148,15 @@ run_relay_resume_for_action "refund-claim" --refund-claim-execution-block "$refu
 REFUND_CLAIM_TX="$LAST_SUBMISSION_TX_HASH"
 
 # ── execute-burn stage ───────────────────────────────────────────────────────
+# Read here, long after the lock was accepted, so a lagging RPC node cannot answer with the
+# balance from before it.
+DEST_HELD_BEFORE_BURN="$(query_erc20_balance "$DEST_RPC" "$DEST_TOKEN" "$DEST_CONNECTOR")"
 echo "Running relay-resume for execute-burn..."
 run_relay_resume_for_action "execute-burn"
 EXECUTE_BURN_TX="$LAST_SUBMISSION_TX_HASH"
 DEST_BURN_EXECUTED_BLOCK="$LAST_SUBMISSION_BLOCK"
-DEST_HELD_AFTER_BURN="$(query_erc20_balance "$DEST_RPC" "$DEST_TOKEN" "$DEST_CONNECTOR")"
+DEST_HELD_AFTER_BURN="$(query_erc20_balance_until "$DEST_RPC" "$DEST_TOKEN" "$DEST_CONNECTOR" \
+    "$(( DEST_HELD_BEFORE_BURN - AMOUNT_WEI ))")"
 
 # ── burn-proof stage (may need eth_getBlockReceipts proxy) ───────────────────
 burn_proof_exec_block="${BURN_PROOF_EXECUTION_BLOCK:-$DEST_BURN_EXECUTED_BLOCK}"
@@ -154,8 +176,8 @@ run_relay_resume_for_action "burn-proof" \
 BURN_PROOF_TX="$LAST_SUBMISSION_TX_HASH"
 
 # ── Final assertions ─────────────────────────────────────────────────────────
-SOURCE_STATUS_FINAL="$(query_tx_status "$SOURCE_RPC" "$SOURCE_CONNECTOR" "$TX_ID")"
-DEST_STATUS_FINAL="$(query_tx_status "$DEST_RPC" "$DEST_CONNECTOR" "$TX_ID")"
+SOURCE_STATUS_FINAL="$(query_tx_status_until "$SOURCE_RPC" "$SOURCE_CONNECTOR" "$TX_ID" 0)"
+DEST_STATUS_FINAL="$(query_tx_status_until "$DEST_RPC" "$DEST_CONNECTOR" "$TX_ID" 0)"
 
 if [[ "$SOURCE_STATUS_FINAL" != "0" ]]; then
     echo "Source status mismatch after burn-proof: expected 0 (NONE), got $SOURCE_STATUS_FINAL" >&2; exit 1
@@ -164,7 +186,8 @@ if [[ "$DEST_STATUS_FINAL" != "0" ]]; then
     echo "Destination status mismatch after burn-proof: expected 0 (NONE), got $DEST_STATUS_FINAL" >&2; exit 1
 fi
 
-SOURCE_BALANCE_AFTER="$(query_erc20_balance "$SOURCE_RPC" "$SOURCE_TOKEN" "$DEPLOYER_ADDRESS")"
+SOURCE_BALANCE_AFTER="$(query_erc20_balance_until "$SOURCE_RPC" "$SOURCE_TOKEN" "$DEPLOYER_ADDRESS" \
+    "$(( SOURCE_BALANCE_LOCKED + AMOUNT_WEI ))")"
 if (( SOURCE_BALANCE_AFTER - SOURCE_BALANCE_LOCKED != AMOUNT_WEI )); then
     echo "Sender went $SOURCE_BALANCE_LOCKED -> $SOURCE_BALANCE_AFTER on the source, expected +$AMOUNT_WEI back" >&2; exit 1
 fi

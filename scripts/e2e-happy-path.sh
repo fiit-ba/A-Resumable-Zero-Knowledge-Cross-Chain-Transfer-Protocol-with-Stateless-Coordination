@@ -10,6 +10,7 @@
 #   --destination-profile / --destination-network  (default: local-hardhat)
 #   --source-rpc-url, --destination-rpc-url
 #   --source-chain-id, --destination-chain-id
+#   --allow-rpc-fallback                     verify a network without Colibri through RPC (degraded)
 #   --private-key, --receiver
 #   --proof-backend <local|docker|test>      (default: local)
 #   --risc0-prover-mode <local|bonsai>       (default: local)
@@ -21,10 +22,12 @@
 #
 # Environment variables (all overridable; see scripts/lib/e2e-common.sh):
 #   SOURCE_NETWORK_PROFILE, DEST_NETWORK_PROFILE
-#   SOURCE_RPC, DEST_RPC, SOURCE_CHAIN_ID, DEST_CHAIN_ID
+#   SOURCE_RPC, DEST_RPC, SOURCE_CHAIN_ID, DEST_CHAIN_ID, ALLOW_RPC_FALLBACK
+#   SOURCE_DEPLOY_RPC, DEST_DEPLOY_RPC (another RPC URL for the deployment only)
 #   PRIVATE_KEY, RECEIVER_ADDRESS, AMOUNT_WEI, ACK_WINDOW_SECONDS
 #   PROOF_BACKEND, RISC0_PROVER_MODE, USE_DOCKER_PROVER (alias for PROOF_BACKEND=docker)
 #   STATELESS_CLIENT_DIR, STATELESS_CLIENT_AUTO_BUILD
+#   STATELESS_CLIENT_LOG_LOOKBACK_BLOCKS (lower it for an RPC with a small eth_getLogs range limit)
 #   REUSE_SOURCE_DEPLOYMENTS, REUSE_DEST_DEPLOYMENTS
 #   EXISTING_SOURCE_CONNECTOR, EXISTING_SOURCE_TOKEN, EXISTING_DEST_CONNECTOR, EXISTING_DEST_TOKEN
 #   LOCK_EXECUTION_BLOCK, MINT_EXECUTION_BLOCK, ACK_EXECUTION_BLOCK
@@ -49,8 +52,11 @@ Network selection:
   --destination-rpc-url <url>        Override destination RPC URL
   --source-chain-id <id>             Override source chain ID
   --destination-chain-id <id>        Override destination chain ID
+  --allow-rpc-fallback               Verify a network Colibri does not support (custom, holesky,
+                                     hoodi) through plain RPC; such verifications are marked degraded
 
-Supported profiles: local-anvil, local-hardhat, mainnet, sepolia, holesky, hoodi, gnosis, chiado
+Supported profiles: local-anvil, local-hardhat, mainnet, sepolia, holesky, hoodi, gnosis, chiado,
+custom (any other network; give its chain ID and RPC URL)
 
 Signing and amounts:
   --private-key <hex>                Signer private key (or set PRIVATE_KEY env var)
@@ -68,6 +74,11 @@ Deployment reuse (both sides; the token route must already be registered):
   --source-connector <addr>          Set source connector and enable reuse
   --destination-connector <addr>     Set dest connector and enable reuse
 
+Environment (more in scripts/lib/e2e-common.sh):
+  STATELESS_CLIENT_LOG_LOOKBACK_BLOCKS  Blocks the client searches for events (default: 50000);
+                                     lower it for a public RPC with a smaller eth_getLogs range
+                                     limit
+
 Misc:
   -h, --help                         Show this help
 
@@ -76,6 +87,7 @@ Examples:
   $0 --proof-backend test
   $0 --source-profile local-anvil --destination-profile local-hardhat
   $0 --source-profile sepolia --destination-profile chiado --private-key 0x...
+  $0 --source-profile custom --source-chain-id 167013 --source-rpc-url https://rpc.hoodi.taiko.xyz --destination-profile sepolia --proof-backend docker --allow-rpc-fallback --private-key 0x...
   $0 --reuse-source --source-connector 0x... --reuse-dest --destination-connector 0x... --source-profile local-anvil --destination-profile local-hardhat
 "
 
@@ -98,14 +110,16 @@ DEST_BALANCE_BEFORE="$(query_erc20_balance "$DEST_RPC" "$DEST_TOKEN" "$RECEIVER_
 
 perform_deposit
 
-SOURCE_BALANCE_LOCKED="$(query_erc20_balance "$SOURCE_RPC" "$SOURCE_TOKEN" "$DEPLOYER_ADDRESS")"
-echo "Balances after the deposit: source=$SOURCE_BALANCE_LOCKED receiver wrapped=$DEST_BALANCE_BEFORE"
-
 # ── lock stage ──────────────────────────────────────────────────────────────
 lock_exec_block="${LOCK_EXECUTION_BLOCK:-$SOURCE_DEPOSIT_BLOCK}"
 lock_exec_block="$(normalize_execution_block_tag "$lock_exec_block")"
 echo "Lock execution block: $lock_exec_block"
 wait_for_successor_execution_block "$SOURCE_RPC" "$lock_exec_block" "source-deposit"
+
+# Read only now: right after the deposit a lagging node of a load-balanced RPC can still
+# answer with the balance from before it.
+SOURCE_BALANCE_LOCKED="$(query_erc20_balance "$SOURCE_RPC" "$SOURCE_TOKEN" "$DEPLOYER_ADDRESS")"
+echo "Balances after the deposit: source=$SOURCE_BALANCE_LOCKED receiver wrapped=$DEST_BALANCE_BEFORE"
 
 echo "Running relay-resume for lock..."
 run_relay_resume_for_action "lock" --lock-execution-block "$lock_exec_block"
@@ -135,8 +149,8 @@ ACK_SUBMIT_TX="$LAST_SUBMISSION_TX_HASH"
 
 # ── Final assertions ─────────────────────────────────────────────────────────
 # submitMintProof deletes the source record and submitAckProof the destination record.
-SOURCE_STATUS_FINAL="$(query_tx_status "$SOURCE_RPC" "$SOURCE_CONNECTOR" "$TX_ID")"
-DEST_STATUS_FINAL="$(query_tx_status "$DEST_RPC" "$DEST_CONNECTOR" "$TX_ID")"
+SOURCE_STATUS_FINAL="$(query_tx_status_until "$SOURCE_RPC" "$SOURCE_CONNECTOR" "$TX_ID" 0)"
+DEST_STATUS_FINAL="$(query_tx_status_until "$DEST_RPC" "$DEST_CONNECTOR" "$TX_ID" 0)"
 if [[ "$SOURCE_STATUS_FINAL" != "0" ]]; then
     echo "Source status mismatch after ack: expected 0 (NONE), got $SOURCE_STATUS_FINAL" >&2; exit 1
 fi
@@ -144,8 +158,10 @@ if [[ "$DEST_STATUS_FINAL" != "0" ]]; then
     echo "Destination status mismatch after ack: expected 0 (NONE), got $DEST_STATUS_FINAL" >&2; exit 1
 fi
 
-SOURCE_BALANCE_AFTER="$(query_erc20_balance "$SOURCE_RPC" "$SOURCE_TOKEN" "$DEPLOYER_ADDRESS")"
-DEST_BALANCE_AFTER="$(query_erc20_balance "$DEST_RPC" "$DEST_TOKEN" "$RECEIVER_ADDRESS")"
+SOURCE_BALANCE_AFTER="$(query_erc20_balance_until "$SOURCE_RPC" "$SOURCE_TOKEN" "$DEPLOYER_ADDRESS" \
+    "$SOURCE_BALANCE_LOCKED")"
+DEST_BALANCE_AFTER="$(query_erc20_balance_until "$DEST_RPC" "$DEST_TOKEN" "$RECEIVER_ADDRESS" \
+    "$(( DEST_BALANCE_BEFORE + AMOUNT_WEI ))")"
 if [[ "$SOURCE_BALANCE_AFTER" != "$SOURCE_BALANCE_LOCKED" ]]; then
     echo "Source balance changed after the deposit: $SOURCE_BALANCE_LOCKED -> $SOURCE_BALANCE_AFTER" >&2; exit 1
 fi

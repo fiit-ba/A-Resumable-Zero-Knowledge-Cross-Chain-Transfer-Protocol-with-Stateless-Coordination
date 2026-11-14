@@ -8,7 +8,7 @@ burn-proof-methods = { path = "methods" }
 
 risc0-build = { version = "3.0" }
 risc0-zkvm = { version = "3.0" }
-risc0-steel = { git = "https://github.com/boundless-xyz/steel.git", package = "risc0-steel", rev = "b16de8946b5f81ed6de90299d16deea284af18f7" }
+risc0-steel = { git = "https://github.com/boundless-xyz/steel.git", package = "risc0-steel", rev = "4cc27367913b712408c04e2facdfaf35b5146a8c" }
 
 alloy-primitives = { version = "1.3" }
 alloy-sol-types = { version = "1.3" }
